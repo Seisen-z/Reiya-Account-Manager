@@ -132,6 +132,7 @@ jobs:
         run: |
           curl -fsSL \
             -X POST \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
             -H "Content-Type: application/json" \
             -H "Prefer: resolution=merge-duplicates" \
