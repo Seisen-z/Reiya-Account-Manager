@@ -14,6 +14,7 @@ interface ProgressPayload {
   downloaded: number;
   total: number;
   percent: number;
+  phase: "downloading" | "installing" | "done";
 }
 
 interface Props {
@@ -27,30 +28,45 @@ function fmtBytes(b: number) {
 }
 
 export default function UpdatePrompt({ info }: Props) {
-  const [phase, setPhase]       = useState<"idle" | "downloading" | "done">("idle");
-  const [progress, setProgress] = useState<ProgressPayload>({ downloaded: 0, total: 0, percent: 0 });
-  const [error, setError]       = useState("");
+  const [uiPhase, setUiPhase] = useState<"idle" | "downloading" | "installing" | "done">("idle");
+  const [progress, setProgress] = useState<ProgressPayload>({
+    downloaded: 0, total: 0, percent: 0, phase: "downloading",
+  });
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const unlisten = listen<ProgressPayload>("update-progress", e => {
       setProgress(e.payload);
-      if (e.payload.percent >= 100) setPhase("done");
+      setUiPhase(e.payload.phase === "done" ? "done" : e.payload.phase);
     });
     return () => { unlisten.then(f => f()); };
   }, []);
 
   const handleUpdate = async () => {
-    setPhase("downloading");
+    setUiPhase("downloading");
     setError("");
     try {
       await invoke("download_and_install_update", { url: info.download_url });
     } catch (e) {
       setError(String(e));
-      setPhase("idle");
+      setUiPhase("idle");
     }
   };
 
   const bar = Math.min(progress.percent, 100);
+
+  const statusLabel = () => {
+    if (uiPhase === "downloading") {
+      return progress.total > 0
+        ? `Downloading… ${fmtBytes(progress.downloaded)} / ${fmtBytes(progress.total)}`
+        : "Downloading…";
+    }
+    if (uiPhase === "installing") return "Installing update…";
+    if (uiPhase === "done")       return "Done! Restarting…";
+    return "";
+  };
+
+  const barColor = uiPhase === "done" ? "var(--green)" : uiPhase === "installing" ? "#60a5fa" : "var(--green)";
 
   return (
     <div style={{
@@ -59,10 +75,13 @@ export default function UpdatePrompt({ info }: Props) {
       display: "flex", flexDirection: "column",
       alignItems: "center", justifyContent: "center",
     }}>
-      {/* Top glow */}
+      {/* Top glow — shifts colour per phase */}
       <div style={{
         position: "absolute", inset: 0, pointerEvents: "none",
-        background: "radial-gradient(ellipse 55% 30% at 50% 0%, rgba(34,197,94,0.07) 0%, transparent 70%)",
+        background: uiPhase === "installing" || uiPhase === "done"
+          ? "radial-gradient(ellipse 55% 30% at 50% 0%, rgba(96,165,250,0.07) 0%, transparent 70%)"
+          : "radial-gradient(ellipse 55% 30% at 50% 0%, rgba(34,197,94,0.07) 0%, transparent 70%)",
+        transition: "background 0.4s",
       }} />
 
       <div style={{ width: "100%", maxWidth: 440, padding: "0 28px", display: "flex", flexDirection: "column", alignItems: "center" }}>
@@ -70,14 +89,19 @@ export default function UpdatePrompt({ info }: Props) {
         {/* Icon */}
         <div style={{
           width: 72, height: 72, borderRadius: 18, marginBottom: 28,
-          background: "rgba(34,197,94,0.08)",
-          border: "1px solid rgba(34,197,94,0.22)",
-          boxShadow: "0 0 40px rgba(34,197,94,0.08)",
+          background: uiPhase === "installing" ? "rgba(96,165,250,0.08)" : "rgba(34,197,94,0.08)",
+          border: `1px solid ${uiPhase === "installing" ? "rgba(96,165,250,0.22)" : "rgba(34,197,94,0.22)"}`,
+          boxShadow: uiPhase === "installing" ? "0 0 40px rgba(96,165,250,0.08)" : "0 0 40px rgba(34,197,94,0.08)",
           display: "flex", alignItems: "center", justifyContent: "center",
+          transition: "all 0.4s",
         }}>
-          {phase === "done" ? (
+          {uiPhase === "done" ? (
             <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : uiPhase === "installing" ? (
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1.2s linear infinite" }}>
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
             </svg>
           ) : (
             <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -90,7 +114,11 @@ export default function UpdatePrompt({ info }: Props) {
 
         {/* Title */}
         <h1 style={{ fontSize: 24, fontWeight: 900, color: "#F0F1F6", letterSpacing: "-0.5px", marginBottom: 8, textAlign: "center" }}>
-          {phase === "done" ? "Installing…" : "Update Available"}
+          {uiPhase === "done"
+            ? "All done!"
+            : uiPhase === "installing"
+              ? "Installing…"
+              : "Update Available"}
         </h1>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
@@ -101,7 +129,7 @@ export default function UpdatePrompt({ info }: Props) {
           <span style={{ fontSize: 11, color: "var(--green)", fontWeight: 700, fontFamily: "monospace" }}>v{info.version}</span>
         </div>
 
-        {info.notes && (
+        {info.notes && uiPhase === "idle" && (
           <div style={{
             width: "100%", marginBottom: 24,
             padding: "12px 16px", borderRadius: 12,
@@ -114,8 +142,8 @@ export default function UpdatePrompt({ info }: Props) {
           </div>
         )}
 
-        {/* Progress bar — shown during / after download */}
-        {phase !== "idle" && (
+        {/* Progress bar */}
+        {uiPhase !== "idle" && (
           <div style={{ width: "100%", marginBottom: 20 }}>
             <div style={{
               width: "100%", height: 6, borderRadius: 99,
@@ -124,17 +152,17 @@ export default function UpdatePrompt({ info }: Props) {
             }}>
               <div style={{
                 height: "100%", borderRadius: 99,
-                background: "var(--green)",
+                background: barColor,
                 width: `${bar}%`,
-                transition: "width 0.2s ease",
-                boxShadow: "0 0 10px rgba(34,197,94,0.4)",
+                transition: "width 0.15s ease, background 0.4s",
+                boxShadow: `0 0 10px ${barColor}66`,
               }} />
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 11, color: "var(--t3)", fontWeight: 600 }}>
-                {phase === "done" ? "Complete — launching installer…" : `${fmtBytes(progress.downloaded)} / ${fmtBytes(progress.total)}`}
+                {statusLabel()}
               </span>
-              <span style={{ fontSize: 11, color: "var(--green)", fontWeight: 700 }}>{bar}%</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: barColor }}>{bar}%</span>
             </div>
           </div>
         )}
@@ -152,8 +180,8 @@ export default function UpdatePrompt({ info }: Props) {
           </div>
         )}
 
-        {/* Action button — locked during download */}
-        {phase === "idle" && (
+        {/* Update Now button — only when idle */}
+        {uiPhase === "idle" && (
           <button onClick={handleUpdate} style={{
             width: "100%", height: 46, borderRadius: 12, border: "none",
             background: "rgba(34,197,94,0.9)",
@@ -173,24 +201,28 @@ export default function UpdatePrompt({ info }: Props) {
           </button>
         )}
 
-        {phase === "downloading" && (
+        {/* Locked state during download / install */}
+        {(uiPhase === "downloading" || uiPhase === "installing") && (
           <div style={{
             width: "100%", height: 46, borderRadius: 12,
-            background: "rgba(34,197,94,0.06)",
-            border: "1px solid rgba(34,197,94,0.15)",
+            background: uiPhase === "installing" ? "rgba(96,165,250,0.06)" : "rgba(34,197,94,0.06)",
+            border: `1px solid ${uiPhase === "installing" ? "rgba(96,165,250,0.15)" : "rgba(34,197,94,0.15)"}`,
             display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-            color: "var(--green)", fontSize: 13, fontWeight: 700,
+            color: uiPhase === "installing" ? "#60a5fa" : "var(--green)",
+            fontSize: 13, fontWeight: 700,
+            transition: "all 0.4s",
           }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}>
               <path d="M21 12a9 9 0 1 1-6.219-8.56" />
             </svg>
-            Downloading update…
+            {uiPhase === "installing" ? "Installing, please wait…" : "Downloading update…"}
           </div>
         )}
 
         <p style={{ marginTop: 20, fontSize: 10, color: "var(--t3)", textAlign: "center", lineHeight: 1.6 }}>
-          This update is required to continue using Reiya.<br />
-          The app will restart automatically after installing.
+          {uiPhase === "done"
+            ? "The app will relaunch automatically in a moment."
+            : "This update is required to continue using Reiya.\nThe app will restart automatically after installing."}
         </p>
       </div>
     </div>

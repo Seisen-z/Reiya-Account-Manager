@@ -2951,26 +2951,69 @@ async fn download_and_install_update(app: tauri::AppHandle, url: String) -> Resu
     let tmp_path = std::env::temp_dir().join("ReiyaAccountManager-update.exe");
     let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| e.to_string())?;
 
+    // Phase 1 — Download (0 → 85%)
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
-        let percent = if total > 0 { (downloaded * 100 / total) as u32 } else { 0 };
+        let percent = if total > 0 { ((downloaded * 85) / total) as u32 } else { 0 };
         app.emit("update-progress", serde_json::json!({
             "downloaded": downloaded,
             "total":      total,
             "percent":    percent,
+            "phase":      "downloading",
         })).ok();
     }
-
     file.flush().await.map_err(|e| e.to_string())?;
     drop(file);
 
-    // /S = NSIS silent install — no dialogs, replaces running binary automatically
-    std::process::Command::new(&tmp_path)
-        .arg("/S")
-        .spawn()
-        .map_err(|e| format!("Failed to launch installer: {}", e))?;
+    // Phase 2 — Installing (85 → 99%, animated)
+    for p in 85u32..=99 {
+        app.emit("update-progress", serde_json::json!({
+            "downloaded": total,
+            "total":      total,
+            "percent":    p,
+            "phase":      "installing",
+        })).ok();
+        tokio::time::sleep(tokio::time::Duration::from_millis(60)).await;
+    }
+
+    // Get current exe so the helper can relaunch it after install
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+
+    // Write a detached helper script:
+    //   1. Wait for this process to exit
+    //   2. Run installer silently
+    //   3. Wait for installer to finish
+    //   4. Relaunch the updated binary
+    let script = format!(
+        "@echo off\r\ntimeout /t 3 /nobreak >nul\r\n\"{}\" /S\r\ntimeout /t 5 /nobreak >nul\r\nstart \"\" \"{}\"\r\ndel \"%~0\"\r\n",
+        tmp_path.display(),
+        current_exe.display(),
+    );
+    let script_path = std::env::temp_dir().join("reiya_updater.bat");
+    std::fs::write(&script_path, &script).map_err(|e| e.to_string())?;
+
+    // Phase 3 — Done (100%)
+    app.emit("update-progress", serde_json::json!({
+        "downloaded": total,
+        "total":      total,
+        "percent":    100,
+        "phase":      "done",
+    })).ok();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
+
+    // Spawn helper hidden, then exit so installer can replace our binary
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/C", &script_path.to_string_lossy().into_owned()])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| format!("Failed to start updater helper: {}", e))?;
+    }
 
     std::process::exit(0);
 }
