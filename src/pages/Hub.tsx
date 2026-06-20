@@ -138,7 +138,7 @@ export default function Hub() {
           <span style={{
             fontSize: 9, fontWeight: 800, letterSpacing: "0.1em",
             color: "var(--amber)", flexShrink: 0,
-          }}>{t("executor").toUpperCase()}</span>
+          }}>SCRIPT</span>
           <code style={{
             flex: 1, fontSize: 10, color: "var(--t3)",
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -302,17 +302,8 @@ function GameCard({ game, thumbnail, thumbLoading, onToggleFav }: {
 }) {
   const { t } = useLanguage();
   const [hovered, setHovered] = useState(false);
-  const [copied,  setCopied]  = useState(false);
   const catColor = CAT_COLOR[game.category] ?? "#888";
   const isActive = game.status === "Supported";
-
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const cmd = `loadstring(game:HttpGet("${game.scriptUrl}"))()`;
-    try { await writeText(cmd); } catch { navigator.clipboard?.writeText(cmd); }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
-  };
 
   return (
     <div
@@ -377,7 +368,6 @@ function GameCard({ game, thumbnail, thumbLoading, onToggleFav }: {
       >
         <StarIcon size={14} fill={game.isFavorite ? "var(--amber)" : "none"} color={game.isFavorite ? "var(--amber)" : "rgba(255,255,255,.5)"} />
       </button>
-
       {/* Hover overlay */}
       <div style={{
         position: "absolute", inset: 0,
@@ -426,25 +416,7 @@ function GameCard({ game, thumbnail, thumbLoading, onToggleFav }: {
           overflow: "hidden",
         }}>
           {game.description}
-        </p>
-
-        <button onClick={handleCopy} style={{
-          width: "100%", padding: "8px 0", borderRadius: 9,
-          border: `1px solid ${copied ? "rgba(52,211,153,.5)" : "rgba(255,255,255,.18)"}`,
-          background: copied ? "rgba(52,211,153,.15)" : "rgba(255,255,255,.08)",
-          backdropFilter: "blur(10px)",
-          color: copied ? "var(--green)" : "#fff",
-          fontSize: 11, fontWeight: 700, cursor: "pointer",
-          transition: "all .15s",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-        }}>
-          {copied ? (
-            <><CheckIcon size={12} color="var(--green)" /><span>{t("copied")}</span></>
-          ) : (
-            <><CopyIcon size={11} color="rgba(255,255,255,0.7)" /><span>{t("copy_script")}</span></>
-          )}
-        </button>
-      </div>
+        </p>      </div>
     </div>
   );
 }
