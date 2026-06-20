@@ -13,12 +13,18 @@ interface UpdateContextType {
   updateInfo: UpdateInfo | null;
   currentVersion: string;
   checking: boolean;
+  showUpdateModal: boolean;
+  openUpdateModal: () => void;
+  closeUpdateModal: () => void;
 }
 
 const UpdateContext = createContext<UpdateContextType>({
   updateInfo: null,
   currentVersion: "",
   checking: true,
+  showUpdateModal: false,
+  openUpdateModal: () => {},
+  closeUpdateModal: () => {},
 });
 
 export function useUpdate() {
@@ -29,6 +35,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [currentVersion, setCurrentVersion] = useState("");
   const [checking, setChecking] = useState(true);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
 
   useEffect(() => {
     invoke<string>("get_app_version")
@@ -44,7 +51,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <UpdateContext.Provider value={{ updateInfo, currentVersion, checking }}>
+    <UpdateContext.Provider value={{
+      updateInfo, currentVersion, checking,
+      showUpdateModal,
+      openUpdateModal: () => setShowUpdateModal(true),
+      closeUpdateModal: () => setShowUpdateModal(false),
+    }}>
       {children}
     </UpdateContext.Provider>
   );

@@ -19,6 +19,7 @@ interface ProgressPayload {
 
 interface Props {
   info: UpdateInfo;
+  onDismiss?: () => void;
 }
 
 function fmtBytes(b: number) {
@@ -27,7 +28,7 @@ function fmtBytes(b: number) {
   return `${b} B`;
 }
 
-export default function UpdatePrompt({ info }: Props) {
+export default function UpdatePrompt({ info, onDismiss }: Props) {
   const [uiPhase, setUiPhase] = useState<"idle" | "downloading" | "installing" | "done">("idle");
   const [progress, setProgress] = useState<ProgressPayload>({
     downloaded: 0, total: 0, percent: 0, phase: "downloading",
@@ -71,10 +72,32 @@ export default function UpdatePrompt({ info }: Props) {
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 99999,
-      background: "#07080a",
+      background: "rgba(7,8,10,0.94)",
+      backdropFilter: "blur(16px)",
       display: "flex", flexDirection: "column",
       alignItems: "center", justifyContent: "center",
     }}>
+      {/* Dismiss button — only when not in progress */}
+      {uiPhase === "idle" && onDismiss && (
+        <button
+          onClick={onDismiss}
+          title="Remind me later"
+          style={{
+            position: "absolute", top: 18, right: 18,
+            background: "rgba(255,255,255,0.04)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 8, width: 32, height: 32,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", color: "var(--t3)", fontSize: 16, lineHeight: 1,
+            transition: "all .12s",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "var(--t1)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; e.currentTarget.style.color = "var(--t3)"; }}
+        >
+          ✕
+        </button>
+      )}
+
       {/* Top glow — shifts colour per phase */}
       <div style={{
         position: "absolute", inset: 0, pointerEvents: "none",

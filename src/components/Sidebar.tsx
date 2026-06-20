@@ -12,7 +12,7 @@ const NAV = [
 ];
 
 export default function Sidebar() {
-  const { updateInfo, currentVersion, checking } = useUpdate();
+  const { updateInfo, currentVersion, checking, openUpdateModal } = useUpdate();
   const { t } = useLanguage();
   const hasUpdate = !!updateInfo;
   const displayVersion = currentVersion ? `v${currentVersion}` : "v1.0.0";
@@ -129,21 +129,25 @@ export default function Sidebar() {
           </div>
         </div>
         {hasUpdate ? (
-          <span
-            className="chip"
+          <button
+            onClick={openUpdateModal}
             title={`Update to v${updateInfo!.version}`}
             style={{
-              fontSize: 9, padding: "2px 7px",
+              fontSize: 9, padding: "3px 9px",
               background: "rgba(251,146,60,0.15)",
               color: "#fb923c",
               border: "1px solid rgba(251,146,60,0.35)",
               borderRadius: 6,
-              cursor: "default",
+              cursor: "pointer",
+              fontWeight: 700,
               animation: "pulse 2s ease-in-out infinite",
+              transition: "filter .12s",
             }}
+            onMouseEnter={e => { e.currentTarget.style.filter = "brightness(1.2)"; }}
+            onMouseLeave={e => { e.currentTarget.style.filter = "none"; }}
           >
-            ↑ {t("update_btn")}
-          </span>
+            ↑ v{updateInfo!.version}
+          </button>
         ) : (
           <span className="chip chip-green" style={{ fontSize: 9, padding: "2px 7px" }}>●  {t("live")}</span>
         )}

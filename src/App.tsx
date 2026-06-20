@@ -59,7 +59,7 @@ function AppContent() {
 }
 
 function AppInner() {
-  const { updateInfo } = useUpdate();
+  const { updateInfo, showUpdateModal, closeUpdateModal } = useUpdate();
   const { t, setLanguage } = useLanguage();
   const [licenseChecked, setLicenseChecked] = useState(false);
   const [licenseStatus, setLicenseStatus]   = useState<LicenseStatus | null>(null);
@@ -112,9 +112,9 @@ function AppInner() {
     <BrowserRouter>
       <BootstrapperProvider>
         {locked && <AppLock onUnlocked={() => setLocked(false)} />}
-        {/* Update gate — mandatory, shown before everything else once license passes */}
-        {!needsKey && updateInfo && (
-          <UpdatePrompt info={updateInfo} />
+        {/* Update modal — user-triggered from sidebar, not a mandatory blocker */}
+        {showUpdateModal && updateInfo && (
+          <UpdatePrompt info={updateInfo} onDismiss={closeUpdateModal} />
         )}
         {needsKey && (
           <KeyGate

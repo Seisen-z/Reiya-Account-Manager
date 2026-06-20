@@ -24,7 +24,7 @@ import {
   LoaderIcon
 } from "../components/Icons";
 
-/* â”€â”€ Types â”€â”€ */
+/* â"€â"€ Types â"€â"€ */
 interface Account {
   user_id: number;
   username: string;
@@ -110,7 +110,7 @@ export default function Home() {
       return {
         totalSessions: 0,
         totalPlayTime: "0m",
-        topAccount: "â€”",
+        topAccount: "-",
         byAccount: [],
         byGame: []
       };
@@ -163,7 +163,7 @@ export default function Home() {
       pct: Math.round((x.minutes / maxGameMin) * 100),
     }));
 
-    const topAccount = accList[0]?.name ?? "â€”";
+    const topAccount = accList[0]?.name ?? "-";
 
     return {
       totalSessions,
@@ -265,7 +265,7 @@ export default function Home() {
   const [groupModal, setGroupModal] = useState<{ account: Account } | null>(null);
   const [groupInput, setGroupInput] = useState("");
 
-  /* â”€â”€ Load on mount, poll sessions â”€â”€ */
+  /* â"€â"€ Load on mount, poll sessions â"€â"€ */
   useEffect(() => {
     async function load() {
       const [accs, sess, evts, hist, recents, settingsData] = await Promise.all([
@@ -341,22 +341,36 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  // Fetch recently played game thumbnails using place IDs
+  // When recentGames is empty but we have session history, reconstruct from sessions
   useEffect(() => {
-    const placeIds = recentGames
-      .map(r => r.placeId)
-      .filter(Boolean);
-    if (placeIds.length > 0) {
-      invoke<Record<string, string>>("fetch_place_thumbnails", { placeIds })
-        .then(map => {
-          setThumbs(prev => ({ ...prev, ...map }));
-        })
-        .catch(() => {})
-        .finally(() => setThumbsLoading(false));
-    } else {
-      setThumbsLoading(false);
+    if (recentGames.length > 0 || sessionHistory.length === 0) return;
+    const seen = new Set<string>();
+    const synthetic: RecentGame[] = [];
+    for (const r of [...sessionHistory].reverse()) {
+      if (!r.place_id || seen.has(r.place_id)) continue;
+      seen.add(r.place_id);
+      synthetic.push({
+        placeId: r.place_id,
+        name: r.game_name || `Place ${r.place_id}`,
+        creator: "",
+        iconUrl: "",
+        playedAt: r.start_time,
+      });
     }
-  }, [recentGames]);
+    if (synthetic.length > 0) setRecentGames(synthetic.slice(0, 20));
+  }, [recentGames, sessionHistory]);
+
+  // Fetch thumbnails for all known place IDs (recent games + session history)
+  useEffect(() => {
+    const fromRecent = recentGames.map(r => r.placeId);
+    const fromHistory = sessionHistory.map(r => r.place_id).filter(Boolean);
+    const placeIds = [...new Set([...fromRecent, ...fromHistory])].filter(Boolean);
+    if (placeIds.length === 0) { setThumbsLoading(false); return; }
+    invoke<Record<string, string>>("fetch_place_thumbnails", { placeIds })
+      .then(map => setThumbs(prev => ({ ...prev, ...map })))
+      .catch(() => {})
+      .finally(() => setThumbsLoading(false));
+  }, [recentGames, sessionHistory]);
 
   useEffect(() => {
     if (location.state && typeof location.state === "object") {
@@ -423,7 +437,7 @@ export default function Home() {
     prevLaunchPlaceIdRef.current = launchPlaceId;
   }, [launchPlaceId, recentGames]);
 
-  /* â”€â”€ Derived â”€â”€ */
+  /* â"€â"€ Derived â"€â"€ */
   const hour     = new Date().getHours();
   const greeting = hour < 12 ? t("good_morning") : hour < 18 ? t("good_afternoon") : t("good_evening");
 
@@ -470,7 +484,7 @@ export default function Home() {
 
   // Top games {t("by_total_playtime_lbl")} from all session history
   const topGames = useMemo(() => {
-    const map = new Map<string, { name: string; minutes: number; sessions: number; thumbnailUrl?: string }>();
+    const map = new Map<string, { placeId: string; name: string; minutes: number; sessions: number }>();
     for (const r of sessionHistory) {
       const key = r.place_id;
       const existing = map.get(key);
@@ -478,12 +492,18 @@ export default function Home() {
         existing.minutes += r.duration_minutes;
         existing.sessions++;
       } else {
-        const rg = recentGames.find(g => g.placeId === r.place_id);
-        map.set(key, { name: r.game_name || "Unknown", minutes: r.duration_minutes, sessions: 1, thumbnailUrl: rg?.iconUrl });
+        map.set(key, { placeId: r.place_id, name: r.game_name || "Unknown", minutes: r.duration_minutes, sessions: 1 });
       }
     }
-    return Array.from(map.values()).sort((a, b) => b.minutes - a.minutes).slice(0, 6);
-  }, [sessionHistory, recentGames]);
+    return Array.from(map.values())
+      .sort((a, b) => b.minutes - a.minutes)
+      .slice(0, 6)
+      .map(g => {
+        const rg = recentGames.find(x => x.placeId === g.placeId);
+        const thumbnailUrl = rg?.iconUrl || thumbs[g.placeId];
+        return { ...g, thumbnailUrl };
+      });
+  }, [sessionHistory, recentGames, thumbs]);
 
   // Accounts grouped by group name for the left panel
   const groupedAccounts = useMemo(() => {
@@ -726,7 +746,7 @@ export default function Home() {
   const launchThumb           = launchPlaceId ? (thumbs[launchPlaceId] ?? null) : null;
   const selectedAccountIsActive = selAccount !== null && activeUserIds.has(selAccount);
 
-  /* â”€â”€ Handlers â”€â”€ */
+  /* â"€â"€ Handlers â"€â"€ */
   const refreshAccounts = async () => {
     const [accs, evts] = await Promise.all([
       invoke<Account[]>("get_accounts").catch(() => [] as Account[]),
@@ -795,7 +815,7 @@ export default function Home() {
       setBulkResults(results);
       await refreshAccounts();
     } catch (e) {
-      setBulkResults([{ preview: "â€”", success: false, username: null, error: String(e) }]);
+      setBulkResults([{ preview: "-", success: false, username: null, error: String(e) }]);
     } finally {
       setBulkAdding(false);
     }

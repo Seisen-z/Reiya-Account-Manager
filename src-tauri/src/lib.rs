@@ -1703,7 +1703,20 @@ async fn open_login_window(
     .inner_size(500.0, 660.0)
     .resizable(true)
     .initialization_script(&init)
-    .on_page_load(move |win, _payload| {
+    .on_page_load(move |win, payload| {
+        use tauri::webview::PageLoadEvent;
+        // Only check after a finished navigation, and only after leaving the login/captcha pages
+        if payload.event() != PageLoadEvent::Finished {
+            return;
+        }
+        let url = payload.url().to_string();
+        if url.contains("roblox.com/login")
+            || url.contains("roblox.com/challenge")
+            || url.contains("roblox.com/newlogin")
+            || url.contains("about:blank")
+        {
+            return;
+        }
         let app_inner = app_clone.clone();
         let label_inner = label_clone.clone();
         let cookie_found_inner = cookie_found_clone.clone();
@@ -2375,7 +2388,31 @@ fn save_settings(settings: serde_json::Value, state: tauri::State<'_, MultiState
         sync_run_on_startup(run_on_startup);
     }
 
-    let s = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    // Read existing file and merge — preserves keys like RecentGames that aren't part of settings
+    let mut merged: serde_json::Value = if settings_path.exists() {
+        if let Ok(content) = fs::read_to_string(&settings_path) {
+            let trimmed = clean_bom(&content).trim().to_string();
+            if !trimmed.is_empty() {
+                serde_json::from_str(&trimmed).unwrap_or(serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            }
+        } else {
+            serde_json::json!({})
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    if let (Some(obj), Some(new_obj)) = (merged.as_object_mut(), settings.as_object()) {
+        for (k, v) in new_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    } else {
+        merged = settings;
+    }
+
+    let s = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
     fs::write(&settings_path, s).map_err(|e| e.to_string())?;
     Ok(())
 }
