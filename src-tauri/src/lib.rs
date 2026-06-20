@@ -4446,22 +4446,253 @@ fn get_fastflag_presets() -> Vec<FastFlagPreset> {
                 "DFIntDataSendRate": 30
             }),
         },
+        // ── FPS Caps ──────────────────────────────────────────────────
         FastFlagPreset {
-            id: "no_msaa".into(),
-            name: "No Anti-Aliasing (MSAA Off)".into(),
-            description: "Disables MSAA for a sharper but jaggier image with a small GPU performance gain.".into(),
-            category: "Graphics".into(),
+            id: "fps_30".into(),
+            name: "Cap FPS at 30".into(),
+            description: "Limits to 30 FPS — maximum battery saving for laptops or thermal throttled machines.".into(),
+            category: "Performance".into(),
             flags: serde_json::json!({
-                "FIntDebugForceMSAASamples": 0
+                "FFlagTaskSchedulerLimitTargetFps": true,
+                "DFIntTaskSchedulerTargetFps": 30
             }),
         },
         FastFlagPreset {
-            id: "disable_ads".into(),
-            name: "Disable In-Experience Ads".into(),
-            description: "Prevents Roblox from loading video and banner advertisements inside games.".into(),
+            id: "fps_60".into(),
+            name: "Cap FPS at 60".into(),
+            description: "Hard-locks to 60 FPS for consistent frame pacing and lower GPU temperature.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagTaskSchedulerLimitTargetFps": true,
+                "DFIntTaskSchedulerTargetFps": 60
+            }),
+        },
+        FastFlagPreset {
+            id: "fps_144".into(),
+            name: "Cap FPS at 144".into(),
+            description: "Targets 144 FPS for high-refresh-rate monitors without going to uncapped 9999.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagTaskSchedulerLimitTargetFps": true,
+                "DFIntTaskSchedulerTargetFps": 144
+            }),
+        },
+        FastFlagPreset {
+            id: "fps_240".into(),
+            name: "Cap FPS at 240".into(),
+            description: "Targets 240 FPS for 240 Hz monitors — good balance between performance and GPU load.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagTaskSchedulerLimitTargetFps": true,
+                "DFIntTaskSchedulerTargetFps": 240
+            }),
+        },
+        // ── Renderer ──────────────────────────────────────────────────
+        FastFlagPreset {
+            id: "vulkan".into(),
+            name: "Force Vulkan Renderer".into(),
+            description: "Switches to the Vulkan rendering backend — lower CPU overhead on supported GPUs (AMD/NVIDIA).".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagDebugGraphicsPreferVulkan": true
+            }),
+        },
+        FastFlagPreset {
+            id: "opengl".into(),
+            name: "Force OpenGL Renderer".into(),
+            description: "Falls back to the OpenGL renderer — useful if DX11 or Vulkan causes issues.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagDebugGraphicsPreferOpenGL": true
+            }),
+        },
+        FastFlagPreset {
+            id: "shadowmap_lighting".into(),
+            name: "ShadowMap Lighting Engine".into(),
+            description: "Forces the ShadowMap lighting engine — a middle ground between Legacy and Future lighting.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagDebugForceShadowMapLighting": true,
+                "DFFlagDebugForceFutureIsBrightPhase2": false,
+                "FFlagDebugForceFutureLighting": false
+            }),
+        },
+        // ── Grass & Terrain ───────────────────────────────────────────
+        FastFlagPreset {
+            id: "no_grass".into(),
+            name: "Disable Grass Rendering".into(),
+            description: "Completely removes grass strands from terrain — notable FPS improvement in open-world games.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FIntFRMMinGrassDistance": 0,
+                "FIntFRMMaxGrassDistance": 0,
+                "FIntRenderGrassDetailStrands": 0,
+                "DFIntRenderGrassHeightScaler": 0
+            }),
+        },
+        FastFlagPreset {
+            id: "max_grass".into(),
+            name: "Maximum Grass Detail".into(),
+            description: "Extends grass render distance and density for lush terrain visuals.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FIntFRMMinGrassDistance": 100,
+                "FIntFRMMaxGrassDistance": 500,
+                "FIntRenderGrassDetailStrands": 50
+            }),
+        },
+        // ── Post-FX ───────────────────────────────────────────────────
+        FastFlagPreset {
+            id: "no_depth_of_field".into(),
+            name: "Disable Depth of Field".into(),
+            description: "Removes the depth-of-field blur effect in games that use it.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagRenderDepthOfFieldEnabled": false
+            }),
+        },
+        FastFlagPreset {
+            id: "no_sun_rays".into(),
+            name: "Disable Sun Rays / God Rays".into(),
+            description: "Turns off the volumetric sun ray effect for a cleaner look and slight performance gain.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagRenderSunRaysEnabled": false
+            }),
+        },
+        FastFlagPreset {
+            id: "no_color_correction".into(),
+            name: "Disable Color Correction".into(),
+            description: "Removes color grading / color correction PostFX applied by the game.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagRenderColorCorrectionEnabled": false
+            }),
+        },
+        // ── Physics ───────────────────────────────────────────────────
+        FastFlagPreset {
+            id: "high_physics_rate".into(),
+            name: "High Physics Send Rate (120 Hz)".into(),
+            description: "Doubles physics replication frequency for smoother character movement in competitive play.".into(),
+            category: "Network".into(),
+            flags: serde_json::json!({
+                "DFIntS2PhysicsSenderRate": 120,
+                "DFIntDataSendRate": 60
+            }),
+        },
+        FastFlagPreset {
+            id: "low_network_quality".into(),
+            name: "Low Bandwidth Mode".into(),
+            description: "Reduces physics and data send rates to save bandwidth on metered connections.".into(),
+            category: "Network".into(),
+            flags: serde_json::json!({
+                "DFIntS2PhysicsSenderRate": 15,
+                "DFIntDataSendRate": 15
+            }),
+        },
+        // ── Privacy / Crash ───────────────────────────────────────────
+        FastFlagPreset {
+            id: "no_crash_reporting".into(),
+            name: "Disable Crash Reporting".into(),
+            description: "Prevents crash dumps and error reports from being uploaded to Roblox servers.".into(),
             category: "Privacy".into(),
             flags: serde_json::json!({
-                "FFlagAdServiceEnabled": false
+                "FFlagCrashReportingEnabled": false
+            }),
+        },
+        // ── UI / Misc ─────────────────────────────────────────────────
+        FastFlagPreset {
+            id: "no_gui_blur".into(),
+            name: "Disable Menu Blur".into(),
+            description: "Removes the background blur effect applied when the in-game menu or UI overlays open.".into(),
+            category: "Misc".into(),
+            flags: serde_json::json!({
+                "FIntBgBlurRadius": 0,
+                "FIntBgBlurIterations": 0
+            }),
+        },
+        FastFlagPreset {
+            id: "show_fps_counter".into(),
+            name: "Always Show FPS Counter".into(),
+            description: "Forces Roblox's built-in FPS counter to always be visible without needing Shift+F5.".into(),
+            category: "Misc".into(),
+            flags: serde_json::json!({
+                "FFlagDebugDisplayFPS": true
+            }),
+        },
+        FastFlagPreset {
+            id: "disable_layered_clothing".into(),
+            name: "Disable Layered Clothing".into(),
+            description: "Skips rendering layered clothing (jackets, hoodies) — boosts FPS in crowded servers.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagLayeredClothingEnabled": false,
+                "DFFlagLayeredClothingEnabledForAll": false
+            }),
+        },
+        FastFlagPreset {
+            id: "disable_player_avatars".into(),
+            name: "Low-Detail Player Characters".into(),
+            description: "Reduces character mesh detail and skips accessory loading — large FPS gain in populated servers.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagAvatarSelfViewEnabled": false,
+                "DFIntLodAvatarMinThreshold": 0,
+                "DFIntLodAvatarMaxThreshold": 1
+            }),
+        },
+        FastFlagPreset {
+            id: "reduced_loading_screen".into(),
+            name: "Faster Game Loading".into(),
+            description: "Skips loading screen delays and reduces asset prefetch pauses to get into games faster.".into(),
+            category: "Misc".into(),
+            flags: serde_json::json!({
+                "DFIntNumAssetsMaxToPreload": 0,
+                "DFIntAssetPreloading": 0
+            }),
+        },
+        FastFlagPreset {
+            id: "ultra_quality".into(),
+            name: "Ultra Quality Preset".into(),
+            description: "Combines max MSAA, max texture quality, high terrain LOD, and Future lighting for the best possible visuals.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FIntDebugForceMSAASamples": 8,
+                "DFIntDebugFRMQualityLevelOverride": 21,
+                "FIntDebugTextureManagerSkipMips": 0,
+                "DFIntCSGLevelOfDetailSwitchingDistance": 1000,
+                "DFIntCSGLevelOfDetailSwitchingDistanceFull": 2000,
+                "DFFlagDebugForceFutureIsBrightPhase2": true,
+                "FFlagDebugForceFutureLighting": true
+            }),
+        },
+        FastFlagPreset {
+            id: "competitive".into(),
+            name: "Competitive / Low-Latency".into(),
+            description: "Maximizes FPS, disables all visual fluff, and tunes physics rate for the lowest possible latency in PvP games.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagTaskSchedulerLimitTargetFps": false,
+                "DFIntTaskSchedulerTargetFps": 9999,
+                "DFIntDebugFRMQualityLevelOverride": 1,
+                "FIntRenderShadowIntensity": 0,
+                "FIntDebugForceMSAASamples": 0,
+                "DFFlagDisablePostFx": true,
+                "FFlagEnableHardwareCursor": true,
+                "FFlagLayeredClothingEnabled": false,
+                "DFFlagLayeredClothingEnabledForAll": false,
+                "FIntFRMMinGrassDistance": 0,
+                "FIntFRMMaxGrassDistance": 0,
+                "FIntRenderGrassDetailStrands": 0,
+                "DFIntS2PhysicsSenderRate": 120,
+                "DFIntDataSendRate": 60,
+                "FFlagDebugDisableTelemetryEphemeralCounter": true,
+                "FFlagDebugDisableTelemetryEphemeralStat": true,
+                "FFlagDebugDisableTelemetryEventIngest": true,
+                "FFlagDebugDisableTelemetryPoint": true,
+                "FFlagDebugDisableTelemetryV2Counter": true,
+                "FFlagDebugDisableTelemetryV2Event": true,
+                "FFlagDebugDisableTelemetryV2Stat": true
             }),
         },
     ]
