@@ -12,7 +12,7 @@ use std::{
     collections::HashMap,
     fs,
     path::PathBuf,
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use sysinfo::System;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder, WebviewUrl};
@@ -287,6 +287,22 @@ impl MultiState {
     pub fn ensure_active(&self) {}
 }
 
+
+// ── Discord Rich Presence state ────────────────────────────────────────────────
+
+pub struct DiscordRpcRunner {
+    pub stop_flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DiscordRpcRunner {
+    pub fn stop(&self) {
+        self.stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+pub struct DiscordRpcHolder(pub Mutex<Option<DiscordRpcRunner>>);
+
+pub struct DiscordRpcPage(pub Arc<Mutex<String>>);
 
 // ── Storage path ──────────────────────────────────────────────────────────────
 fn data_dir() -> PathBuf {
@@ -1360,6 +1376,7 @@ async fn launch_account(
     }
 
     let roblox_path = find_roblox_exe().ok_or("RobloxPlayerBeta.exe not found. Is Roblox installed?")?;
+    apply_fastflags_to_exe(&roblox_path);
 
     #[cfg(target_os = "windows")]
     {
@@ -2727,7 +2744,7 @@ async fn send_discord_webhook(url: String, payload: serde_json::Value) -> Result
 }
 
 #[tauri::command]
-fn save_settings(settings: serde_json::Value, state: tauri::State<'_, MultiState>) -> Result<(), String> {
+fn save_settings(settings: serde_json::Value, state: tauri::State<'_, MultiState>, rpc: tauri::State<'_, DiscordRpcHolder>) -> Result<(), String> {
     let settings_path = data_dir().join("settings.json");
 
     // Sync MultiRoblox setting to MultiState
@@ -2741,6 +2758,8 @@ fn save_settings(settings: serde_json::Value, state: tauri::State<'_, MultiState
         let run_on_startup = settings.get("RunOnStartup").and_then(|v| v.as_bool()).unwrap_or(false);
         sync_run_on_startup(run_on_startup);
     }
+
+    let _ = rpc; // RPC is always-on; started at app launch, not from settings
 
     // Read existing file and merge — preserves keys like RecentGames that aren't part of settings
     let mut merged: serde_json::Value = if settings_path.exists() {
@@ -3022,6 +3041,7 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
                 eprintln!("[ERROR do_launch_with_preference] {}", err);
                 err
             })?;
+            apply_fastflags_to_exe(&exe);
             #[cfg(target_os = "windows")]
             {
                 let pid = launch_detached(&exe, launch_args)?;
@@ -3039,6 +3059,10 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
             let bloxstrap_exe = PathBuf::from(&local).join("Bloxstrap").join("Bloxstrap.exe");
             if !bloxstrap_exe.exists() {
                 return Err("Bloxstrap is not installed at %LOCALAPPDATA%\\Bloxstrap\\Bloxstrap.exe. Please install it first.".to_string());
+            }
+            // Apply flags into Bloxstrap's managed Roblox install before launching
+            if let Some(roblox_exe) = search_versions_dir(&PathBuf::from(&local).join("Bloxstrap").join("Versions")) {
+                apply_fastflags_to_exe(&roblox_exe);
             }
             #[cfg(target_os = "windows")]
             {
@@ -3063,6 +3087,10 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
             if !fish_exe.exists() { fish_dir = local_path.join("Fishtrap");  fish_exe = fish_dir.join("Fishstrap.exe"); }
             if !fish_exe.exists() {
                 return Err("Fishstrap/Fishtrap is not installed under %LOCALAPPDATA%\\Fishstrap or Fishtrap".to_string());
+            }
+            // Apply flags into Fishstrap's managed Roblox install before launching
+            if let Some(roblox_exe) = search_versions_dir(&fish_dir.join("Versions")) {
+                apply_fastflags_to_exe(&roblox_exe);
             }
             #[cfg(target_os = "windows")]
             {
@@ -3430,6 +3458,19 @@ fn set_account_group(user_id: i64, group: String) -> Result<(), String> {
     account.group = if group.trim().is_empty() { None } else { Some(group.trim().to_string()) };
     save_stored(&accounts);
     Ok(())
+}
+
+#[tauri::command]
+fn update_account_notes(user_id: i64, notes: String) -> Result<AccountDto, String> {
+    let mut accounts = load_stored();
+    let account = accounts
+        .iter_mut()
+        .find(|a| a.user_id == user_id)
+        .ok_or_else(|| "Account not found".to_string())?;
+    account.notes = notes.trim().to_string();
+    let dto = to_dto(account);
+    save_stored(&accounts);
+    Ok(dto)
 }
 
 #[tauri::command]
@@ -4487,6 +4528,28 @@ fn client_app_settings_path() -> Option<PathBuf> {
     Some(p)
 }
 
+/// Write the saved fastflags.json into the ClientSettings folder next to the
+/// given Roblox exe. Called before every launch regardless of which launcher
+/// is used so flags always take effect.
+fn apply_fastflags_to_exe(exe: &PathBuf) {
+    let ff_path = fastflags_path();
+    if !ff_path.exists() { return; }
+    if let Ok(content) = fs::read_to_string(&ff_path) {
+        if let Some(dir) = exe.parent() {
+            let cs_dir = dir.join("ClientSettings");
+            let _ = fs::create_dir_all(&cs_dir);
+            let _ = fs::write(cs_dir.join("ClientAppSettings.json"), &content);
+        }
+    }
+}
+
+/// Find the active official Roblox exe (not Reiya's install).
+fn find_official_roblox_exe() -> Option<PathBuf> {
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    let versions_dir = PathBuf::from(local).join("Roblox").join("Versions");
+    search_versions_dir(&versions_dir)
+}
+
 #[tauri::command]
 fn get_fastflags() -> serde_json::Value {
     let path = fastflags_path();
@@ -4505,7 +4568,7 @@ fn save_fastflags(flags: serde_json::Value) -> Result<(), String> {
     let s = serde_json::to_string_pretty(&flags).map_err(|e| e.to_string())?;
     fs::write(fastflags_path(), &s).map_err(|e| e.to_string())?;
 
-    // Also write directly into the active Roblox version's ClientSettings folder
+    // Write into Reiya bootstrapper's active version ClientSettings
     if let Some(client_settings) = client_app_settings_path() {
         if let Some(parent) = client_settings.parent() {
             let _ = fs::create_dir_all(parent);
@@ -4513,7 +4576,181 @@ fn save_fastflags(flags: serde_json::Value) -> Result<(), String> {
         let _ = fs::write(&client_settings, &s);
     }
 
+    // Write into official Roblox ClientSettings so flags work immediately
+    // without needing a full launch cycle through the bootstrapper
+    if let Some(official_exe) = find_official_roblox_exe() {
+        apply_fastflags_to_exe(&official_exe);
+    }
+
     Ok(())
+}
+
+// ── Discord Rich Presence IPC ──────────────────────────────────────────────────
+
+#[cfg(windows)]
+fn discord_ipc_send(pipe: &mut std::fs::File, opcode: u32, payload: &str) -> bool {
+    use std::io::Write;
+    let bytes = payload.as_bytes();
+    let mut buf = Vec::with_capacity(8 + bytes.len());
+    buf.extend_from_slice(&opcode.to_le_bytes());
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
+    pipe.write_all(&buf).is_ok()
+}
+
+#[cfg(windows)]
+fn discord_ipc_read(pipe: &mut std::fs::File, timeout_ms: u64) -> Option<String> {
+    use std::io::Read;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    let handle = pipe.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let start = std::time::Instant::now();
+
+    loop {
+        if start.elapsed().as_millis() as u64 >= timeout_ms { return None; }
+        let mut avail: u32 = 0;
+        unsafe { PeekNamedPipe(handle, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut avail, std::ptr::null_mut()); }
+        if avail >= 8 { break; }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let mut hdr = [0u8; 8];
+    pipe.read_exact(&mut hdr).ok()?;
+    let data_len = u32::from_le_bytes(hdr[4..8].try_into().ok()?) as usize;
+    if data_len == 0 { return Some(String::new()); }
+    if data_len > 65536 { return None; }
+
+    let handle = pipe.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let start2 = std::time::Instant::now();
+    loop {
+        if start2.elapsed().as_millis() as u64 >= timeout_ms { return None; }
+        let mut avail: u32 = 0;
+        unsafe { PeekNamedPipe(handle, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut avail, std::ptr::null_mut()); }
+        if avail >= data_len as u32 { break; }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let mut data = vec![0u8; data_len];
+    pipe.read_exact(&mut data).ok()?;
+    Some(String::from_utf8_lossy(&data).into_owned())
+}
+
+const DISCORD_CLIENT_ID: &str = "1506749742929940550";
+
+#[cfg(windows)]
+fn discord_rpc_worker(stop_flag: Arc<std::sync::atomic::AtomicBool>, page: Arc<Mutex<String>>) {
+    use std::fs::OpenOptions;
+    use std::sync::atomic::Ordering;
+
+    let pid = std::process::id();
+    let start_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let make_activity = |details: &str| serde_json::json!({
+        "cmd": "SET_ACTIVITY",
+        "args": {
+            "pid": pid,
+            "activity": {
+                "details": details,
+                "state": "Reiya Account Manager",
+                "timestamps": { "start": start_ts },
+                "assets": {
+                    "large_image": "reiya_logo",
+                    "large_text": "Reiya Account Manager"
+                }
+            }
+        },
+        "nonce": "reiya_rpc"
+    }).to_string();
+
+    'outer: loop {
+        if stop_flag.load(Ordering::Relaxed) { return; }
+
+        let mut pipe = None;
+        for i in 0..10i32 {
+            if stop_flag.load(Ordering::Relaxed) { return; }
+            let path = format!(r"\\.\pipe\discord-ipc-{}", i);
+            if let Ok(f) = OpenOptions::new().read(true).write(true).open(&path) {
+                pipe = Some(f);
+                break;
+            }
+        }
+        let mut pipe = match pipe {
+            Some(p) => p,
+            None => {
+                for _ in 0..100 {
+                    if stop_flag.load(Ordering::Relaxed) { return; }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                continue 'outer;
+            }
+        };
+
+        let handshake = serde_json::json!({"v": 1, "client_id": DISCORD_CLIENT_ID}).to_string();
+        if !discord_ipc_send(&mut pipe, 0, &handshake) { continue 'outer; }
+        if discord_ipc_read(&mut pipe, 5000).is_none() { continue 'outer; }
+
+        let mut last_page = page.lock().unwrap().clone();
+        let activity = make_activity(&last_page);
+        if !discord_ipc_send(&mut pipe, 1, &activity) { continue 'outer; }
+        let _ = discord_ipc_read(&mut pipe, 3000);
+
+        let mut ticks_since_heartbeat = 0u32;
+        loop {
+            if stop_flag.load(Ordering::Relaxed) { return; }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            ticks_since_heartbeat += 1;
+
+            let current = page.lock().unwrap().clone();
+            let page_changed = current != last_page;
+            let heartbeat_due = ticks_since_heartbeat >= 30; // 30 * 500ms = 15s
+
+            if page_changed || heartbeat_due {
+                let activity = make_activity(&current);
+                if !discord_ipc_send(&mut pipe, 1, &activity) {
+                    continue 'outer;
+                }
+                let _ = discord_ipc_read(&mut pipe, 2000);
+                last_page = current;
+                ticks_since_heartbeat = 0;
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn start_discord_rpc(rpc: tauri::State<DiscordRpcHolder>, page_state: tauri::State<DiscordRpcPage>) {
+    let mut guard = rpc.0.lock().unwrap();
+    if let Some(runner) = guard.take() { runner.stop(); }
+    #[cfg(windows)]
+    {
+        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop_flag.clone();
+        let page = page_state.0.clone();
+        std::thread::spawn(move || discord_rpc_worker(flag, page));
+        *guard = Some(DiscordRpcRunner { stop_flag });
+    }
+}
+
+#[tauri::command]
+fn stop_discord_rpc(rpc: tauri::State<DiscordRpcHolder>) {
+    let mut guard = rpc.0.lock().unwrap();
+    if let Some(runner) = guard.take() { runner.stop(); }
+}
+
+#[tauri::command]
+fn update_discord_rpc(page: String, page_state: tauri::State<DiscordRpcPage>) {
+    let mut current = page_state.0.lock().unwrap();
+    // Don't let navigation updates override an active game session
+    let is_playing = current.starts_with("Playing ") || current.starts_with("Launching ");
+    let is_nav_update = !page.starts_with("Playing ") && !page.starts_with("Launching ");
+    if is_playing && is_nav_update {
+        return;
+    }
+    *current = page;
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -5061,6 +5298,185 @@ fn get_fastflag_presets() -> Vec<FastFlagPreset> {
                 "FFlagDebugDisableTelemetryV2Stat": true
             }),
         },
+        // ── Extra Performance ─────────────────────────────────────────────
+        FastFlagPreset {
+            id: "no_dynamic_lights".into(),
+            name: "Disable Dynamic Lights".into(),
+            description: "Zeroes out all local/point light fade distances so dynamic lights never render — eliminates the GPU cost of lit environments entirely.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "DFIntRenderLocalLightFadeMax": 0,
+                "DFIntRenderLocalLightFadeMin": 0,
+                "DFIntRenderLocalLightUpdateDistanceMax": 0,
+                "DFIntRenderLocalLightUpdateDistanceMin": 0
+            }),
+        },
+        FastFlagPreset {
+            id: "low_physics_overhead".into(),
+            name: "Low Physics Overhead".into(),
+            description: "Cuts physics send and data rates to the minimum to free CPU cycles — best for PvE games where exact physics timing doesn't matter.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "DFIntS2PhysicsSenderRate": 4,
+                "DFIntDataSendRate": 4
+            }),
+        },
+        FastFlagPreset {
+            id: "afk_farm_mode".into(),
+            name: "AFK / Farm Mode".into(),
+            description: "Locks FPS to 30, strips all rendering quality, and slashes physics rates — ideal for idle or farming accounts running in the background.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagTaskSchedulerLimitTargetFps": true,
+                "DFIntTaskSchedulerTargetFps": 30,
+                "DFIntDebugFRMQualityLevelOverride": 1,
+                "FIntRenderShadowIntensity": 0,
+                "DFIntCullFactorPixelThresholdShadowMapHighQuality": 2147483647,
+                "DFIntCullFactorPixelThresholdShadowMapLowQuality": 2147483647,
+                "FIntDebugForceMSAASamples": 0,
+                "DFFlagDisablePostFx": true,
+                "DFIntRenderLocalLightFadeMax": 0,
+                "DFIntRenderLocalLightFadeMin": 0,
+                "DFIntRenderLocalLightUpdateDistanceMax": 0,
+                "DFIntRenderLocalLightUpdateDistanceMin": 0,
+                "FIntFRMMinGrassDistance": 0,
+                "FIntFRMMaxGrassDistance": 0,
+                "FIntRenderGrassDetailStrands": 0,
+                "DFIntRenderGrassHeightScaler": 0,
+                "DFIntCSGLevelOfDetailSwitchingDistance": 0,
+                "DFIntCSGLevelOfDetailSwitchingDistanceFull": 0,
+                "DFIntS2PhysicsSenderRate": 10,
+                "DFIntDataSendRate": 10,
+                "FFlagLayeredClothingEnabled": false,
+                "DFFlagLayeredClothingEnabledForAll": false
+            }),
+        },
+        FastFlagPreset {
+            id: "reduce_memory".into(),
+            name: "Reduce Memory Usage".into(),
+            description: "Skips mip levels to cut VRAM usage, disables asset preloading, and pulls terrain LOD in tight — helps on systems with 4 GB RAM or less.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FIntDebugTextureManagerSkipMips": 8,
+                "DFIntNumAssetsMaxToPreload": 0,
+                "DFIntAssetPreloading": 0,
+                "DFIntCSGLevelOfDetailSwitchingDistance": 100,
+                "DFIntCSGLevelOfDetailSwitchingDistanceFull": 200
+            }),
+        },
+        FastFlagPreset {
+            id: "minimal_character_rendering".into(),
+            name: "Minimal Character Rendering".into(),
+            description: "Aggressively reduces all character-related rendering — disables layered clothing, forces lowest avatar LOD, and removes self-view — biggest gains in crowded lobbies.".into(),
+            category: "Performance".into(),
+            flags: serde_json::json!({
+                "FFlagLayeredClothingEnabled": false,
+                "DFFlagLayeredClothingEnabledForAll": false,
+                "DFIntLodAvatarMinThreshold": 0,
+                "DFIntLodAvatarMaxThreshold": 0,
+                "FFlagAvatarSelfViewEnabled": false
+            }),
+        },
+        FastFlagPreset {
+            id: "minimal_network".into(),
+            name: "Minimal Network Usage".into(),
+            description: "Drops physics and data send rates to their floor, reducing upload bandwidth — useful for heavily metered connections or mobile hotspots.".into(),
+            category: "Network".into(),
+            flags: serde_json::json!({
+                "DFIntS2PhysicsSenderRate": 4,
+                "DFIntDataSendRate": 4,
+                "DFIntConnectionMTUSize": 900
+            }),
+        },
+        // ── Visual Enhancement ─────────────────────────────────────────────
+        FastFlagPreset {
+            id: "enhanced_shadows".into(),
+            name: "Enhanced Shadows".into(),
+            description: "Enables full-intensity shadows and removes shadow-map culling so every object casts a shadow regardless of screen size.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FIntRenderShadowIntensity": 1,
+                "DFIntCullFactorPixelThresholdShadowMapHighQuality": 0,
+                "DFIntCullFactorPixelThresholdShadowMapLowQuality": 0
+            }),
+        },
+        FastFlagPreset {
+            id: "full_post_fx".into(),
+            name: "Full Post-Processing Effects".into(),
+            description: "Enables all post-processing effects — sun rays, depth of field, and color correction — for the most cinematic look.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "DFFlagDisablePostFx": false,
+                "FFlagRenderSunRaysEnabled": true,
+                "FFlagRenderDepthOfFieldEnabled": true,
+                "FFlagRenderColorCorrectionEnabled": true
+            }),
+        },
+        FastFlagPreset {
+            id: "high_quality_avatars".into(),
+            name: "High Quality Avatars".into(),
+            description: "Enables layered clothing for all players and raises the LOD threshold so avatars stay at full detail at greater distances.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagLayeredClothingEnabled": true,
+                "DFFlagLayeredClothingEnabledForAll": true,
+                "DFIntLodAvatarMinThreshold": 100,
+                "DFIntLodAvatarMaxThreshold": 250,
+                "FFlagAvatarSelfViewEnabled": true
+            }),
+        },
+        FastFlagPreset {
+            id: "extended_render_distance".into(),
+            name: "Extended Render Distance".into(),
+            description: "Pushes dynamic light update distances and terrain LOD switching distances further for a richer environment at range.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "DFIntRenderLocalLightFadeMax": 100,
+                "DFIntRenderLocalLightUpdateDistanceMax": 200,
+                "DFIntRenderLocalLightUpdateDistanceMin": 100,
+                "DFIntCSGLevelOfDetailSwitchingDistance": 1500,
+                "DFIntCSGLevelOfDetailSwitchingDistanceFull": 3000
+            }),
+        },
+        FastFlagPreset {
+            id: "always_simulate_particles".into(),
+            name: "Always Simulate Particles".into(),
+            description: "Forces particle emitters to keep simulating even when outside the normal camera frustum — prevents particles from popping in.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FFlagAlwaysSimulateParticles": true
+            }),
+        },
+        FastFlagPreset {
+            id: "visual_enhancement_pack".into(),
+            name: "Visual Enhancement Pack".into(),
+            description: "One-click combination of enhanced shadows, full post-FX, high avatar quality, extended render distance, max textures, and Future lighting.".into(),
+            category: "Graphics".into(),
+            flags: serde_json::json!({
+                "FIntRenderShadowIntensity": 1,
+                "DFIntCullFactorPixelThresholdShadowMapHighQuality": 0,
+                "DFIntCullFactorPixelThresholdShadowMapLowQuality": 0,
+                "DFFlagDisablePostFx": false,
+                "FFlagRenderSunRaysEnabled": true,
+                "FFlagRenderDepthOfFieldEnabled": true,
+                "FFlagRenderColorCorrectionEnabled": true,
+                "FFlagLayeredClothingEnabled": true,
+                "DFFlagLayeredClothingEnabledForAll": true,
+                "DFIntLodAvatarMinThreshold": 100,
+                "DFIntLodAvatarMaxThreshold": 250,
+                "DFIntRenderLocalLightFadeMax": 100,
+                "DFIntRenderLocalLightUpdateDistanceMax": 200,
+                "DFIntRenderLocalLightUpdateDistanceMin": 100,
+                "DFIntCSGLevelOfDetailSwitchingDistance": 1500,
+                "DFIntCSGLevelOfDetailSwitchingDistanceFull": 3000,
+                "FIntDebugTextureManagerSkipMips": 0,
+                "DFIntDebugFRMQualityLevelOverride": 21,
+                "FIntDebugForceMSAASamples": 4,
+                "DFFlagDebugForceFutureIsBrightPhase2": true,
+                "FFlagDebugForceFutureLighting": true,
+                "FFlagAlwaysSimulateParticles": true
+            }),
+        },
     ]
 }
 
@@ -5388,9 +5804,46 @@ fn sync_run_on_startup(enable: bool) {
     }
 }
 
+// ── Single-instance guard (Windows) ──────────────────────────────────────────
+/// Creates a named global mutex. Returns the raw handle so the caller can keep
+/// it alive for the lifetime of the process. If the mutex already exists,
+/// shows a MessageBox and exits immediately.
+#[cfg(windows)]
+fn acquire_single_instance_mutex() -> *mut std::ffi::c_void {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONWARNING, MB_OK, MB_SYSTEMMODAL,
+    };
+
+    let mutex_name: Vec<u16> = "Global\\ReiyaAccountManager_v1\0"
+        .encode_utf16()
+        .collect();
+
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 1, mutex_name.as_ptr()) };
+
+    if handle.is_null() || unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        let title: Vec<u16> = "Reiya Account Manager\0".encode_utf16().collect();
+        let msg: Vec<u16> =
+            "Reiya Account Manager is already running.\0"
+                .encode_utf16()
+                .collect();
+        unsafe {
+            MessageBoxW(std::ptr::null_mut(), msg.as_ptr(), title.as_ptr(), MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL);
+        }
+        std::process::exit(0);
+    }
+
+    handle
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Prevent multiple instances — shows a dialog and exits if one is already open.
+    #[cfg(windows)]
+    let _instance_mutex = acquire_single_instance_mutex();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -5399,6 +5852,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(SessionTracker(std::sync::Arc::new(Mutex::new(load_session_tracker_data()))))
         .manage(MultiState::new(load_multi_instance_from_settings()))
+        .manage(DiscordRpcHolder(Mutex::new(None)))
+        .manage(DiscordRpcPage(Arc::new(Mutex::new("Home".to_string()))))
         .setup(|app| {
             // ── System tray ───────────────────────────────────────────────
             {
@@ -5496,6 +5951,7 @@ pub fn run() {
                     .unwrap_or(false);
                 sync_run_on_startup(run_on_startup);
             }
+
 
             let tracker = app.state::<SessionTracker>().inner().clone();
             let app_handle = app.handle().clone();
@@ -5696,6 +6152,7 @@ pub fn run() {
             get_account_cookie,
             save_account_password,
             set_account_group,
+            update_account_notes,
             check_account_health,
             check_license,
             validate_license_key,
@@ -5718,6 +6175,9 @@ pub fn run() {
             get_fastflags,
             save_fastflags,
             get_fastflag_presets,
+            start_discord_rpc,
+            stop_discord_rpc,
+            update_discord_rpc,
             detect_roblox_installs,
             get_launcher_preference,
             set_launcher_preference,

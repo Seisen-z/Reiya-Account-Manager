@@ -21,7 +21,8 @@ import {
   PlayIcon,
   PlusIcon,
   TrashIcon,
-  LoaderIcon
+  LoaderIcon,
+  StarIcon
 } from "../components/Icons";
 
 /* â"€â"€ Types â"€â"€ */
@@ -98,6 +99,12 @@ interface BulkAddResult {
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+interface Toast {
+  id: number;
+  msg: string;
+  type: "success" | "error" | "info";
+}
+
 export default function Home() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -197,6 +204,10 @@ export default function Home() {
     }
   };
 
+  // Discord RPC playing state — tracks active game session
+  const [playingUserId, setPlayingUserId] = useState<number | null>(null);
+  const [playingGame,   setPlayingGame]   = useState<string>("");
+
   // Launch state
   const [selAccount,      setSelAccount]      = useState<number | null>(null);
   const [launchPlaceId,   setLaunchPlaceId]   = useState("");  // selected placeId (from recent or manual)
@@ -274,6 +285,61 @@ export default function Home() {
   const [groupModal, setGroupModal] = useState<{ account: Account } | null>(null);
   const [groupInput, setGroupInput] = useState("");
 
+  // Home QoL state
+  const [accSearch,  setAccSearch]  = useState("");
+  const [accFilter,  setAccFilter]  = useState<"all" | "valid" | "favorites">("all");
+  const [accGroup,   setAccGroup]   = useState<string | null>(null);
+  // Feature 1: Toast notification system
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const showToast = useCallback((msg: string, type: Toast["type"] = "info") => {
+    const id = Date.now() + Math.random();
+    setToasts(p => [...p, { id, msg, type }]);
+    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 3200);
+  }, []);
+
+  // Feature 8: Launch history
+  const [launchHistory, setLaunchHistory] = useState<Array<{userId:number; username:string; placeId:string; gameName:string}>>(() => {
+    try { return JSON.parse(localStorage.getItem("reiya_launch_history") || "[]"); } catch { return []; }
+  });
+  const pushLaunchHistory = useCallback((userId: number, username: string, placeId: string, gameName: string) => {
+    setLaunchHistory(prev => {
+      const entry = {userId,username,placeId,gameName};
+      const next = [entry, ...prev.filter(h => !(h.userId===userId && h.placeId===placeId))].slice(0,3);
+      localStorage.setItem("reiya_launch_history", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  // Feature 9: Pinned games
+  const [pinnedGames, setPinnedGames] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("reiya_pinned_games") || "[]"); } catch { return []; }
+  });
+  const togglePinGame = useCallback((placeId: string) => {
+    setPinnedGames(prev => {
+      const next = prev.includes(placeId) ? prev.filter(id => id !== placeId) : [...prev, placeId];
+      localStorage.setItem("reiya_pinned_games", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  // Feature 10: Session detail popover
+  const [sessionDetail, setSessionDetail] = useState<Session | null>(null);
+
+  // Feature 5: Refs for arrow key navigation
+  const selAccountRef = useRef<number|null>(null);
+  const flatAccountsRef = useRef<Account[]>([]);
+
+  // Feature 2: Ref for launchPlaceId (to avoid stale closure in selAccount effect)
+  const launchPlaceIdRef = useRef(launchPlaceId);
+
+  // Feature 6: Game search state
+  const [gameSearch, setGameSearch] = useState("");
+
+  // Feature 4: Checking state for re-validate button
+  const [reValidating, setReValidating] = useState(false);
+  const [savePasswordPrompt, setSavePasswordPrompt] = useState<{ userId: number; username: string } | null>(null);
+  const [savePasswordInput, setSavePasswordInput] = useState("");
+
   /* â"€â"€ Load on mount, poll sessions â"€â"€ */
   useEffect(() => {
     async function load() {
@@ -325,6 +391,15 @@ export default function Home() {
           setEvents(evts);
           setSessionHistory(hist);
           setRecentGames(recents);
+          // If the playing session ended, reset presence to current page
+          setPlayingUserId(prev => {
+            if (prev !== null && !sess.some((s: Session) => s.user_id === prev)) {
+              setPlayingGame("");
+              invoke("update_discord_rpc", { page: "On Home" }).catch(() => {});
+              return null;
+            }
+            return prev;
+          });
         });
       });
     };
@@ -334,9 +409,42 @@ export default function Home() {
       invoke<Session[]>("get_live_sessions").then(setSessions).catch(() => {});
     }, 5000);
 
+    // Keyboard shortcuts
+    const handleKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        // Trigger launch via a custom event the launch button can listen to
+        document.dispatchEvent(new CustomEvent("reiya-launch-shortcut"));
+      }
+      if (e.key === "Escape") {
+        setAccSearch("");
+      }
+      // Feature 5: Arrow key navigation in account list
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const flat = flatAccountsRef.current;
+        if (flat.length === 0) return;
+        const cur = selAccountRef.current;
+        const idx = flat.findIndex(a => a.user_id === cur);
+        let next: number;
+        if (e.key === "ArrowDown") {
+          next = idx < flat.length - 1 ? idx + 1 : 0;
+        } else {
+          next = idx > 0 ? idx - 1 : flat.length - 1;
+        }
+        const nextId = flat[next].user_id;
+        setSelAccount(nextId);
+        localStorage.setItem("reiya_last_account", String(nextId));
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+
     return () => {
       clearInterval(interval);
       if (unlisten) unlisten();
+      document.removeEventListener("keydown", handleKey);
     };
   }, []);
 
@@ -515,21 +623,55 @@ export default function Home() {
   }, [sessionHistory, recentGames, thumbs]);
 
   // Accounts grouped by group name for the left panel
-  const groupedAccounts = useMemo(() => {
-    const map = new Map<string, Account[]>();
-    for (const acc of accounts) {
-      const key = acc.group?.trim() || "";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(acc);
-    }
-    // Sort: ungrouped ("") last, others alphabetically
-    const sorted = Array.from(map.entries()).sort(([a], [b]) => {
-      if (a === "" && b !== "") return 1;
-      if (a !== "" && b === "") return -1;
+  const accGroups = useMemo(() => {
+    const PRESET_ORDER = ["Main", "Alts", "Trading", "Farming"];
+    const seen = Array.from(new Set(accounts.map(a => a.group?.trim()).filter((g): g is string => !!g)));
+    return seen.sort((a, b) => {
+      const ai = PRESET_ORDER.indexOf(a);
+      const bi = PRESET_ORDER.indexOf(b);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
       return a.localeCompare(b);
     });
-    return sorted;
   }, [accounts]);
+
+  // Reset accGroup if the group no longer exists
+  useEffect(() => {
+    if (accGroup !== null && !accGroups.includes(accGroup)) setAccGroup(null);
+  }, [accGroups, accGroup]);
+
+  const groupedAccounts = useMemo(() => {
+    const q = accSearch.toLowerCase();
+    const filtered = accounts.filter(acc => {
+      const matchSearch = !q || acc.username.toLowerCase().includes(q) || (acc.display_name || "").toLowerCase().includes(q);
+      const matchFilter = accFilter === "all" || (accFilter === "valid" && acc.cookie_status === "Valid") || (accFilter === "favorites" && acc.is_favorite);
+      const matchGroup = accGroup === null || (acc.group?.trim() || "") === accGroup;
+      return matchSearch && matchFilter && matchGroup;
+    });
+    // Always flat — tabs communicate the group, dividers add no value
+    return [["", filtered]] as [string, Account[]][];
+  }, [accounts, accSearch, accFilter, accGroup]);
+
+  // Feature 5: Keep selAccountRef up to date
+  useEffect(() => { selAccountRef.current = selAccount; }, [selAccount]);
+  // Feature 5: Keep flatAccountsRef up to date (after groupedAccounts is declared)
+  useEffect(() => {
+    flatAccountsRef.current = groupedAccounts.flatMap(([, accs]) => accs);
+  }, [groupedAccounts]);
+
+  // Feature 2: Keep launchPlaceIdRef up to date
+  useEffect(() => { launchPlaceIdRef.current = launchPlaceId; }, [launchPlaceId]);
+
+  // Feature 2: Auto-populate game when selecting an account
+  useEffect(() => {
+    if (selAccount === null) return;
+    const account = accounts.find(a => a.user_id === selAccount);
+    if (account && account.default_place_id && !launchPlaceIdRef.current) {
+      setLaunchPlaceId(account.default_place_id);
+      localStorage.setItem("reiya_last_place_id", account.default_place_id);
+    }
+  }, [selAccount, accounts]);
 
   // Per-account game options: show account-specific history first, then global recents
   const accountGameOptions = useMemo(() => {
@@ -577,7 +719,7 @@ export default function Home() {
       }
       setPrivateServerModal(null);
     } catch (err) {
-      alert("Failed to save private server: " + err);
+      showToast("Failed to save private server: " + err, "error");
     }
   };
 
@@ -594,7 +736,7 @@ export default function Home() {
       }
       setDeleteConfirmModal(null);
     } catch (err) {
-      alert("Failed to remove game: " + err);
+      showToast("Failed to remove game: " + err, "error");
     }
   };
 
@@ -755,6 +897,20 @@ export default function Home() {
   const launchThumb           = launchPlaceId ? (thumbs[launchPlaceId] ?? null) : null;
   const selectedAccountIsActive = selAccount !== null && activeUserIds.has(selAccount);
 
+  const handlePastePlaceId = async () => {
+    try {
+      const { readText } = await import("@tauri-apps/plugin-clipboard-manager");
+      const clip = await readText();
+      if (clip) {
+        const match = clip.match(/\d{6,}/);
+        const id = match ? match[0] : clip.trim();
+        setLaunchPlaceId(id);
+        localStorage.setItem("reiya_last_place_id", id);
+        setLaunchError("");
+      }
+    } catch { }
+  };
+
   /* â"€â"€ Handlers â"€â"€ */
   const refreshAccounts = async () => {
     const [accs, evts] = await Promise.all([
@@ -853,7 +1009,7 @@ export default function Home() {
           });
         } catch (e) {
           if (unlisten) unlisten();
-          alert(`Failed to open login window: ${String(e)}`);
+          showToast(`Failed to open login window: ${String(e)}`, "error");
           resolve(null);
         }
       });
@@ -872,12 +1028,14 @@ export default function Home() {
           return idx >= 0 ? prev.map((a, i) => i === idx ? acc : a) : [...prev, acc];
         });
         await refreshAccounts();
+        setSavePasswordInput("");
+        setSavePasswordPrompt({ userId: acc.user_id, username: acc.username });
       } else {
         const reason = res?.error || "Login window was closed or cookie extraction failed.";
-        alert(`Manual login not saved:\n\n${reason}\n\nIf you solved a CAPTCHA or 2FA, please make sure you completed the verification successfully.`);
+        showToast("Manual login not saved: " + reason, "error");
       }
     } catch (e) {
-      alert(`Manual login failed: ${String(e)}`);
+      showToast(`Manual login failed: ${String(e)}`, "error");
     } finally {
       setLoginLoading(false);
     }
@@ -951,7 +1109,7 @@ export default function Home() {
     let msg = `Done! Imported ${successCount}/${total} account(s).`;
     if (succeededAccounts.length > 0) msg += `\n\n✓ Success:\n${succeededAccounts.map(u => `  • ${u}`).join("\n")}`;
     if (failedAccounts.length > 0) msg += `\n\n✗ Failed (${failedAccounts.length}):\n${failedAccounts.map(f => `  • ${f}`).join("\n")}`;
-    alert(msg);
+    showToast(`Imported ${successCount}/${total} account(s).`, successCount > 0 ? "success" : "error");
   };
 
 
@@ -968,6 +1126,13 @@ export default function Home() {
     }
   };
 
+  // Wire Enter shortcut → launch
+  useEffect(() => {
+    const handler = () => { handleLaunch(); };
+    document.addEventListener("reiya-launch-shortcut", handler);
+    return () => document.removeEventListener("reiya-launch-shortcut", handler);
+  });
+
   const handleLaunch = async () => {
     if (selAccount === null) return;
     const account = accounts.find(a => a.user_id === selAccount);
@@ -980,6 +1145,8 @@ export default function Home() {
 
     setLaunching(true);
     setLaunchError("");
+    const rpcLabel = effectiveGameName ? `Launching ${effectiveGameName}` : "Launching Roblox";
+    invoke("update_discord_rpc", { page: rpcLabel }).catch(() => {});
     try {
       await invoke("launch_account", {
         userId:         selAccount,
@@ -993,6 +1160,13 @@ export default function Home() {
       if (effectivePlaceId && launchGame) {
         pushAccGameHistory(selAccount, launchGame);
       }
+      // Feature 8: Push launch history
+      pushLaunchHistory(selAccount, account.username, effectivePlaceId || "", effectiveGameName || "");
+      // Mark as playing — presence stays until session closes
+      const gameName = effectiveGameName || "Roblox";
+      setPlayingUserId(selAccount);
+      setPlayingGame(gameName);
+      invoke("update_discord_rpc", { page: `Playing ${gameName}` }).catch(() => {});
       setTimeout(async () => {
         const [sess, evts, hist, recents] = await Promise.all([
           invoke<Session[]>("get_live_sessions").catch(() => []),
@@ -1007,6 +1181,7 @@ export default function Home() {
       }, 3000);
     } catch (e) {
       setLaunchError(String(e));
+      invoke("update_discord_rpc", { page: "On Home" }).catch(() => {});
     } finally {
       setLaunching(false);
     }
@@ -1024,6 +1199,7 @@ export default function Home() {
 
     setLaunching(true);
     setLaunchError("");
+    invoke("update_discord_rpc", { page: "Launching Roblox App" }).catch(() => {});
     try {
       await invoke("launch_account", {
         userId:         selAccount,
@@ -1034,6 +1210,9 @@ export default function Home() {
         useBootstrapper,
         appMode:        true,
       });
+      setPlayingUserId(selAccount);
+      setPlayingGame("Roblox App");
+      invoke("update_discord_rpc", { page: "Playing Roblox App" }).catch(() => {});
       setTimeout(async () => {
         const [sess, evts, hist, recents] = await Promise.all([
           invoke<Session[]>("get_live_sessions").catch(() => []),
@@ -1048,6 +1227,7 @@ export default function Home() {
       }, 3000);
     } catch (e) {
       setLaunchError(String(e));
+      invoke("update_discord_rpc", { page: "On Home" }).catch(() => {});
     } finally {
       setLaunching(false);
     }
@@ -1231,10 +1411,55 @@ export default function Home() {
 
     {/* LEFT: Accounts panel */}
     <div style={{ width: 216, borderRight: "1px solid var(--glass-line)", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--panel-bg)", flexShrink: 0 }}>
-      <div style={{ padding: "11px 14px 9px", flexShrink: 0, borderBottom: "1px solid var(--glass-line-2)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div style={{ padding: "10px 14px 8px", flexShrink: 0, borderBottom: "1px solid var(--glass-line-2)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
           <span style={{ fontSize: 9.5, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em" }}>{t("accounts").toUpperCase()}</span>
           <span style={{ fontSize: 9.5, color: "var(--t3)", background: "var(--g04)", padding: "1px 8px", borderRadius: 99, fontWeight: 700, border: "1px solid var(--g05)" }}>{accounts.length}</span>
+        </div>
+        {/* Search */}
+        <input
+          value={accSearch}
+          onChange={e => setAccSearch(e.target.value)}
+          placeholder="Search accounts…"
+          style={{
+            width: "100%", height: 26, padding: "0 9px", borderRadius: 7, outline: "none",
+            background: "var(--g03)", border: "1px solid var(--g06)",
+            color: "var(--t1)", fontSize: 10.5, marginBottom: 6,
+          }}
+        />
+        {/* Group tabs — primary (only when groups exist) */}
+        {accGroups.length > 0 && (
+          <div style={{ display: "flex", gap: 3, marginBottom: 4 }}>
+            <button onClick={() => setAccGroup(null)}
+              style={{
+                flex: 1, padding: "3px 0", borderRadius: 5, border: "none", cursor: "pointer", fontSize: 9, fontWeight: 800,
+                background: accGroup === null ? "var(--g12)" : "transparent",
+                color: accGroup === null ? "var(--t1)" : "var(--t3)", transition: "all .1s",
+              }}>All</button>
+            {accGroups.map(g => (
+              <button key={g} onClick={() => setAccGroup(accGroup === g ? null : g)}
+                style={{
+                  flex: 1, padding: "3px 0", borderRadius: 5, border: "none", cursor: "pointer", fontSize: 9, fontWeight: 800,
+                  background: accGroup === g ? "rgba(167,139,250,0.22)" : "transparent",
+                  color: accGroup === g ? "#A78BFA" : "var(--t3)", transition: "all .1s",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>{g}</button>
+            ))}
+          </div>
+        )}
+        {/* Sub-filter tabs: All / Valid / Fav */}
+        <div style={{ display: "flex", gap: 4 }}>
+          {(["all", "valid", "favorites"] as const).map(f => (
+            <button key={f} onClick={() => setAccFilter(f)}
+              style={{
+                flex: 1, padding: "2px 0", borderRadius: 5, border: "none", cursor: "pointer", fontSize: 9, fontWeight: 800,
+                background: accFilter === f ? "var(--g12)" : "transparent",
+                color: accFilter === f ? "var(--t1)" : "var(--t3)",
+                transition: "all .1s",
+              }}>
+              {f === "all" ? "All" : f === "valid" ? "✓ Valid" : "★ Fav"}
+            </button>
+          ))}
         </div>
       </div>
       <div className="scroll" style={{ flex: 1 }}>
@@ -1260,7 +1485,21 @@ export default function Home() {
                   health={healthStatus[a.user_id] ?? "unknown"}
                   onCheck={() => handleCheckCookie(a.user_id)}
                   onSelect={() => { setSelAccount(a.user_id); localStorage.setItem("reiya_last_account", String(a.user_id)); setLaunchError(""); }}
-                  onContextMenu={(e) => handleAccountContextMenu(e, a)} />
+                  onDoubleClick={() => {
+                    setSelAccount(a.user_id);
+                    localStorage.setItem("reiya_last_account", String(a.user_id));
+                    setLaunchError("");
+                    setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 50);
+                  }}
+                  onContextMenu={(e) => handleAccountContextMenu(e, a)}
+                  onToggleFav={async () => {
+                    try {
+                      const updated = await invoke<Account>("toggle_favorite", { userId: a.user_id });
+                      setAccounts(prev => prev.map(acc => acc.user_id === a.user_id ? updated : acc));
+                    } catch (err) {
+                      showToast("Failed to toggle favorite: " + err, "error");
+                    }
+                  }} />
               ))}
             </div>
           ))
@@ -1286,6 +1525,13 @@ export default function Home() {
               <span style={{ fontSize: 8.5, background: "var(--green-dim)", color: "var(--green)", padding: "1px 5px", borderRadius: 99, fontWeight: 800, marginLeft: 4 }}>{sessions.length}</span>
             )}
           </span>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <button
+              onClick={() => invoke<Session[]>("get_live_sessions").then(setSessions).catch(() => {})}
+              title="Refresh sessions"
+              style={{ padding: "2px 5px", borderRadius: 4, border: "1px solid var(--g06)", background: "transparent", color: "var(--t3)", fontSize: 9, cursor: "pointer" }}>
+              ↻
+            </button>
           {sessions.length > 0 && (
             <button onClick={handleKillAll}
               style={{ padding: "2px 7px", borderRadius: 5, border: "1px solid rgba(248,113,113,.2)", background: "rgba(248,113,113,0.06)", color: "var(--red)", fontSize: 8.5, fontWeight: 800, cursor: "pointer", display: "flex", alignItems: "center", gap: 3 }}
@@ -1294,12 +1540,13 @@ export default function Home() {
               <PowerIcon size={8} color="var(--red)" /> {t("kill_all")}
             </button>
           )}
+          </div>
         </div>
         {sessions.length === 0 ? (
           <div style={{ fontSize: 10, color: "var(--t3)", paddingTop: 4 }}>{t("no_active_sessions_lbl")}</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {sessions.map(s => <LiveSessionRow key={s.pid} session={s} onKill={() => handleKillOne(s.pid)} />)}
+          <div className="scroll" style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflowY: "auto" }}>
+            {sessions.map(s => <LiveSessionRow key={s.pid} session={s} onKill={() => handleKillOne(s.pid)} onShowDetail={() => setSessionDetail(s)} />)}
           </div>
         )}
       </div>
@@ -1309,7 +1556,7 @@ export default function Home() {
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
       {/* Launch Console */}
-      <div style={{ display: "flex", height: 192, flexShrink: 0, borderBottom: "1px solid var(--glass-line)" }}>
+      <div style={{ display: "flex", height: 225, flexShrink: 0, borderBottom: "1px solid var(--glass-line)" }}>
         {/* Game Thumbnail */}
         <div style={{ width: 196, position: "relative", overflow: "hidden", flexShrink: 0, borderRight: "1px solid var(--glass-line)" }}>
           {launchThumb ? (
@@ -1341,14 +1588,15 @@ export default function Home() {
             <span style={{ fontSize: 9.5, fontWeight: 900, color: "var(--t1)", letterSpacing: "0.09em" }}>{t("launch_console")}</span>
           </div>
           <div style={{ width: "100%", minWidth: 0 }}>
-            <select value={launchPlaceId} onChange={e => {
-              const val = e.target.value;
-              setLaunchPlaceId(val);
-              localStorage.setItem("reiya_last_place_id", val);
-              setLaunchError("");
-              const game = accountGameOptions.find(g => g.placeId === val);
-              setAccessCode(game?.privateServer || "");
-            }} className="field glass-input" style={{ width: "100%", height: 32, fontSize: 11, cursor: "pointer" }}>
+            <div style={{ display: "flex", gap: 5, alignItems: "center", marginBottom: 4 }}>
+              <select value={launchPlaceId} onChange={e => {
+                const val = e.target.value;
+                setLaunchPlaceId(val);
+                localStorage.setItem("reiya_last_place_id", val);
+                setLaunchError("");
+                const game = accountGameOptions.find(g => g.placeId === val);
+                setAccessCode(game?.privateServer || "");
+              }} className="field glass-input" style={{ flex: 1, height: 32, fontSize: 11, cursor: "pointer" }}>
               <option value="">{t("no_game_custom_target")}</option>
               {selAccount !== null && getAccGameHistory(selAccount).length > 0 && (
                 <optgroup label={t("account_history_group")}>
@@ -1361,19 +1609,27 @@ export default function Home() {
                 </optgroup>
               )}
             </select>
-            {/* Full game name shown below dropdown so it never gets clipped */}
-            {launchGame && (
-              <div style={{ marginTop: 4, fontSize: 9.5, color: "var(--t2)", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
-                title={launchGame.name}>
-                {launchGame.name}
-              </div>
-            )}
+              {/* Clear game selection */}
+              {launchPlaceId && (
+                <button onClick={() => { setLaunchPlaceId(""); setAccessCode(""); localStorage.removeItem("reiya_last_place_id"); }}
+                  title="Clear game selection"
+                  style={{ flexShrink: 0, height: 32, width: 32, borderRadius: 7, border: "1px solid var(--g06)", background: "var(--g03)", color: "var(--t3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>
+                  ×
+                </button>
+              )}
+            </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, flexShrink: 0 }}>
             <div>
               <div style={{ fontSize: 8.5, color: "var(--t3)", fontWeight: 800, letterSpacing: "0.06em", marginBottom: 3 }}>{t("place_id")}</div>
+              <div style={{ display: "flex", gap: 4 }}>
               <input value={launchPlaceId} onChange={e => { setLaunchPlaceId(e.target.value); localStorage.setItem("reiya_last_place_id", e.target.value); setLaunchError(""); }} placeholder="7882829745"
-                className="field glass-input" style={{ height: 28, fontSize: 10.5, padding: "0 9px" }} />
+                className="field glass-input" style={{ flex: 1, height: 28, fontSize: 10.5, padding: "0 9px" }} />
+              <button onClick={handlePastePlaceId} title="Paste from clipboard"
+                style={{ flexShrink: 0, width: 28, height: 28, borderRadius: 6, border: "1px solid var(--g06)", background: "var(--g03)", color: "var(--t3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11 }}>
+                📋
+              </button>
+              </div>
             </div>
             <div>
               <div style={{ fontSize: 8.5, color: "var(--t3)", fontWeight: 800, letterSpacing: "0.06em", marginBottom: 3 }}>{t("job_id")}</div>
@@ -1386,18 +1642,63 @@ export default function Home() {
                 className="field glass-input" style={{ height: 28, fontSize: 10.5, padding: "0 9px" }} />
             </div>
           </div>
+          {/* Feature 8: Quick Repeat row */}
+          {launchHistory.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 8.5, color: "var(--t3)", fontWeight: 800, letterSpacing: "0.05em", flexShrink: 0 }}>REPEAT:</span>
+              {launchHistory.map((h, i) => {
+                const accExists = accounts.find(a => a.user_id === h.userId);
+                return (
+                  <button key={i} onClick={() => {
+                    if (accExists) {
+                      setSelAccount(h.userId);
+                      localStorage.setItem("reiya_last_account", String(h.userId));
+                    }
+                    if (h.placeId) {
+                      setLaunchPlaceId(h.placeId);
+                      localStorage.setItem("reiya_last_place_id", h.placeId);
+                    }
+                    setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 50);
+                  }}
+                  title={`@${h.username} · ${h.gameName || h.placeId}`}
+                  style={{ padding: "2px 8px", borderRadius: 99, border: "1px solid var(--g08)", background: "var(--g03)", color: "var(--t2)", fontSize: 9, fontWeight: 700, cursor: "pointer", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    @{h.username} · {h.gameName || h.placeId || "App"}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "auto", flexShrink: 0, minWidth: 0 }}>
             {selAccount !== null && (() => {
               const acc = accounts.find(a => a.user_id === selAccount);
               if (!acc) return null;
               return (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 7, background: "var(--g03)", border: "1px solid var(--g06)", flexShrink: 0, maxWidth: 140, overflow: "hidden" }}>
-                  {acc.avatar_url
-                    ? <img src={acc.avatar_url} alt="" style={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
-                    : <div style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--surface-3)", fontSize: 8, fontWeight: 700, color: "var(--t2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{acc.username.slice(0, 2).toUpperCase()}</div>
-                  }
-                  <span style={{ fontSize: 10.5, fontWeight: 750, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{acc.display_name || acc.username}</span>
-                  {selectedAccountIsActive && <AlertTriangleIcon size={10} color="var(--red)" />}
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, flexShrink: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 7, background: "var(--g03)", border: "1px solid var(--g06)", maxWidth: 185, overflow: "hidden" }}>
+                    {acc.avatar_url
+                      ? <img src={acc.avatar_url} alt="" style={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                      : <div style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--surface-3)", fontSize: 8, fontWeight: 700, color: "var(--t2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{acc.username.slice(0, 2).toUpperCase()}</div>
+                    }
+                    <span style={{ fontSize: 10.5, fontWeight: 750, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{acc.display_name || acc.username}</span>
+                    {selectedAccountIsActive && <AlertTriangleIcon size={10} color="var(--red)" />}
+                    {/* Feature 4: Quick re-validate button */}
+                    <button
+                      onClick={e => { e.stopPropagation(); setReValidating(true); handleCheckCookie(acc.user_id).finally(() => setReValidating(false)); }}
+                      title="Re-validate cookie"
+                      disabled={reValidating}
+                      style={{ flexShrink: 0, padding: "1px 5px", borderRadius: 4, border: "1px solid var(--g08)", background: "transparent", color: reValidating ? "var(--t3)" : "var(--t2)", fontSize: 9, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 2 }}>
+                      {reValidating ? <LoaderIcon size={8} style={{ animation: "spin 1s linear infinite" }} /> : <ShieldCheckIcon size={8} />}
+                    </button>
+                  </div>
+                  {/* Feature 7: Account notes */}
+                  {acc.notes && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, maxWidth: 185, marginTop: 1 }}>
+                      <span style={{ fontSize: 8, color: "var(--t3)", fontWeight: 800, letterSpacing: "0.05em", flexShrink: 0 }}>NOTE</span>
+                      <div style={{ fontSize: 10, color: "var(--t2)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", background: "var(--g04)", borderRadius: 4, padding: "1px 6px", border: "1px solid var(--g07)" }}>
+                        {acc.notes}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -1425,6 +1726,38 @@ export default function Home() {
       {/* Scrollable: Recently Played + Session Chart */}
       <div className="scroll" style={{ flex: 1, padding: 18, display: "flex", flexDirection: "column", gap: 16 }}>
 
+      {/* Feature 9: Pinned Games section */}
+      {pinnedGames.length > 0 && recentGames.filter(g => pinnedGames.includes(g.placeId)).length > 0 && (
+        <div>
+          <div className="section-header" style={{ marginBottom: 10 }}>
+            <span className="section-title">
+              <span className="section-dot" style={{ background: "#FBBF24", boxShadow: "0 0 6px rgba(251,191,36,0.4)" }} />
+              Pinned Games
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: 8 }}>
+            {recentGames.filter(g => pinnedGames.includes(g.placeId)).slice(0, 6).map(g => {
+              const isSelected = launchPlaceId === g.placeId;
+              const hasPrivateServer = !!g.privateServer;
+              return (
+                <GameCard key={g.placeId} g={g} isSelected={isSelected} hasPrivateServer={hasPrivateServer}
+                  thumb={thumbs[g.placeId]}
+                  isPinned={true}
+                  onTogglePin={() => togglePinGame(g.placeId)}
+                  onSelect={() => handleSelectRecentGame(g.placeId)}
+                  onContextMenu={(e) => handleGameContextMenu(e, g)}
+                  onDelete={() => setDeleteConfirmModal({ placeId: g.placeId, name: g.name })}
+                  onQuickLaunch={() => {
+                    handleSelectRecentGame(g.placeId);
+                    setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
+                  }}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Recently Played */}
       {recentGames.length > 0 && (
         <div>
@@ -1433,40 +1766,47 @@ export default function Home() {
               <span className="section-dot" style={{ background: "#FCD34D", boxShadow: "0 0 6px rgba(252,211,77,0.35)" }} />
               {t("recently_played")}
             </span>
-            <span style={{ fontSize: 10.5, color: "var(--t3)", fontWeight: 600 }}>{t("right_click_to_set_server")}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <input
+                value={gameSearch}
+                onChange={e => setGameSearch(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter") {
+                    const match = gameSearch.match(/\d{6,}/);
+                    if (match) {
+                      const id = match[0];
+                      setLaunchPlaceId(id);
+                      localStorage.setItem("reiya_last_place_id", id);
+                      setGameSearch("");
+                      showToast(`Game set to Place ID: ${id}`, "success");
+                    }
+                    e.stopPropagation();
+                  }
+                }}
+                placeholder="Place ID or URL…"
+                className="field glass-input"
+                style={{ width: 130, height: 22, fontSize: 9.5, padding: "0 7px" }}
+              />
+              <span style={{ fontSize: 10.5, color: "var(--t3)", fontWeight: 600 }}>{t("right_click_to_set_server")}</span>
+            </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: 8 }}>
             {recentGames.slice(0, 12).map(g => {
               const isSelected = launchPlaceId === g.placeId;
               const hasPrivateServer = !!g.privateServer;
               return (
-                <div key={g.placeId}
-                  onClick={() => handleSelectRecentGame(g.placeId)}
+                <GameCard key={g.placeId} g={g} isSelected={isSelected} hasPrivateServer={hasPrivateServer}
+                  thumb={thumbs[g.placeId]}
+                  isPinned={pinnedGames.includes(g.placeId)}
+                  onTogglePin={() => togglePinGame(g.placeId)}
+                  onSelect={() => handleSelectRecentGame(g.placeId)}
                   onContextMenu={(e) => handleGameContextMenu(e, g)}
-                  title={`${g.name}${hasPrivateServer ? "\n" + t("private_server") : ""}`}
-                  style={{ position: "relative", height: 70, borderRadius: 9, overflow: "hidden", cursor: "pointer", border: `1.5px solid ${isSelected ? "#FFFFFF" : "var(--g05)"}`, boxShadow: isSelected ? "0 4px 14px var(--g10)" : "none", transition: "all .15s", transform: isSelected ? "translateY(-2px)" : "none" }}
-                  onMouseEnter={e => { if (!isSelected) e.currentTarget.style.borderColor = "rgba(255,255,255,0.14)"; }}
-                  onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = "var(--g05)"; }}>
-                  {g.iconUrl || thumbs[g.placeId] ? (
-                    <img src={g.iconUrl || thumbs[g.placeId]} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    <div style={{ width: "100%", height: "100%", background: "var(--surface-3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <GamepadIcon size={18} color="var(--g20)" />
-                    </div>
-                  )}
-                  <div onClick={(e) => { e.stopPropagation(); setDeleteConfirmModal({ placeId: g.placeId, name: g.name }); }}
-                    style={{ position: "absolute", top: 4, left: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g10)", zIndex: 2 }}>
-                    <XIcon size={8} color="var(--red)" />
-                  </div>
-                  {hasPrivateServer && (
-                    <div style={{ position: "absolute", top: 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g12)", zIndex: 2 }}>
-                      <LockIcon size={8} color="#FFFFFF" />
-                    </div>
-                  )}
-                  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,.9))", padding: "12px 5px 4px" }}>
-                    <div style={{ fontSize: 8.5, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</div>
-                  </div>
-                </div>
+                  onDelete={() => setDeleteConfirmModal({ placeId: g.placeId, name: g.name })}
+                  onQuickLaunch={() => {
+                    handleSelectRecentGame(g.placeId);
+                    setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
+                  }}
+                />
               );
             })}
           </div>
@@ -1554,32 +1894,32 @@ export default function Home() {
     {/* RIGHT: History + Events */}
     <div style={{ width: 252, borderLeft: "1px solid var(--glass-line)", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--panel-bg)", flexShrink: 0 }}>
 
-      {/* Scrollable: Recent history + Event log */}
-      <div className="scroll" style={{ flex: 1 }}>
-        {recentActivity.length > 0 && (
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--glass-line-2)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-              <div style={{ width: 3, height: 10, background: "linear-gradient(180deg, #C4B5FD 0%, rgba(196,181,253,0.15) 100%)", borderRadius: 2, flexShrink: 0 }} />
-              <span style={{ fontSize: 9, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em" }}>{t("recent_history")}</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-              {recentActivity.map((r, i) => <ActivityRow key={i} record={r} />)}
-            </div>
+      {/* Recent history — independently scrollable */}
+      {recentActivity.length > 0 && (
+        <div style={{ flexShrink: 0, borderBottom: "1px solid var(--glass-line-2)", padding: "12px 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            <div style={{ width: 3, height: 10, background: "linear-gradient(180deg, #C4B5FD 0%, rgba(196,181,253,0.15) 100%)", borderRadius: 2, flexShrink: 0 }} />
+            <span style={{ fontSize: 9, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em" }}>{t("recent_history")}</span>
           </div>
-        )}
-        {events.length > 0 && (
-          <div style={{ padding: "12px 14px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-              <span className="section-dot" style={{ width: 5, height: 5, background: "#818CF8", boxShadow: "0 0 5px rgba(129,140,248,0.4)" }} />
-              <span style={{ fontSize: 9, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em" }}>{t("event_log")}</span>
-              <span style={{ fontSize: 8.5, color: "var(--t3)", opacity: 0.5 }}>— {events.length}</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-              {events.slice(0, 40).map((ev, i) => <EventRow key={i} event={ev} />)}
-            </div>
+          <div className="scroll" style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 200, overflowY: "auto" }}>
+            {recentActivity.map((r, i) => <ActivityRow key={i} record={r} />)}
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* Event log — independently scrollable, fills remaining space */}
+      {events.length > 0 && (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "12px 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexShrink: 0 }}>
+            <span className="section-dot" style={{ width: 5, height: 5, background: "#818CF8", boxShadow: "0 0 5px rgba(129,140,248,0.4)" }} />
+            <span style={{ fontSize: 9, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em" }}>{t("event_log")}</span>
+            <span style={{ fontSize: 8.5, color: "var(--t3)", opacity: 0.5 }}>— {events.length}</span>
+          </div>
+          <div className="scroll" style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1, overflowY: "auto" }}>
+            {events.slice(0, 80).map((ev, i) => <EventRow key={i} event={ev} />)}
+          </div>
+        </div>
+      )}
 
     </div>{/* end right panel */}
     </div>{/* end 3-col body */}
@@ -1779,13 +2119,28 @@ export default function Home() {
       )}
 
       {/* Account Context Menu */}
-      {accountMenu && (
+      {accountMenu && (() => {
+        const MENU_W = 224;
+        const PAD = 8;
+        const spaceBelow = window.innerHeight - accountMenu.y - PAD;
+        const spaceAbove = accountMenu.y - PAD;
+        // Flip upward only when more space above than below and below is tight
+        const flipUp = spaceAbove > spaceBelow && spaceBelow < 420;
+        // maxHeight = actual available space in chosen direction, capped at 88vh
+        const maxH = Math.min(
+          Math.floor(window.innerHeight * 0.88),
+          flipUp ? spaceAbove : spaceBelow
+        );
+        const topVal = flipUp
+          ? Math.max(PAD, accountMenu.y - maxH)
+          : accountMenu.y;
+        return (
         <div
           onClick={e => e.stopPropagation()}
           style={{
             position: "fixed",
-            top: Math.min(accountMenu.y, window.innerHeight - 520),
-            left: Math.min(accountMenu.x, window.innerWidth - 220),
+            top: topVal,
+            left: Math.min(accountMenu.x, window.innerWidth - MENU_W - PAD),
             zIndex: 9999,
             background: "var(--modal-bg)",
             backdropFilter: "blur(12px)",
@@ -1794,7 +2149,7 @@ export default function Home() {
             padding: 4,
             minWidth: 210,
             boxShadow: "0 12px 36px rgba(0, 0, 0, 0.4)",
-            maxHeight: "85vh",
+            maxHeight: maxH,
             overflowY: "auto"
           }}
         >
@@ -1806,7 +2161,7 @@ export default function Home() {
               const acc = accountMenu.account;
               setAccountMenu(null);
               if (acc.cookie_status !== "Valid") {
-                alert("Cookie is not valid. Validate the cookie first.");
+                showToast("Cookie is not valid. Validate the cookie first.", "error");
                 return;
               }
               setLaunching(true);
@@ -1879,7 +2234,7 @@ export default function Home() {
                     localStorage.removeItem("reiya_last_account");
                   }
                 } catch (err) {
-                  alert("Failed to remove account: " + err);
+                  showToast("Failed to remove account: " + err, "error");
                 }
               }
             }}
@@ -1904,7 +2259,7 @@ export default function Home() {
                 const updated = await invoke<Account>("toggle_favorite", { userId: acc.user_id });
                 setAccounts(prev => prev.map(a => a.user_id === acc.user_id ? updated : a));
               } catch (err) {
-                alert("Failed to toggle favorite: " + err);
+                showToast("Failed to toggle favorite: " + err, "error");
               }
             }}
           />
@@ -1932,7 +2287,7 @@ export default function Home() {
                 });
                 await refreshAccounts();
               } catch (err) {
-                alert("Failed to toggle safe launch: " + err);
+                showToast("Failed to toggle safe launch: " + err, "error");
               }
             }}
           />
@@ -1960,7 +2315,7 @@ export default function Home() {
                 });
                 await refreshAccounts();
               } catch (err) {
-                alert("Failed to toggle auto rejoin: " + err);
+                showToast("Failed to toggle auto rejoin: " + err, "error");
               }
             }}
           />
@@ -1987,9 +2342,9 @@ export default function Home() {
                   launchCooldownSeconds: acc.launch_cooldown_seconds,
                 });
                 await refreshAccounts();
-                alert(`Default place ID for @${acc.username} updated to ${launchPlaceId || "none"}.`);
+                showToast(`Default place ID for @${acc.username} updated to ${launchPlaceId || "none"}.`, "success");
               } catch (err) {
-                alert("Failed to update default place ID: " + err);
+                showToast("Failed to update default place ID: " + err, "error");
               }
             }}
           />
@@ -2065,9 +2420,9 @@ export default function Home() {
                   LaunchCooldownSeconds: acc.launch_cooldown_seconds
                 };
                 await navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
-                alert(t("config_copied"));
+                showToast(t("config_copied"), "success");
               } catch (err) {
-                alert("Export failed: " + err);
+                showToast("Export failed: " + err, "error");
               }
             }}
           />
@@ -2081,12 +2436,12 @@ export default function Home() {
               try {
                 const clipText = await readText();
                 if (!clipText) {
-                  alert(t("clipboard_empty"));
+                  showToast(t("clipboard_empty"), "error");
                   return;
                 }
                 const parsed = JSON.parse(clipText);
                 if (typeof parsed !== "object" || parsed === null) {
-                  alert(t("invalid_json_format"));
+                  showToast(t("invalid_json_format"), "error");
                   return;
                 }
                 const displayName = parsed.DisplayName || parsed.displayName || acc.display_name;
@@ -2108,9 +2463,9 @@ export default function Home() {
                   launchCooldownSeconds: launchCooldownSeconds
                 });
                 await refreshAccounts();
-                alert(t("config_imported"));
+                showToast(t("config_imported"), "success");
               } catch (err) {
-                alert("Import failed: " + err);
+                showToast("Import failed: " + err, "error");
               }
             }}
           />
@@ -2136,9 +2491,9 @@ export default function Home() {
                 try {
                   const cookie = await invoke<string>("get_account_cookie", { userId: acc.user_id });
                   await navigator.clipboard.writeText(cookie);
-                  alert(t("cookie_copied"));
+                  showToast(t("cookie_copied"), "success");
                 } catch (err) {
-                  alert("Failed to decrypt/copy cookie: " + err);
+                  showToast("Failed to decrypt/copy cookie: " + err, "error");
                 }
               }
             }}
@@ -2185,9 +2540,9 @@ export default function Home() {
               try {
                 const ticket = await invoke<string>("get_auth_ticket_command", { userId: acc.user_id });
                 await navigator.clipboard.writeText(ticket);
-                alert(t("auth_ticket_copied"));
+                showToast(t("auth_ticket_copied"), "success");
               } catch (err) {
-                alert("Failed to get authentication ticket: " + err);
+                showToast("Failed to get authentication ticket: " + err, "error");
               }
             }}
           />
@@ -2207,9 +2562,9 @@ export default function Home() {
                 const encodedUrl = encodeURIComponent(placeLauncherUrl);
                 const launchLink = `roblox-player:1+launchmode:play+gameinfo:${ticket}+launchtime:${timestamp}+platfrom:Windows+placelauncherurl:${encodedUrl}+browserTrackerId:${browserTrackerId}`;
                 await navigator.clipboard.writeText(launchLink);
-                alert(t("rbx_link_copied"));
+                showToast(t("rbx_link_copied"), "success");
               } catch (err) {
-                alert("Failed to generate launch link: " + err);
+                showToast("Failed to generate launch link: " + err, "error");
               }
             }}
           />
@@ -2223,7 +2578,8 @@ export default function Home() {
             }}
           />
         </div>
-      )}
+        );
+      })()}
 
       {/* Edit Account Modal */}
       {editAccountModal && (
@@ -2401,9 +2757,9 @@ export default function Home() {
               <button onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(JSON.stringify(dumpAccount, null, 2));
-                  alert(t("copied"));
+                  showToast(t("copied"), "success");
                 } catch (err) {
-                  alert("Failed to copy details: " + err);
+                  showToast("Failed to copy details: " + err, "error");
                 }
               }} className="btn"
                 style={{ flex: 1, background: "#FFFFFF", color: "#000", fontWeight: 800 }}>
@@ -2413,17 +2769,170 @@ export default function Home() {
           </div>
         </HomeModal>
       )}
+
+      {/* Feature 10: Session Detail Popover */}
+      {sessionDetail && (
+        <HomeModal title="Session Details" onClose={() => setSessionDetail(null)}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, alignItems: "center" }}>
+            <div style={{ position: "relative" }}>
+              {sessionDetail.avatar_url
+                ? <img src={sessionDetail.avatar_url} alt="" style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover" }} />
+                : <div style={{ width: 64, height: 64, borderRadius: "50%", background: "var(--surface-3)", display: "flex", alignItems: "center", justifyContent: "center" }}><GamepadIcon size={24} color="var(--t2)" /></div>
+              }
+              <span style={{ position: "absolute", bottom: 2, right: 2, width: 12, height: 12, borderRadius: "50%", background: "var(--green)", border: "2px solid var(--modal-bg)", animation: "pulse-glow 2s ease-in-out infinite" }} />
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color: "var(--t1)" }}>{sessionDetail.username ?? "Unknown"}</div>
+              <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 3 }}>{sessionDetail.game_name ?? `PID ${sessionDetail.pid}`}</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, width: "100%" }}>
+              <div style={{ background: "var(--g03)", borderRadius: 10, padding: "10px 14px" }}>
+                <div style={{ fontSize: 9, color: "var(--t3)", fontWeight: 800, letterSpacing: "0.06em" }}>PID</div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "var(--t1)", marginTop: 2 }}>{sessionDetail.pid}</div>
+              </div>
+              <div style={{ background: "var(--g03)", borderRadius: 10, padding: "10px 14px" }}>
+                <div style={{ fontSize: 9, color: "var(--t3)", fontWeight: 800, letterSpacing: "0.06em" }}>ELAPSED</div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "var(--green)", marginTop: 2 }}>
+                  <SessionElapsed startTime={sessionDetail.start_time} />
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10, width: "100%", marginTop: 6 }}>
+              <button onClick={() => { navigator.clipboard.writeText(String(sessionDetail.pid)); showToast("PID copied!", "success"); }}
+                className="btn btn-ghost" style={{ flex: 1 }}>
+                Copy PID
+              </button>
+              <button onClick={() => setSessionDetail(null)} className="btn"
+                style={{ flex: 1, background: "#FFFFFF", color: "#000", fontWeight: 800 }}>
+                Close
+              </button>
+            </div>
+          </div>
+        </HomeModal>
+      )}
+
+      {/* Save Password prompt after manual login */}
+      {savePasswordPrompt && (
+        <HomeModal title="Save Password?" onClose={() => setSavePasswordPrompt(null)}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ fontSize: 11.5, color: "var(--t2)", lineHeight: 1.5 }}>
+              <span style={{ fontWeight: 800, color: "var(--t1)" }}>@{savePasswordPrompt.username}</span> was added successfully.
+              <br />
+              Enter the password you used so it can be copied later from the account menu.
+            </div>
+            <input
+              type="password"
+              placeholder="Password (optional)"
+              value={savePasswordInput}
+              onChange={e => setSavePasswordInput(e.target.value)}
+              onKeyDown={async e => {
+                if (e.key === "Enter" && savePasswordInput.trim()) {
+                  await invoke("save_account_password", { userId: savePasswordPrompt.userId, password: savePasswordInput.trim() }).catch(() => {});
+                  setAccounts(prev => prev.map(a => a.user_id === savePasswordPrompt.userId ? { ...a, password: savePasswordInput.trim() } : a));
+                  setSavePasswordPrompt(null);
+                  showToast("Password saved.", "success");
+                }
+                if (e.key === "Escape") setSavePasswordPrompt(null);
+              }}
+              autoFocus
+              className="field glass-input"
+              style={{ height: 34, fontSize: 12, padding: "0 11px" }}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={async () => {
+                  if (savePasswordInput.trim()) {
+                    await invoke("save_account_password", { userId: savePasswordPrompt.userId, password: savePasswordInput.trim() }).catch(() => {});
+                    setAccounts(prev => prev.map(a => a.user_id === savePasswordPrompt.userId ? { ...a, password: savePasswordInput.trim() } : a));
+                    showToast("Password saved.", "success");
+                  }
+                  setSavePasswordPrompt(null);
+                }}
+                className="btn" style={{ flex: 1, background: "#FFFFFF", color: "#000", fontWeight: 800, fontSize: 11 }}>
+                Save
+              </button>
+              <button onClick={() => setSavePasswordPrompt(null)}
+                className="btn btn-ghost" style={{ flex: 1, fontSize: 11 }}>
+                Skip
+              </button>
+            </div>
+          </div>
+        </HomeModal>
+      )}
+
+      {/* Feature 1: Toast Container */}
+      <ToastContainer toasts={toasts} />
     </div>
   );
 }
 
 /* â•â• Sub-components â•â• */
 
-function CompactAccountRow({ account, isActive, isSelected, checking, health, onCheck, onSelect, onContextMenu }: {
+/* ── GameCard: recent game card with hover quick-launch ── */
+function GameCard({ g, isSelected, hasPrivateServer, thumb, onSelect, onContextMenu, onDelete, onQuickLaunch, isPinned, onTogglePin }: {
+  g: RecentGame; isSelected: boolean; hasPrivateServer: boolean; thumb?: string;
+  onSelect: () => void; onContextMenu: (e: React.MouseEvent) => void;
+  onDelete: () => void; onQuickLaunch: () => void;
+  isPinned?: boolean; onTogglePin?: () => void;
+}) {
+  const [hov, setHov] = useState(false);
+  return (
+    <div
+      onClick={onSelect}
+      onContextMenu={onContextMenu}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      title={`${g.name}${hasPrivateServer ? "\n🔒 Private Server" : ""}\nDouble-click to quick launch`}
+      onDoubleClick={onQuickLaunch}
+      style={{ position: "relative", height: 70, borderRadius: 9, overflow: "hidden", cursor: "pointer", border: `1.5px solid ${isSelected ? "#FFFFFF" : hov ? "rgba(255,255,255,0.14)" : "var(--g05)"}`, boxShadow: isSelected ? "0 4px 14px var(--g10)" : "none", transition: "all .15s", transform: isSelected ? "translateY(-2px)" : "none" }}
+    >
+      {g.iconUrl || thumb ? (
+        <img src={g.iconUrl || thumb} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      ) : (
+        <div style={{ width: "100%", height: "100%", background: "var(--surface-3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <GamepadIcon size={18} color="var(--g20)" />
+        </div>
+      )}
+      {/* Delete button — zIndex:10 so it stays above hover overlay */}
+      <div onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        style={{ position: "absolute", top: 4, left: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g10)", zIndex: 10 }}>
+        <XIcon size={8} color="var(--red)" />
+      </div>
+      {hasPrivateServer && (
+        <div style={{ position: "absolute", top: 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g12)", zIndex: 10 }}>
+          <LockIcon size={8} color="#FFFFFF" />
+        </div>
+      )}
+      {/* Pin button — zIndex:10 so it stays above hover overlay (zIndex:3) */}
+      {onTogglePin && (
+        <div onClick={e => { e.stopPropagation(); onTogglePin(); }}
+          title={isPinned ? "Unpin" : "Pin game"}
+          style={{ position: "absolute", top: hasPrivateServer ? 24 : 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: isPinned ? "rgba(251,191,36,0.9)" : "rgba(0,0,0,0.55)", display: hov || isPinned ? "flex" : "none", alignItems: "center", justifyContent: "center", border: `1px solid ${isPinned ? "rgba(251,191,36,0.6)" : "var(--g12)"}`, zIndex: 10, cursor: "pointer" }}>
+          <span style={{ fontSize: 8, lineHeight: 1 }}>📌</span>
+        </div>
+      )}
+      {/* Quick-launch overlay on hover */}
+      {hov && (
+        <div onClick={e => { e.stopPropagation(); onQuickLaunch(); }}
+          style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3, transition: "opacity .12s" }}>
+          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(255,255,255,0.92)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <PlayIcon size={11} color="#07080a" />
+          </div>
+        </div>
+      )}
+      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,.9))", padding: "12px 5px 4px" }}>
+        <div style={{ fontSize: 8.5, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</div>
+      </div>
+    </div>
+  );
+}
+
+function CompactAccountRow({ account, isActive, isSelected, checking, health, onCheck, onSelect, onDoubleClick, onContextMenu, onToggleFav }: {
   account: Account; isActive: boolean; isSelected: boolean;
   checking: boolean; health: "checking" | "valid" | "invalid" | "unknown";
-  onCheck: () => void; onSelect: () => void;
+  onCheck: () => void; onSelect: () => void; onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
+  onToggleFav: () => void;
 }) {
   const [hov, setHov] = useState(false);
   const { t } = useLanguage();
@@ -2436,7 +2945,8 @@ function CompactAccountRow({ account, isActive, isSelected, checking, health, on
   return (
     <div
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
-      onClick={onSelect} onContextMenu={onContextMenu}
+      onClick={onSelect} onDoubleClick={onDoubleClick} onContextMenu={onContextMenu}
+      title={`@${account.username}${account.notes ? "\n" + account.notes : ""}\nDouble-click to quick launch`}
       style={{
         display: "flex", alignItems: "center", gap: 9, padding: "7px 14px",
         cursor: "pointer",
@@ -2474,6 +2984,16 @@ function CompactAccountRow({ account, isActive, isSelected, checking, health, on
           cursor: checking ? "not-allowed" : "pointer" }}>
         {checking ? "…" : isValid ? "✓" : isExpired ? "!" : "?"}
       </button>
+      {/* Feature 3: Star/favorite toggle on hover */}
+      {(hov || account.is_favorite) && (
+        <button onClick={e => { e.stopPropagation(); onToggleFav(); }}
+          title={account.is_favorite ? "Unfavorite" : "Favorite"}
+          style={{ flexShrink: 0, padding: "2px 4px", borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", color: account.is_favorite ? "#FBBF24" : "var(--t3)", transition: "color .12s" }}
+          onMouseEnter={e => e.currentTarget.style.color = "#FBBF24"}
+          onMouseLeave={e => e.currentTarget.style.color = account.is_favorite ? "#FBBF24" : "var(--t3)"}>
+          <StarIcon size={11} color={account.is_favorite ? "#FBBF24" : "currentColor"} />
+        </button>
+      )}
     </div>
   );
 }
@@ -2493,12 +3013,29 @@ function HeaderStatPill({ icon, label, value, sub, valueColor }: { icon: React.R
   );
 }
 
-function LiveSessionRow({ session, onKill }: { session: Session; onKill: () => void }) {
+function LiveSessionRow({ session, onKill, onShowDetail }: { session: Session; onKill: () => void; onShowDetail: () => void }) {
   const { t } = useLanguage();
   const [hov, setHov] = useState(false);
+  const [elapsed, setElapsed] = useState("");
+
+  useEffect(() => {
+    if (!session.start_time) return;
+    const start = new Date(session.start_time).getTime();
+    const tick = () => {
+      const s = Math.floor((Date.now() - start) / 1000);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      setElapsed(h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [session.start_time]);
+
   return (
-    <div onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
-      style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: hov ? "var(--surface-2)" : "var(--surface-3)", border: "1px solid var(--border)", transition: "background .1s" }}>
+    <div onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} onClick={onShowDetail}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: hov ? "var(--surface-2)" : "var(--surface-3)", border: "1px solid var(--border)", transition: "background .1s", cursor: "pointer" }}>
       <div style={{ position: "relative", flexShrink: 0 }}>
         {session.avatar_url ? (
           <img src={session.avatar_url} alt="" style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover" }} />
@@ -2517,7 +3054,8 @@ function LiveSessionRow({ session, onKill }: { session: Session; onKill: () => v
           {session.game_name ?? `PID ${session.pid}`}
         </div>
       </div>
-      <button onClick={onKill} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(248,113,113,.3)", background: "var(--red-dim)", color: "var(--red)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+      {elapsed && <span style={{ fontSize: 9, color: "var(--green)", fontWeight: 700, flexShrink: 0 }}>{elapsed}</span>}
+      <button onClick={e => { e.stopPropagation(); onKill(); }} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(248,113,113,.3)", background: "var(--red-dim)", color: "var(--red)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
         {t("kill")}
       </button>
     </div>
@@ -2753,4 +3291,49 @@ function ErrorMsg({ msg }: { msg: string }) {
       border: "1px solid rgba(248, 113, 113, 0.2)",
     }}>{msg}</div>
   );
+}
+
+/* ── Feature 1: Toast notification container ── */
+function ToastContainer({ toasts }: { toasts: Toast[] }) {
+  return (
+    <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 99999, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none" }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{
+          padding: "9px 16px",
+          borderRadius: 10,
+          fontSize: 11.5,
+          fontWeight: 700,
+          color: t.type === "success" ? "#065f46" : t.type === "error" ? "#7f1d1d" : "var(--t1)",
+          background: t.type === "success" ? "rgba(52,211,153,0.92)" : t.type === "error" ? "rgba(248,113,113,0.92)" : "rgba(255,255,255,0.92)",
+          border: `1px solid ${t.type === "success" ? "rgba(52,211,153,0.4)" : t.type === "error" ? "rgba(248,113,113,0.4)" : "rgba(0,0,0,0.12)"}`,
+          boxShadow: "0 4px 18px rgba(0,0,0,0.3)",
+          backdropFilter: "blur(8px)",
+          maxWidth: 320,
+          animation: "fadeInSlideUp 0.2s ease",
+        }}>
+          {t.msg}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Feature 10: SessionElapsed helper ── */
+function SessionElapsed({ startTime }: { startTime: string | null }) {
+  const [elapsed, setElapsed] = useState("");
+  useEffect(() => {
+    if (!startTime) return;
+    const start = new Date(startTime).getTime();
+    const tick = () => {
+      const s = Math.floor((Date.now() - start) / 1000);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      setElapsed(h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [startTime]);
+  return <>{elapsed}</>;
 }

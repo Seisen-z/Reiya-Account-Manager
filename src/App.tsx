@@ -27,9 +27,25 @@ interface LicenseStatus {
   reason: "missing" | "expired" | "valid";
 }
 
+const PAGE_LABELS: Record<string, string> = {
+  "/":             "On Home",
+  "/accounts":     "Managing Accounts",
+  "/hub":          "Using Hub",
+  "/utilities":    "Using Utilities",
+  "/bootstrapper": "Using Bootstrapper",
+  "/theme":        "Customizing Themes",
+  "/settings":     "In Settings",
+};
+
 function AppContent() {
   const location = useLocation();
   const isProgressWindow = location.pathname === "/launch-progress";
+
+  useEffect(() => {
+    if (isProgressWindow) return;
+    const label = PAGE_LABELS[location.pathname] ?? "In App";
+    invoke("update_discord_rpc", { page: label }).catch(() => {});
+  }, [location.pathname]);
 
   if (isProgressWindow) {
     return (
@@ -87,6 +103,7 @@ function AppInner() {
       }
       if (settings?.AppLockEnabled) setLocked(true);
       if (settings?.AppLockOnMinimize) setLockOnMinimize(true);
+      invoke("start_discord_rpc").catch(() => {});
     });
   }, []);
 

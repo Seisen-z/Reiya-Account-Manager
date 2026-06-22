@@ -1,5 +1,5 @@
 import { useLanguage } from "../context/LanguageContext";
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode, type DragEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -33,6 +33,7 @@ interface Account {
   safe_launch_enabled: boolean;
   auto_rejoin_enabled: boolean;
   launch_cooldown_seconds: number;
+  group?: string;
 }
 
 interface LoginResultPayload {
@@ -42,16 +43,38 @@ interface LoginResultPayload {
   error: string | null;
 }
 
-type FilterTab = "all" | "favorites";
+type FilterTab = "all" | "favorites" | "valid";
+type SortBy = "last_launched" | "name_asc" | "name_desc" | "status" | "added" | "custom";
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 export default function Accounts() {
   const { t } = useLanguage();
-  const [accounts,  setAccounts]  = useState<Account[]>([]);
-  const [filter,    setFilter]    = useState<FilterTab>("all");
-  const [search,    setSearch]    = useState("");
-  const [loading,   setLoading]   = useState(true);
-  const [launching, setLaunching] = useState<number | null>(null);
+  const [accounts,    setAccounts]    = useState<Account[]>([]);
+  const [filter,      setFilter]      = useState<FilterTab>("all");
+  const [search,      setSearch]      = useState("");
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [launching,   setLaunching]   = useState<number | null>(null);
+  const [sortBy,      setSortBy]      = useState<SortBy>("last_launched");
+  const [copiedId,    setCopiedId]    = useState<number | null>(null);
+  const [copiedUid,   setCopiedUid]   = useState<number | null>(null);
+
+  // Quick place ID launch
+  const [quickLaunchAccount, setQuickLaunchAccount] = useState<Account | null>(null);
+  const [quickPlaceId,       setQuickPlaceId]       = useState("");
+
+  // Inline notes editing
+  const [editingNotesId,   setEditingNotesId]   = useState<number | null>(null);
+  const [editingNotesText, setEditingNotesText] = useState("");
+
+  // Drag-to-reorder custom sort
+  const [customOrder, setCustomOrder] = useState<number[]>(() => {
+    try { return JSON.parse(localStorage.getItem("reiya_account_order") || "[]"); } catch { return []; }
+  });
+  const dragSrcId = useRef<number | null>(null);
+
+  // Refs
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Bulk selection
   const [selected,       setSelected]       = useState<Set<number>>(new Set());
@@ -126,6 +149,16 @@ export default function Accounts() {
     try {
       const data = await invoke<Account[]>("get_accounts");
       setAccounts(data);
+      // Auto re-validate Unknown cookies silently on startup
+      const unknowns = data.filter(a => a.cookie_status === "Unknown" || !a.cookie_status);
+      if (unknowns.length > 0) {
+        unknowns.forEach(async (acc) => {
+          try {
+            const updated = await invoke<Account>("validate_cookie", { userId: acc.user_id });
+            setAccounts(prev => prev.map(a => a.user_id === acc.user_id ? updated : a));
+          } catch { /* silent */ }
+        });
+      }
     } catch (e) { console.error("Failed to load accounts:", e); }
     finally { setLoading(false); }
   }, []);
@@ -136,18 +169,90 @@ export default function Accounts() {
       if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) setAddMenu(false);
     };
     document.addEventListener("click", handleOutsideClick);
-    return () => document.removeEventListener("click", handleOutsideClick);
+
+    // Keyboard shortcuts
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        setAddMenu(v => !v);
+      }
+      if (e.key === "Escape") {
+        setSearch("");
+        setAddMenu(false);
+        setQuickLaunchAccount(null);
+        setEditingNotesId(null);
+        searchInputRef.current?.blur();
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("click", handleOutsideClick);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, [loadAccounts]);
 
-  const online    = 0;
-  const favCount  = accounts.filter(a => a.is_favorite).length;
+  const online     = 0;
+  const favCount   = accounts.filter(a => a.is_favorite).length;
+  const validCount = accounts.filter(a => a.cookie_status === "Valid").length;
 
-  const visible = accounts.filter(a => {
-    const q = search.toLowerCase();
-    const matchSearch = !q || a.username.toLowerCase().includes(q) || a.display_name.toLowerCase().includes(q);
-    const matchFilter = filter === "all" || a.is_favorite;
-    return matchSearch && matchFilter;
-  });
+  // Groups sorted by preset order (Main → Alts → Trading → Farming → others alphabetically)
+  const PRESET_GROUP_ORDER = ["Main", "Alts", "Trading", "Farming"];
+  const groups = Array.from(new Set(accounts.map(a => a.group).filter((g): g is string => !!g)))
+    .sort((a, b) => {
+      const ai = PRESET_GROUP_ORDER.indexOf(a);
+      const bi = PRESET_GROUP_ORDER.indexOf(b);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return a.localeCompare(b);
+    });
+
+  // Reset active group if it no longer exists (e.g. all accounts in that group were removed)
+  useEffect(() => {
+    if (activeGroup !== null && !groups.includes(activeGroup)) setActiveGroup(null);
+  }, [groups, activeGroup]);
+
+  const STATUS_ORDER: Record<string, number> = { Valid: 0, Unknown: 1, Expired: 2 };
+
+  const visible = [...accounts]
+    .filter(a => {
+      const q = search.toLowerCase();
+      const matchSearch = !q || a.username.toLowerCase().includes(q) || a.display_name.toLowerCase().includes(q) || a.tags?.some(t => t.toLowerCase().includes(q));
+      const matchFilter = filter === "all" || (filter === "favorites" && a.is_favorite) || (filter === "valid" && a.cookie_status === "Valid");
+      const matchGroup = activeGroup === null || a.group === activeGroup;
+      return matchSearch && matchFilter && matchGroup;
+    })
+    .sort((a, b) => {
+      if (sortBy === "custom") {
+        const ai = customOrder.indexOf(a.user_id);
+        const bi = customOrder.indexOf(b.user_id);
+        if (ai === -1 && bi === -1) return 0;
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      }
+      switch (sortBy) {
+        case "last_launched":
+          if (!a.last_launched_at && !b.last_launched_at) return 0;
+          if (!a.last_launched_at) return 1;
+          if (!b.last_launched_at) return -1;
+          return new Date(b.last_launched_at).getTime() - new Date(a.last_launched_at).getTime();
+        case "name_asc":
+          return (a.display_name || a.username).localeCompare(b.display_name || b.username);
+        case "name_desc":
+          return (b.display_name || b.username).localeCompare(a.display_name || a.username);
+        case "status":
+          return (STATUS_ORDER[a.cookie_status] ?? 3) - (STATUS_ORDER[b.cookie_status] ?? 3);
+        case "added":
+          return new Date(b.added_at).getTime() - new Date(a.added_at).getTime();
+        default:
+          return 0;
+      }
+    });
 
   const handleToggleFav = async (userId: number) => {
     try {
@@ -173,6 +278,76 @@ export default function Accounts() {
       });
     } catch (e) { alert(`Launch failed: ${e}`); }
     finally { setLaunching(null); }
+  };
+
+  const handleReplayLaunch = async (userId: number, placeId: string) => {
+    setLaunching(userId);
+    try {
+      await invoke("launch_account", {
+        userId, placeId, jobId: null, accessCode: null,
+        useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
+      });
+    } catch (e) { alert(`Launch failed: ${e}`); }
+    finally { setLaunching(null); }
+  };
+
+  const handleCopyUsername = (userId: number, username: string) => {
+    navigator.clipboard.writeText(username).catch(() => {});
+    setCopiedId(userId);
+    setTimeout(() => setCopiedId(c => c === userId ? null : c), 1800);
+  };
+
+  const handleCopyUserId = (userId: number) => {
+    navigator.clipboard.writeText(String(userId)).catch(() => {});
+    setCopiedUid(userId);
+    setTimeout(() => setCopiedUid(c => c === userId ? null : c), 1800);
+  };
+
+  const handleSaveNotes = async (userId: number, notes: string) => {
+    try {
+      const updated = await invoke<Account>("update_account_notes", { userId, notes });
+      setAccounts(prev => prev.map(a => a.user_id === userId ? updated : a));
+    } catch (e) { console.error(e); }
+    setEditingNotesId(null);
+  };
+
+  const handleQuickLaunch = async () => {
+    if (!quickLaunchAccount) return;
+    const placeId = quickPlaceId.trim();
+    setLaunching(quickLaunchAccount.user_id);
+    setQuickLaunchAccount(null);
+    try {
+      await invoke("launch_account", {
+        userId: quickLaunchAccount.user_id,
+        placeId: placeId || null,
+        jobId: null, accessCode: null,
+        useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
+      });
+    } catch (e) { alert(`Launch failed: ${e}`); }
+    finally { setLaunching(null); }
+  };
+
+  const handleDragStart = (e: DragEvent, userId: number) => {
+    dragSrcId.current = userId;
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
+
+  const handleDrop = (e: DragEvent, targetId: number) => {
+    e.preventDefault();
+    const srcId = dragSrcId.current;
+    if (srcId === null || srcId === targetId) return;
+    // Build new order from current visible list
+    const base = visible.map(a => a.user_id);
+    const srcIdx = base.indexOf(srcId);
+    const tgtIdx = base.indexOf(targetId);
+    if (srcIdx === -1 || tgtIdx === -1) return;
+    base.splice(srcIdx, 1);
+    base.splice(tgtIdx, 0, srcId);
+    setCustomOrder(base);
+    localStorage.setItem("reiya_account_order", JSON.stringify(base));
+    setSortBy("custom");
   };
 
   const handleValidate = async (userId: number) => {
@@ -413,17 +588,26 @@ export default function Accounts() {
   const handleBulkLaunch = async () => {
     const targets = accounts.filter(a => selected.has(a.user_id) && a.cookie_status === "Valid");
     if (targets.length === 0) return;
-    setBulkLaunching(true); setBulkStatus(`Launching ${targets.length} accounts...`);
-    for (const acc of targets) {
+    setBulkLaunching(true);
+    const DELAY = 1500;
+    for (let i = 0; i < targets.length; i++) {
+      const acc = targets[i];
+      setBulkStatus(`Launching ${i + 1}/${targets.length}: @${acc.username}`);
       try {
         await invoke("launch_account", {
           userId: acc.user_id, placeId: null, jobId: null, accessCode: null,
           useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
         });
       } catch { }
-      await new Promise(r => setTimeout(r, 1500));
+      if (i < targets.length - 1) {
+        // Countdown display between launches
+        for (let s = Math.ceil(DELAY / 1000); s > 0; s--) {
+          setBulkStatus(`Launched @${acc.username} — next in ${s}s…`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
     }
-    setBulkLaunching(false); setBulkStatus(`Launched ${targets.length} accounts`);
+    setBulkLaunching(false); setBulkStatus(`✓ Launched ${targets.length} accounts`);
     setTimeout(() => setBulkStatus(""), 3000);
   };
 
@@ -491,6 +675,7 @@ export default function Accounts() {
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             {/* Stat pills */}
             <AccountStatPill value={accounts.length} label={t("total").toUpperCase()} color="var(--t1)" />
+            <AccountStatPill value={validCount} label="VALID" color="var(--green)" />
             <AccountStatPill value={favCount} label={t("favorites").toUpperCase()} color="var(--amber)" />
             <AccountStatPill value={online} label={t("active").toUpperCase()} color="var(--green)" />
             {selected.size > 0 && (
@@ -574,14 +759,44 @@ export default function Accounts() {
           </div>
         </div>
 
-        {/* Search + Filter */}
+        {/* Group tabs row — only shown when accounts have groups */}
+        {groups.length > 0 && (
+          <div className="premium-tab-track" style={{ flexShrink: 0, marginBottom: 2 }}>
+            <button
+              onClick={() => setActiveGroup(null)}
+              className={`premium-tab ${activeGroup === null ? "active" : ""}`}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px" }}
+            >
+              <span style={{ fontSize: 11, fontWeight: 700 }}>All</span>
+              <span style={{ fontSize: 9, fontWeight: 800, opacity: 0.55 }}>{accounts.length}</span>
+            </button>
+            {groups.map(g => {
+              const count = accounts.filter(a => a.group === g).length;
+              const isActive = activeGroup === g;
+              return (
+                <button
+                  key={g}
+                  onClick={() => setActiveGroup(g)}
+                  className={`premium-tab ${isActive ? "active" : ""}`}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px" }}
+                >
+                  <span style={{ fontSize: 11, fontWeight: 700 }}>{g}</span>
+                  <span style={{ fontSize: 9, fontWeight: 800, opacity: 0.55 }}>{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Search + Sub-filter */}
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <div style={{ position: "relative", flex: 1 }}>
             <SearchIcon size={13} color="var(--t3)" style={{
               position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none",
             }} />
             <input
-              placeholder={t("search_accounts_placeholder")}
+              ref={searchInputRef}
+              placeholder={`${t("search_accounts_placeholder")} (Ctrl+F)`}
               value={search}
               onChange={e => setSearch(e.target.value)}
               style={{
@@ -595,9 +810,13 @@ export default function Accounts() {
             />
           </div>
 
-          {/* Filter tabs */}
+          {/* Sub-filter tabs: All / Favorites / Valid */}
           <div className="premium-tab-track" style={{ flexShrink: 0 }}>
-            {([["all", t("all_profiles").split(" ")[0]], ["favorites", t("favorites")]] as [FilterTab, string][]).map(([id, label]) => (
+            {([
+              ["all", t("all_profiles").split(" ")[0]],
+              ["favorites", t("favorites")],
+              ["valid", "Valid"],
+            ] as [FilterTab, string][]).map(([id, label]) => (
               <button
                 key={id}
                 onClick={() => setFilter(id)}
@@ -607,10 +826,32 @@ export default function Accounts() {
                 {id === "favorites" && (
                   <StarIcon size={11} fill={filter === "favorites" ? "var(--amber)" : "none"} color={filter === "favorites" ? "var(--amber)" : "var(--t3)"} />
                 )}
+                {id === "valid" && (
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: filter === "valid" ? "var(--green)" : "var(--t3)", display: "inline-block", flexShrink: 0 }} />
+                )}
                 <span style={{ fontSize: 11, fontWeight: 700 }}>{label}</span>
               </button>
             ))}
           </div>
+
+          {/* Sort dropdown */}
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value as SortBy)}
+            style={{
+              flexShrink: 0, height: 34, padding: "0 10px",
+              borderRadius: 10, border: "1px solid var(--g05)",
+              background: "var(--g02)", color: "var(--t2)",
+              fontSize: 11, fontWeight: 700, cursor: "pointer", outline: "none",
+            }}
+          >
+            <option value="last_launched">↓ Last Launched</option>
+            <option value="name_asc">A → Z</option>
+            <option value="name_desc">Z → A</option>
+            <option value="status">Cookie Status</option>
+            <option value="added">Recently Added</option>
+            <option value="custom">✦ Custom Order</option>
+          </select>
         </div>
       </div>
 
@@ -674,11 +915,28 @@ export default function Accounts() {
               account={account}
               isLaunching={launching === account.user_id}
               isSelected={selected.has(account.user_id)}
+              isCopied={copiedId === account.user_id}
+              isCopiedUid={copiedUid === account.user_id}
+              isEditingNotes={editingNotesId === account.user_id}
+              editingNotesText={editingNotesId === account.user_id ? editingNotesText : ""}
+              isDraggable={sortBy === "custom"}
               onToggleSelect={() => toggleSelect(account.user_id)}
               onToggleFav={() => handleToggleFav(account.user_id)}
               onRemove={() => handleRemove(account.user_id, account.username)}
               onLaunch={() => handleLaunch(account.user_id)}
               onValidate={() => handleValidate(account.user_id)}
+              onCopyUsername={() => handleCopyUsername(account.user_id, account.username)}
+              onCopyUserId={() => handleCopyUserId(account.user_id)}
+              onReplayGame={account.default_place_id ? () => handleReplayLaunch(account.user_id, account.default_place_id!) : undefined}
+              onQuickLaunch={() => { setQuickLaunchAccount(account); setQuickPlaceId(""); }}
+              onTagClick={(tag) => setSearch(tag)}
+              onStartEditNotes={() => { setEditingNotesId(account.user_id); setEditingNotesText(account.notes || ""); }}
+              onNotesChange={(text) => setEditingNotesText(text)}
+              onSaveNotes={() => handleSaveNotes(account.user_id, editingNotesText)}
+              onCancelEditNotes={() => setEditingNotesId(null)}
+              onDragStart={(e) => handleDragStart(e, account.user_id)}
+              onDragOver={handleDragOver}
+              onDrop={(e) => handleDrop(e, account.user_id)}
               onOpenUtilities={() => {
                 setSelectedUtilAccount(account);
                 setUtilNewDisplayName(account.display_name || "");
@@ -691,6 +949,32 @@ export default function Accounts() {
       </div>
 
       {/* â"€â"€ MODALS â"€â"€ */}
+
+      {/* Quick Place ID Launch */}
+      {quickLaunchAccount && (
+        <AccountModal
+          title={`Launch @${quickLaunchAccount.username}`}
+          onClose={() => setQuickLaunchAccount(null)}
+        >
+          <FieldLabel>Place ID (leave blank for default)</FieldLabel>
+          <input
+            autoFocus
+            placeholder="e.g. 4483381587"
+            value={quickPlaceId}
+            onChange={e => setQuickPlaceId(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleQuickLaunch(); if (e.key === "Escape") setQuickLaunchAccount(null); }}
+            style={{
+              width: "100%", padding: "9px 13px", borderRadius: 10, outline: "none",
+              background: "var(--g03)", border: "1px solid var(--g07)",
+              color: "var(--t1)", fontSize: 12, marginBottom: 12,
+            }}
+          />
+          <ModalActions>
+            <ModalBtn label="Cancel" onClick={() => setQuickLaunchAccount(null)} />
+            <ModalBtn label="Launch" onClick={handleQuickLaunch} primary />
+          </ModalActions>
+        </AccountModal>
+      )}
 
       {/* Single Cookie */}
       {showSingle && (
@@ -981,11 +1265,28 @@ function BulkBtn({ label, onClick, disabled, danger, accent }: {
 }
 
 /* ── Account Card ── */
-function AccountCard({ account, isLaunching, isSelected, onToggleSelect, onToggleFav, onRemove, onLaunch, onValidate, onOpenUtilities }: {
+function AccountCard({
+  account, isLaunching, isSelected, isCopied, isCopiedUid,
+  isEditingNotes, editingNotesText, isDraggable,
+  onToggleSelect, onToggleFav, onRemove, onLaunch, onValidate, onOpenUtilities,
+  onCopyUsername, onCopyUserId, onReplayGame, onQuickLaunch, onTagClick,
+  onStartEditNotes, onNotesChange, onSaveNotes, onCancelEditNotes,
+  onDragStart, onDragOver, onDrop,
+}: {
   account: Account; isLaunching: boolean; isSelected: boolean;
+  isCopied: boolean; isCopiedUid: boolean;
+  isEditingNotes: boolean; editingNotesText: string; isDraggable: boolean;
   onToggleSelect: () => void;
   onToggleFav: () => void; onRemove: () => void;
   onLaunch: () => void; onValidate: () => void; onOpenUtilities: () => void;
+  onCopyUsername: () => void; onCopyUserId: () => void;
+  onReplayGame?: () => void; onQuickLaunch: () => void;
+  onTagClick: (tag: string) => void;
+  onStartEditNotes: () => void; onNotesChange: (t: string) => void;
+  onSaveNotes: () => void; onCancelEditNotes: () => void;
+  onDragStart: (e: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (e: DragEvent<HTMLDivElement>) => void;
+  onDrop: (e: DragEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useLanguage();
   const [hovered, setHovered] = useState(false);
@@ -1000,18 +1301,24 @@ function AccountCard({ account, isLaunching, isSelected, onToggleSelect, onToggl
 
   return (
     <div
+      draggable={isDraggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         display: "flex", alignItems: "center", gap: 14,
         padding: "14px 18px",
-        background: isSelected
-          ? "rgba(167,139,250,0.06)"
-          : hovered ? "var(--g01)" : "var(--g01)",
+        background: isSelected ? "rgba(167,139,250,0.06)" : "var(--g01)",
         border: `1px solid ${isSelected ? "rgba(167,139,250,0.25)" : hovered ? "var(--g07)" : "var(--g04)"}`,
-        borderRadius: 16, transition: "all .15s", cursor: "default",
+        borderRadius: 16, transition: "all .15s", cursor: isDraggable ? "grab" : "default",
       }}
     >
+      {/* Drag handle hint */}
+      {isDraggable && (
+        <div style={{ color: "var(--t3)", fontSize: 14, lineHeight: 1, flexShrink: 0, opacity: hovered ? 0.7 : 0.2, transition: "opacity .12s", userSelect: "none" }}>⠿</div>
+      )}
       {/* Checkbox */}
       <div
         onClick={onToggleSelect}
@@ -1030,13 +1337,17 @@ function AccountCard({ account, isLaunching, isSelected, onToggleSelect, onToggl
       {/* Avatar */}
       <div style={{ position: "relative", flexShrink: 0 }}>
         <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={48} />
-        <span style={{
-          position: "absolute", bottom: 1, right: 1,
-          width: 10, height: 10, borderRadius: "50%",
-          background: isValid ? "var(--green)" : "rgba(58,61,80,0.9)",
-          border: "2px solid #07080a",
-          boxShadow: isValid ? "0 0 5px var(--green)" : "none",
-        }} />
+        <span
+          title={`Cookie: ${statusLabel}`}
+          style={{
+            position: "absolute", bottom: 1, right: 1,
+            width: 10, height: 10, borderRadius: "50%",
+            background: statusColor,
+            border: "2px solid #07080a",
+            boxShadow: isValid ? "0 0 5px var(--green)" : "none",
+            cursor: "default",
+          }}
+        />
       </div>
 
       {/* Info */}
@@ -1045,31 +1356,79 @@ function AccountCard({ account, isLaunching, isSelected, onToggleSelect, onToggl
           <span style={{ fontSize: 13, fontWeight: 800, color: "var(--t1)" }}>{account.display_name}</span>
           {account.is_favorite && <StarIcon size={11} fill="var(--amber)" color="var(--amber)" />}
         </div>
-        <div style={{ fontSize: 11, color: "var(--t2)", marginBottom: account.tags?.length || account.notes ? 4 : 3 }}>
-          @{account.username} <span style={{ color: "var(--t3)" }}>·</span> ID: {account.user_id}
+        {/* Username + User ID row */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: account.tags?.length || account.notes ? 4 : 3 }}>
+          <span
+            onClick={onCopyUsername}
+            title={isCopied ? "Copied!" : "Click to copy @username"}
+            style={{
+              fontSize: 11, color: isCopied ? "var(--green)" : "var(--t2)",
+              cursor: "pointer", transition: "color .15s", userSelect: "none",
+            }}
+          >
+            {isCopied ? "✓ Copied!" : `@${account.username}`}
+          </span>
+          <span style={{ color: "var(--t3)", fontSize: 11 }}>·</span>
+          <span
+            onClick={onCopyUserId}
+            title={isCopiedUid ? "Copied!" : "Click to copy User ID"}
+            style={{
+              fontSize: 11, color: isCopiedUid ? "var(--green)" : "var(--t3)",
+              cursor: "pointer", transition: "color .15s", userSelect: "none",
+            }}
+          >
+            {isCopiedUid ? "✓ ID Copied!" : `ID: ${account.user_id}`}
+          </span>
         </div>
-        {/* Tags */}
+        {/* Tags — clickable to filter */}
         {account.tags && account.tags.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 3 }}>
             {account.tags.map(tag => (
-              <span key={tag} style={{
-                fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 4,
-                background: "rgba(96,165,250,0.1)", color: "#60A5FA",
-                border: "1px solid rgba(96,165,250,0.2)",
-              }}>{tag}</span>
+              <span
+                key={tag}
+                onClick={() => onTagClick(tag)}
+                title={`Filter by tag: ${tag}`}
+                style={{
+                  fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 4,
+                  background: "rgba(96,165,250,0.1)", color: "#60A5FA",
+                  border: "1px solid rgba(96,165,250,0.2)",
+                  cursor: "pointer", transition: "background .12s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(96,165,250,0.22)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "rgba(96,165,250,0.1)"; }}
+              >{tag}</span>
             ))}
           </div>
         )}
-        {/* Notes */}
-        {account.notes && (
-          <div style={{ fontSize: 10, color: "var(--t3)", fontStyle: "italic", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {account.notes}
+        {/* Notes — inline editable on double-click */}
+        {isEditingNotes ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <input
+              autoFocus
+              value={editingNotesText}
+              onChange={e => onNotesChange(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") onSaveNotes(); if (e.key === "Escape") onCancelEditNotes(); }}
+              placeholder="Add a note..."
+              style={{
+                flex: 1, fontSize: 10, padding: "2px 7px", borderRadius: 5,
+                background: "var(--g03)", border: "1px solid var(--g10)",
+                color: "var(--t1)", outline: "none", minWidth: 0,
+              }}
+            />
+            <span onClick={onSaveNotes} style={{ fontSize: 9, color: "var(--green)", cursor: "pointer", fontWeight: 700 }}>✓</span>
+            <span onClick={onCancelEditNotes} style={{ fontSize: 9, color: "var(--t3)", cursor: "pointer" }}>✕</span>
           </div>
-        )}
-        {!account.notes && account.last_played_game && (
-          <div style={{ fontSize: 10, color: "var(--t3)", display: "flex", alignItems: "center", gap: 4 }}>
-            <GamepadIcon size={10} color="var(--t3)" />
-            {account.last_played_game}
+        ) : (
+          <div
+            onDoubleClick={onStartEditNotes}
+            title="Double-click to edit notes"
+            style={{ fontSize: 10, color: "var(--t3)", fontStyle: "italic", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "text", minHeight: 14 }}
+          >
+            {account.notes || (account.last_played_game ? (
+              <span style={{ display: "flex", alignItems: "center", gap: 4, fontStyle: "normal" }}>
+                <GamepadIcon size={10} color="var(--t3)" />{account.last_played_game}
+              </span>
+            ) : <span style={{ opacity: 0.4 }}>Double-click to add notes…</span>)}
           </div>
         )}
       </div>
@@ -1103,6 +1462,22 @@ function AccountCard({ account, isLaunching, isSelected, onToggleSelect, onToggl
 
       {/* Icon actions */}
       <div style={{ display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
+        <button
+          onClick={onQuickLaunch}
+          title="Quick Launch (custom Place ID)"
+          style={{
+            background: "none", border: "none", cursor: "pointer",
+            color: "var(--t3)", padding: 5, borderRadius: 7,
+            opacity: hovered ? 1 : 0, transition: "all .12s",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = "#60A5FA"; e.currentTarget.style.background = "var(--g08)"; }}
+          onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.background = "none"; }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
+          </svg>
+        </button>
         <button
           onClick={onOpenUtilities}
           title="Account Utilities"
@@ -1148,30 +1523,55 @@ function AccountCard({ account, isLaunching, isSelected, onToggleSelect, onToggl
         </button>
       </div>
 
-      {/* Launch button */}
-      <button
-        onClick={onLaunch}
-        disabled={isLaunching || !isValid}
-        style={{
-          display: "flex", alignItems: "center", gap: 7,
-          padding: "9px 18px", borderRadius: 10, border: "none",
-          background: isLaunching
-            ? "var(--g04)"
-            : isValid
-              ? "var(--accent)"
-              : "var(--g04)",
-          color: isLaunching ? "var(--t3)" : isValid ? "var(--accent-text)" : "var(--t3)",
-          fontSize: 12, fontWeight: 800,
-          cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
-          flexShrink: 0,
-          boxShadow: isValid && !isLaunching ? "0 4px 14px var(--g20)" : "none",
-          transition: "all .12s",
-          filter: hovered && isValid && !isLaunching ? "brightness(1.08)" : "none",
-        }}
-      >
-        <ZapIcon size={12} color={isValid && !isLaunching ? "var(--accent-text)" : "var(--t3)"} />
-        {isLaunching ? t("launching_suffix") : t("quick_launch_btn")}
-      </button>
+      {/* Launch buttons */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
+        <button
+          onClick={onLaunch}
+          disabled={isLaunching || !isValid}
+          style={{
+            display: "flex", alignItems: "center", gap: 7,
+            padding: "9px 18px", borderRadius: 10, border: "none",
+            background: isLaunching
+              ? "var(--g04)"
+              : isValid
+                ? "var(--accent)"
+                : "var(--g04)",
+            color: isLaunching ? "var(--t3)" : isValid ? "var(--accent-text)" : "var(--t3)",
+            fontSize: 12, fontWeight: 800,
+            cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
+            boxShadow: isValid && !isLaunching ? "0 4px 14px var(--g20)" : "none",
+            transition: "all .12s",
+            filter: hovered && isValid && !isLaunching ? "brightness(1.08)" : "none",
+          }}
+        >
+          <ZapIcon size={12} color={isValid && !isLaunching ? "var(--accent-text)" : "var(--t3)"} />
+          {isLaunching ? t("launching_suffix") : t("quick_launch_btn")}
+        </button>
+        {onReplayGame && account.default_place_id && (
+          <button
+            onClick={onReplayGame}
+            disabled={isLaunching || !isValid}
+            title="Replay last game"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+              padding: "5px 12px", borderRadius: 8, border: "1px solid var(--g06)",
+              background: "transparent",
+              color: isValid ? "var(--t2)" : "var(--t3)",
+              fontSize: 10, fontWeight: 700,
+              cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
+              transition: "all .12s",
+            }}
+            onMouseEnter={e => { if (isValid && !isLaunching) { e.currentTarget.style.background = "var(--g04)"; e.currentTarget.style.borderColor = "var(--g10)"; }}}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "var(--g06)"; }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+            </svg>
+            Replay
+          </button>
+        )}
+      </div>
     </div>
   );
 }

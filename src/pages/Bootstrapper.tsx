@@ -355,7 +355,14 @@ function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount:
     catch (e) { setError(String(e)); } finally { setSaving(false); }
   };
 
+  const isPresetApplied = (p: FastFlagPreset) =>
+    Object.entries(p.flags).every(([k, v]) => k in flags && String(flags[k]) === String(v));
   const applyPreset = (p: FastFlagPreset) => setFlags(prev => ({ ...prev, ...p.flags }));
+  const removePreset = (p: FastFlagPreset) => setFlags(prev => {
+    const n = { ...prev };
+    Object.keys(p.flags).forEach(k => delete n[k]);
+    return n;
+  });
   const removeFlag = (key: string) => setFlags(prev => { const n = { ...prev }; delete n[key]; return n; });
   const addFlag = () => {
     if (!newKey.trim()) return;
@@ -443,23 +450,42 @@ function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount:
             </div>
           </div>
           <div className="scroll" style={{ flex: 1, padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-            {filteredPresets.map(preset => (
-              <div key={preset.id} style={{ background: "var(--g01)", border: "1px solid var(--g05)", borderRadius: 11, padding: "11px 12px", transition: "border-color .15s" }}
-                onMouseEnter={e => e.currentTarget.style.borderColor = "var(--g09)"}
-                onMouseLeave={e => e.currentTarget.style.borderColor = "var(--g05)"}>
+            {filteredPresets.map(preset => {
+              const applied = isPresetApplied(preset);
+              return (
+              <div key={preset.id}
+                style={{ background: applied ? "rgba(34,197,94,0.04)" : "var(--g01)", border: `1px solid ${applied ? "rgba(34,197,94,0.35)" : "var(--g05)"}`, borderRadius: 11, padding: "11px 12px", transition: "border-color .15s" }}
+                onMouseEnter={e => e.currentTarget.style.borderColor = applied ? "rgba(34,197,94,0.6)" : "var(--g09)"}
+                onMouseLeave={e => e.currentTarget.style.borderColor = applied ? "rgba(34,197,94,0.35)" : "var(--g05)"}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
                   <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--t1)" }}>{preset.name}</div>
-                  <span style={{ fontSize: 8, padding: "2px 6px", borderRadius: 4, background: "var(--g04)", color: "var(--t3)", fontWeight: 800, flexShrink: 0, marginLeft: 6 }}>{preset.category}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 6 }}>
+                    {applied && (
+                      <span style={{ fontSize: 8, padding: "2px 6px", borderRadius: 4, background: "rgba(34,197,94,0.12)", color: "var(--green)", fontWeight: 800 }}>✓ ON</span>
+                    )}
+                    <span style={{ fontSize: 8, padding: "2px 6px", borderRadius: 4, background: "var(--g04)", color: "var(--t3)", fontWeight: 800 }}>{preset.category}</span>
+                  </div>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--t3)", lineHeight: 1.4, marginBottom: 8 }}>{preset.description}</div>
                 <div style={{ fontSize: 9, color: "var(--t3)", fontWeight: 700, marginBottom: 7 }}>{Object.keys(preset.flags).length} flags</div>
-                <button onClick={() => applyPreset(preset)} className="glow-btn" style={{ width: "100%", padding: "5px 0", borderRadius: 7, border: "1px solid rgba(167,139,250,0.2)", background: "rgba(167,139,250,0.05)", color: "#A78BFA", fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .12s", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
-                  onMouseEnter={e => e.currentTarget.style.background = "rgba(167,139,250,0.12)"}
-                  onMouseLeave={e => e.currentTarget.style.background = "rgba(167,139,250,0.05)"}>
-                  <PackageIcon size={10} color="#A78BFA" /> Apply
-                </button>
+                {applied ? (
+                  <button onClick={() => removePreset(preset)}
+                    style={{ width: "100%", padding: "5px 0", borderRadius: 7, border: "1px solid rgba(34,197,94,0.25)", background: "rgba(34,197,94,0.08)", color: "var(--green)", fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .12s", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(248,113,113,0.1)"; e.currentTarget.style.borderColor = "rgba(248,113,113,0.3)"; e.currentTarget.style.color = "var(--red)"; e.currentTarget.textContent = "✕  Remove"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "rgba(34,197,94,0.08)"; e.currentTarget.style.borderColor = "rgba(34,197,94,0.25)"; e.currentTarget.style.color = "var(--green)"; e.currentTarget.textContent = "✓  Applied"; }}>
+                    ✓&nbsp; Applied
+                  </button>
+                ) : (
+                  <button onClick={() => applyPreset(preset)} className="glow-btn"
+                    style={{ width: "100%", padding: "5px 0", borderRadius: 7, border: "1px solid rgba(167,139,250,0.2)", background: "rgba(167,139,250,0.05)", color: "#A78BFA", fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .12s", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(167,139,250,0.12)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "rgba(167,139,250,0.05)"}>
+                    <PackageIcon size={10} color="#A78BFA" /> Apply
+                  </button>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
