@@ -204,9 +204,10 @@ export default function Home() {
     }
   };
 
-  // Discord RPC playing state — tracks active game session
-  const [playingUserId, setPlayingUserId] = useState<number | null>(null);
-  const [playingGame,   setPlayingGame]   = useState<string>("");
+  // Discord RPC playing state — tracks active game session (refs, no re-render needed)
+  const playingUserIdRef = useRef<number | null>(null);
+  const setPlayingUserId = (v: number | null) => { playingUserIdRef.current = v; };
+  const setPlayingGame   = (_v: string) => {};
 
   // Launch state
   const [selAccount,      setSelAccount]      = useState<number | null>(null);
@@ -392,14 +393,11 @@ export default function Home() {
           setSessionHistory(hist);
           setRecentGames(recents);
           // If the playing session ended, reset presence to current page
-          setPlayingUserId(prev => {
-            if (prev !== null && !sess.some((s: Session) => s.user_id === prev)) {
-              setPlayingGame("");
-              invoke("update_discord_rpc", { page: "On Home" }).catch(() => {});
-              return null;
-            }
-            return prev;
-          });
+          const uid = playingUserIdRef.current;
+          if (uid !== null && !sess.some((s: Session) => s.user_id === uid)) {
+            playingUserIdRef.current = null;
+            invoke("update_discord_rpc", { page: "On Home" }).catch(() => {});
+          }
         });
       });
     };
