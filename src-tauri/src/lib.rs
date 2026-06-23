@@ -3695,6 +3695,7 @@ async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
         .header("Authorization", format!("Bearer {}", supabase_anon()))
         .header("Content-Type", "application/json")
         .header("User-Agent", "ReiyaAccountManager")
+        .header("X-App-Version", APP_VERSION)
         .json(&body)
         .send()
         .await
