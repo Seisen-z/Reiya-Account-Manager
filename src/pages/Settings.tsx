@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
@@ -357,6 +357,7 @@ export default function Settings() {
 
       {/* Settings content — 2 col grid */}
       <div className="scroll" style={{ flex: 1, padding: "20px 28px 24px" }}>
+        {activeTab === "app" && <LicenseCard />}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 1100 }}>
           {settings && sections.map((section: any) => (
             <div key={section.id} style={{
@@ -427,6 +428,147 @@ export default function Settings() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+const HWID_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+function LicenseCard() {
+  const [license,      setLicense]      = useState<{ key: string; expires_at: string | null; reason: string } | null>(null);
+  const [clearing,     setClearing]     = useState(false);
+  const [resetting,    setResetting]    = useState(false);
+  const [resetMsg,     setResetMsg]     = useState<{ text: string; ok: boolean } | null>(null);
+  const [resetAt,      setResetAt]      = useState<Date | null>(null);
+
+  const load = useCallback(() => {
+    invoke<any>("check_license").then(s => setLicense(s)).catch(() => {});
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (!license || license.reason === "missing") return null;
+
+  const expired   = license.reason === "expired";
+  const expiresAt = license.expires_at ? new Date(license.expires_at) : null;
+  const msLeft    = expiresAt ? expiresAt.getTime() - Date.now() : 0;
+  const hLeft     = Math.floor(msLeft / 3_600_000);
+  const dLeft     = Math.floor(hLeft / 24);
+  const timeLabel = expired ? "Expired"
+    : dLeft > 1   ? `${dLeft}d ${hLeft % 24}h remaining`
+    : hLeft > 0   ? `${hLeft}h ${Math.floor((msLeft % 3_600_000) / 60_000)}m remaining`
+    : "Expiring soon";
+
+  const statusColor  = expired ? "var(--red)" : hLeft < 6 ? "#FBBF24" : "#34D399";
+  const statusBg     = expired ? "rgba(248,113,113,0.06)" : hLeft < 6 ? "rgba(251,191,36,0.06)" : "rgba(52,211,153,0.06)";
+  const statusBorder = expired ? "rgba(248,113,113,0.2)"  : hLeft < 6 ? "rgba(251,191,36,0.2)"  : "rgba(52,211,153,0.2)";
+
+  const cooldownRem = resetAt ? HWID_COOLDOWN_MS - (Date.now() - resetAt.getTime()) : 0;
+  const onCooldown  = cooldownRem > 0;
+  const cooldownLabel = onCooldown
+    ? `${Math.floor(cooldownRem / 3_600_000)}h ${Math.floor((cooldownRem % 3_600_000) / 60_000)}m`
+    : null;
+
+  const handleClear = async () => {
+    if (!confirm("Clear saved key? You will need to enter a new key.")) return;
+    setClearing(true);
+    await invoke("clear_license").catch(() => {});
+    setClearing(false);
+    setLicense(null);
+    window.location.reload();
+  };
+
+  const handleResetHwid = async () => {
+    setResetting(true);
+    setResetMsg(null);
+    try {
+      const msg = await invoke<string>("reset_hwid");
+      setResetAt(new Date());
+      setResetMsg({ text: msg, ok: true });
+    } catch (err: any) {
+      setResetMsg({ text: String(err), ok: false });
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <div style={{ borderRadius: 14, marginBottom: 16, background: statusBg, border: `1px solid ${statusBorder}`, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 18px" }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 9, flexShrink: 0,
+          background: statusColor + "18", border: `1px solid ${statusColor}30`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <KeyIcon size={15} color={statusColor} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "var(--t1)" }}>License Key</span>
+            <span style={{
+              fontSize: 10, fontWeight: 700, fontFamily: "monospace",
+              padding: "2px 7px", borderRadius: 99,
+              background: statusColor + "18", color: statusColor,
+            }}>{expired ? "EXPIRED" : "ACTIVE"}</span>
+          </div>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <span style={{ fontSize: 10, fontFamily: "monospace", color: "var(--t3)" }}>
+              {license.key.slice(0, 19)}…
+            </span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: statusColor }}>
+              {timeLabel}
+            </span>
+            {expiresAt && (
+              <span style={{ fontSize: 10, color: "var(--t3)" }}>
+                · {expiresAt.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          {!expired && (
+            <button
+              onClick={handleResetHwid}
+              disabled={resetting || onCooldown}
+              title={onCooldown ? `Reset available in ${cooldownLabel}` : "Reset HWID lock (once per 24h)"}
+              style={{
+                padding: "6px 13px", borderRadius: 8,
+                border: "1px solid var(--g08)", background: "transparent",
+                color: onCooldown ? "var(--t4)" : "var(--t3)",
+                fontSize: 11, fontWeight: 600,
+                cursor: onCooldown || resetting ? "not-allowed" : "pointer",
+                opacity: onCooldown || resetting ? 0.5 : 1,
+                transition: "all .12s",
+              }}
+              onMouseEnter={e => { if (!onCooldown && !resetting) { e.currentTarget.style.color = "#60A5FA"; e.currentTarget.style.borderColor = "rgba(96,165,250,0.3)"; } }}
+              onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.borderColor = "var(--g08)"; }}
+            >
+              {resetting ? "Resetting…" : onCooldown ? `HWID in ${cooldownLabel}` : "Reset HWID"}
+            </button>
+          )}
+          <button onClick={handleClear} disabled={clearing}
+            style={{
+              padding: "6px 13px", borderRadius: 8,
+              border: "1px solid var(--g08)", background: "transparent",
+              color: "var(--t3)", fontSize: 11, fontWeight: 600, cursor: "pointer",
+              transition: "all .12s",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = "var(--red)"; e.currentTarget.style.borderColor = "rgba(248,113,113,0.3)"; }}
+            onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.borderColor = "var(--g08)"; }}
+          >
+            {clearing ? "Clearing…" : "Clear Key"}
+          </button>
+        </div>
+      </div>
+      {resetMsg && (
+        <div style={{
+          padding: "8px 18px", borderTop: "1px solid var(--g05)",
+          fontSize: 11, color: resetMsg.ok ? "#34D399" : "var(--red)",
+          background: resetMsg.ok ? "rgba(52,211,153,0.05)" : "rgba(248,113,113,0.05)",
+        }}>
+          {resetMsg.text}
+        </div>
+      )}
     </div>
   );
 }

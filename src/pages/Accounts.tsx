@@ -24,6 +24,7 @@ interface Account {
   is_favorite: boolean;
   cookie_status: string;
   added_at: string;
+  cookie_updated_at: string | null;
   last_launched_at: string | null;
   last_played_game: string;
   notes: string;
@@ -1447,6 +1448,14 @@ function AccountCard({
           </span>
         </div>
         <div style={{ fontSize: 9.5, color: "var(--t3)" }}>{t("last_launched")}: {lastLaunchedDisplay}</div>
+        {account.cookie_updated_at && (
+          <div style={{ fontSize: 9.5, color: "var(--t3)" }}>
+            Cookie updated: {new Date(account.cookie_updated_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+          </div>
+        )}
+        <div style={{ fontSize: 9.5, color: "var(--t3)" }}>
+          Added: {new Date(account.added_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+        </div>
         <button
           onClick={onValidate}
           style={{
