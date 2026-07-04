@@ -367,6 +367,28 @@ export default function Accounts() {
     } catch (e) { console.error(e); }
   };
 
+  const handleRelogin = async (username: string) => {
+    setLoginLoading(true);
+    try {
+      const res = await loginOneAccount(username);
+      if (res && res.cookie) {
+        const acc = await invoke<Account>("add_account", { cookie: res.cookie });
+        setAccounts(prev => {
+          const idx = prev.findIndex(a => a.user_id === acc.user_id);
+          return idx >= 0 ? prev.map((a, i) => i === idx ? acc : a) : [...prev, acc];
+        });
+        toast.success(`${acc.username}'s cookie was refreshed.`);
+      } else {
+        const reason = res?.error || "Login window was closed or cookie extraction failed.";
+        toast.warning(`Relogin not saved: ${reason}`);
+      }
+    } catch (e) {
+      toast.error(`Relogin failed: ${String(e)}`);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
   const handleOpenCookieMenu = async () => {
     setAddMenu(false);
     try {
@@ -944,6 +966,7 @@ export default function Accounts() {
               onRemove={() => handleRemove(account.user_id, account.username)}
               onLaunch={() => handleLaunch(account.user_id)}
               onValidate={() => handleValidate(account.user_id)}
+              onRelogin={() => handleRelogin(account.username)}
               onCopyUsername={() => handleCopyUsername(account.user_id, account.username)}
               onCopyUserId={() => handleCopyUserId(account.user_id)}
               onReplayGame={account.default_place_id ? () => handleReplayLaunch(account.user_id, account.default_place_id!) : undefined}
@@ -1287,7 +1310,7 @@ function BulkBtn({ label, onClick, disabled, danger, accent }: {
 function AccountCard({
   account, isLaunching, isSelected, isCopied, isCopiedUid,
   isEditingNotes, editingNotesText, isDraggable,
-  onToggleSelect, onToggleFav, onRemove, onLaunch, onValidate, onOpenUtilities,
+  onToggleSelect, onToggleFav, onRemove, onLaunch, onValidate, onRelogin, onOpenUtilities,
   onCopyUsername, onCopyUserId, onReplayGame, onQuickLaunch, onTagClick,
   onStartEditNotes, onNotesChange, onSaveNotes, onCancelEditNotes,
   onDragStart, onDragOver, onDrop,
@@ -1297,7 +1320,7 @@ function AccountCard({
   isEditingNotes: boolean; editingNotesText: string; isDraggable: boolean;
   onToggleSelect: () => void;
   onToggleFav: () => void; onRemove: () => void;
-  onLaunch: () => void; onValidate: () => void; onOpenUtilities: () => void;
+  onLaunch: () => void; onValidate: () => void; onRelogin: () => void; onOpenUtilities: () => void;
   onCopyUsername: () => void; onCopyUserId: () => void;
   onReplayGame?: () => void; onQuickLaunch: () => void;
   onTagClick: (tag: string) => void;
@@ -1474,17 +1497,32 @@ function AccountCard({
         <div style={{ fontSize: 9.5, color: "var(--t3)" }}>
           Added: {new Date(account.added_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
         </div>
-        <button
-          onClick={onValidate}
-          style={{
-            marginTop: 5, fontSize: 9, padding: "2px 9px", borderRadius: 5,
-            border: "1px solid var(--g06)", background: "transparent",
-            color: "var(--t3)", cursor: "pointer", fontWeight: 600,
-            opacity: hovered ? 1 : 0, transition: "opacity .12s",
-          }}
-        >
-          {t("re_validate_btn")}
-        </button>
+        <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
+          {!isValid && (
+            <button
+              onClick={onRelogin}
+              style={{
+                marginTop: 5, fontSize: 9, padding: "2px 9px", borderRadius: 5,
+                border: "1px solid var(--red)", background: "transparent",
+                color: "var(--red)", cursor: "pointer", fontWeight: 600,
+                opacity: hovered ? 1 : 0, transition: "opacity .12s",
+              }}
+            >
+              {t("relogin_btn")}
+            </button>
+          )}
+          <button
+            onClick={onValidate}
+            style={{
+              marginTop: 5, fontSize: 9, padding: "2px 9px", borderRadius: 5,
+              border: "1px solid var(--g06)", background: "transparent",
+              color: "var(--t3)", cursor: "pointer", fontWeight: 600,
+              opacity: hovered ? 1 : 0, transition: "opacity .12s",
+            }}
+          >
+            {t("re_validate_btn")}
+          </button>
+        </div>
       </div>
 
       {/* Icon actions */}

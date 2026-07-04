@@ -3073,6 +3073,7 @@ const EVENT_COLORS: Record<string, string> = {
   cookie_valid:   "var(--green)",
   cookie_expired: "var(--red)",
   killed:         "rgba(255, 255, 255, 0.4)",
+  sync_failed:    "var(--amber)",
 };
 
 const EVENT_ICONS: Record<string, React.ReactNode> = {
@@ -3082,6 +3083,7 @@ const EVENT_ICONS: Record<string, React.ReactNode> = {
   cookie_valid:   <CheckIcon size={10} />,
   cookie_expired: <XIcon size={10} />,
   killed:         <PowerIcon size={10} />,
+  sync_failed:    <AlertTriangleIcon size={10} />,
 };
 
 function EventRow({ event }: { event: EventEntry }) {
