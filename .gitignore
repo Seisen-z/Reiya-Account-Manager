@@ -11,3 +11,4 @@ Thumbs.db
 src-tauri/gen/
 src-tauri/target_test/
 .claude/
+supabase/.temp/

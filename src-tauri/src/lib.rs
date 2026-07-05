@@ -4155,6 +4155,10 @@ fn supabase_url()  -> String { decode_cred(_URL_XOR)      }
 fn supabase_anon() -> String { decode_cred(_ANON_XOR)     }
 fn sync_secret()   -> String { decode_cred(_SYNC_SEC_XOR) }
 
+const _RSCRIPTS_KEY_XOR: &[u8] = &[0x28,0x29,0x39,0x05,0x36,0x33,0x2C,0x3F,0x05,0x1C,0x2E,0x69,0x17,0x2A,0x6E,0x0C,0x11,0x69,0x62,0x69,0x0A,0x1E,0x2B,0x14,0x6F,0x3C,0x29,0x12,0x13,0x23,0x36,0x11,0x0D,0x14,0x63,0x6C,0x69,0x63,0x22,0x34,0x0E];
+fn rscripts_api_key() -> String { decode_cred(_RSCRIPTS_KEY_XOR) }
+const RSCRIPTS_API_BASE: &str = "https://api.rscripts.net";
+
 #[tauri::command]
 async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
     let hwid = compute_hwid();
@@ -4268,6 +4272,207 @@ fn open_key_website() -> Result<(), String> {
 
 #[tauri::command]
 fn get_hwid() -> String { compute_hwid() }
+
+// ── App rating (global, Supabase-backed) ──────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct RatingStats {
+    average: f64,
+    count: u64,
+}
+
+#[tauri::command]
+async fn submit_rating(rating: u8) -> Result<(), String> {
+    if rating < 1 || rating > 5 {
+        return Err("Invalid rating".to_string());
+    }
+    let hwid = compute_hwid();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let body = serde_json::json!({ "hwid": hwid, "rating": rating });
+
+    let resp = client
+        .post(format!("{}/functions/v1/submit-rating", supabase_url()))
+        .header("Authorization", format!("Bearer {}", supabase_anon()))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Could not reach the rating server.".to_string())?;
+
+    if !resp.status().is_success() {
+        return Err("Failed to submit rating.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_rating_stats() -> Result<RatingStats, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get(format!("{}/functions/v1/rating-stats", supabase_url()))
+        .header("Authorization", format!("Bearer {}", supabase_anon()))
+        .send()
+        .await
+        .map_err(|_| "Could not reach the rating server.".to_string())?;
+
+    let json: serde_json::Value = resp.json().await
+        .map_err(|_| "Invalid response from the rating server.".to_string())?;
+
+    let average = json.get("average").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let count = json.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+    Ok(RatingStats { average, count })
+}
+
+// ── Live presence (global "online now" count) ─────────────────────────────────
+
+#[tauri::command]
+async fn send_heartbeat() -> Result<(), String> {
+    let hwid = compute_hwid();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let body = serde_json::json!({ "hwid": hwid });
+
+    let resp = client
+        .post(format!("{}/functions/v1/heartbeat", supabase_url()))
+        .header("Authorization", format!("Bearer {}", supabase_anon()))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Could not reach the presence server.".to_string())?;
+
+    if !resp.status().is_success() {
+        return Err("Failed to send heartbeat.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_live_count() -> Result<u64, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get(format!("{}/functions/v1/live-count", supabase_url()))
+        .header("Authorization", format!("Bearer {}", supabase_anon()))
+        .send()
+        .await
+        .map_err(|_| "Could not reach the presence server.".to_string())?;
+
+    let json: serde_json::Value = resp.json().await
+        .map_err(|_| "Invalid response from the presence server.".to_string())?;
+
+    Ok(json.get("count").and_then(|v| v.as_u64()).unwrap_or(0))
+}
+
+// ── Rscripts.net API ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn fetch_rscripts(
+    query: Option<String>,
+    sort: Option<String>,
+    page: Option<u32>,
+    limit: Option<u32>,
+    no_key_system: Option<bool>,
+    mobile_only: Option<bool>,
+    free_only: Option<bool>,
+    verified_only: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("ReiyaAccountManager")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let page  = page.unwrap_or(1).max(1);
+    let query = query.unwrap_or_default();
+    let trimmed = query.trim();
+
+    let url = if trimmed.is_empty() {
+        let limit = limit.unwrap_or(24).clamp(1, 48);
+        let mut u = format!(
+            "{}/v1/scripts?sort={}&page={}&limit={}",
+            RSCRIPTS_API_BASE,
+            urlencoding::encode(sort.as_deref().unwrap_or("newest")),
+            page,
+            limit,
+        );
+        if no_key_system.unwrap_or(false) { u.push_str("&noKeySystem=true"); }
+        if mobile_only.unwrap_or(false)   { u.push_str("&mobileOnly=true"); }
+        if free_only.unwrap_or(false)     { u.push_str("&freeOnly=true"); }
+        if verified_only.unwrap_or(false) { u.push_str("&verifiedOnly=true"); }
+        u
+    } else {
+        let limit = limit.unwrap_or(20).clamp(1, 20);
+        format!(
+            "{}/v1/search?q={}&index=scripts&page={}&limit={}",
+            RSCRIPTS_API_BASE,
+            urlencoding::encode(trimmed),
+            page,
+            limit,
+        )
+    };
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", rscripts_api_key()))
+        .send()
+        .await
+        .map_err(|_| "Could not reach the Rscripts API. Check your internet connection.".to_string())?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await
+        .map_err(|_| "Invalid response from the Rscripts API.".to_string())?;
+
+    if !status.is_success() {
+        let msg = body["error"]["message"].as_str()
+            .or_else(|| body["message"].as_str())
+            .unwrap_or("Rscripts API request failed")
+            .to_string();
+        return Err(msg);
+    }
+
+    Ok(body)
+}
+
+#[tauri::command]
+async fn fetch_rscripts_trending() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("ReiyaAccountManager")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get(format!("{}/v1/trending", RSCRIPTS_API_BASE))
+        .header("Authorization", format!("Bearer {}", rscripts_api_key()))
+        .send()
+        .await
+        .map_err(|_| "Could not reach the Rscripts API. Check your internet connection.".to_string())?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await
+        .map_err(|_| "Invalid response from the Rscripts API.".to_string())?;
+
+    if !status.is_success() {
+        return Err("Failed to load trending scripts.".to_string());
+    }
+
+    Ok(body)
+}
 
 // ── In-app updater ────────────────────────────────────────────────────────────
 
@@ -6978,6 +7183,12 @@ pub fn run() {
             get_launcher_preference,
             set_launcher_preference,
             login_with_credentials,
+            fetch_rscripts,
+            fetch_rscripts_trending,
+            submit_rating,
+            get_rating_stats,
+            send_heartbeat,
+            get_live_count,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

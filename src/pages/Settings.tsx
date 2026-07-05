@@ -122,6 +122,7 @@ const ALERTS_SECTIONS = [
   {
     id: "discord", Icon: MessageSquareIcon, title: "discord_webhook", accent: "#818CF8",
     fields: (s: any, u: (k: string, v: any) => void, t: any) => (<>
+      <SettingRow label={t("discord_activity")} desc={t("discord_activity_desc")}><ToggleSwitch value={s.DiscordRpcEnabled} onChange={v => u("DiscordRpcEnabled", v)} /></SettingRow>
       <SettingRow label={t("webhook_url")} desc={t("webhook_url_desc")}>
         <TextInput value={s.DiscordWebhookUrl} onChange={v => u("DiscordWebhookUrl", v)} placeholder="https://discord.com/api/webhooks/..." wide />
       </SettingRow>
@@ -201,7 +202,7 @@ export default function Settings() {
     AppLockEnabled: false, AppLockOnMinimize: false, AppLockPinHash: "",
     AutoDailyBackup: true, GlobalLaunchCooldownSeconds: 0,
     DailyPlayGoalMinutes: 0, ClipboardCookieDetect: false,
-    DiscordWebhookUrl: "", DiscordRpcEnabled: false,
+    DiscordWebhookUrl: "", DiscordRpcEnabled: true,
     DeveloperModeEnabled: false,
     WebServerEnabled: false, WebServerPort: 7963, RequirePassword: false,
     WebServerPassword: "", AllowGetCookie: true, AllowGetAccounts: true,
@@ -244,6 +245,11 @@ export default function Settings() {
     setSettings(next);
     if (key === "Language") setLanguage(value);
     if (key === "UseBootstrapperLaunch") localStorage.setItem("reiya_use_bootstrapper", value ? "true" : "false");
+    if (key === "DiscordRpcEnabled") {
+      localStorage.setItem("reiya_discord_rpc_enabled", value ? "true" : "false");
+      if (value) invoke("start_discord_rpc").catch(() => {});
+      else invoke("stop_discord_rpc").catch(() => {});
+    }
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(async () => {
       try {

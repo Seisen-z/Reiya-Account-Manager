@@ -1,15 +1,27 @@
+import { useState, useEffect } from "react";
 import { NavLink } from "react-router-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { useUpdate } from "../context/UpdateContext";
 import { useLanguage } from "../context/LanguageContext";
+import RateBanner from "./RateBanner";
 
-const NAV = [
-  { to: "/",             id: "home",         Icon: IcHome },
-  { to: "/accounts",     id: "accounts",     Icon: IcAccounts },
-  { to: "/hub",          id: "hub",          Icon: IcHub },
-  { to: "/utilities",    id: "utilities",    Icon: IcGrid },
-  { to: "/bootstrapper", id: "bootstrapper", Icon: IcBootstrapper },
-  { to: "/theme",        id: "theme",        Icon: IcTheme },
-  { to: "/settings",     id: "settings",     Icon: IcSettings },
+interface RatingStats { average: number; count: number; }
+
+const NAV_GROUPS = [
+  [
+    { to: "/",             id: "home",         Icon: IcHome },
+    { to: "/accounts",     id: "accounts",     Icon: IcAccounts },
+  ],
+  [
+    { to: "/hub",          id: "hub",          Icon: IcHub },
+    { to: "/rscript",      id: "rscript",      Icon: IcRscript },
+    { to: "/bootstrapper", id: "bootstrapper", Icon: IcBootstrapper },
+    { to: "/utilities",    id: "utilities",    Icon: IcGrid },
+  ],
+  [
+    { to: "/theme",        id: "theme",        Icon: IcTheme },
+    { to: "/settings",     id: "settings",     Icon: IcSettings },
+  ],
 ];
 
 export default function Sidebar() {
@@ -17,6 +29,41 @@ export default function Sidebar() {
   const { t } = useLanguage();
   const hasUpdate = !!updateInfo;
   const displayVersion = currentVersion ? `v${currentVersion}` : "v1.0.0";
+
+  const [ratingStats, setRatingStats] = useState<RatingStats | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let attempt = 0;
+
+    const tryFetch = () => {
+      invoke<RatingStats>("get_rating_stats")
+        .then(stats => { if (!cancelled) setRatingStats(stats); })
+        .catch(() => {
+          attempt += 1;
+          if (!cancelled && attempt <= 3) {
+            setTimeout(tryFetch, attempt * 3000);
+          }
+        });
+    };
+    tryFetch();
+
+    return () => { cancelled = true; };
+  }, []);
+
+  const [liveCount, setLiveCount] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchCount = () => {
+      invoke<number>("get_live_count")
+        .then(count => { if (!cancelled) setLiveCount(count); })
+        .catch(() => {});
+    };
+    fetchCount();
+    const id = setInterval(fetchCount, 45000);
+
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   return (
     <aside style={{
@@ -55,16 +102,21 @@ export default function Sidebar() {
         {t("menu")}
       </p>
 
-      {NAV.map(({ to, id, Icon }) => (
-        <NavLink
-          key={to}
-          to={to}
-          end={to === "/"}
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-        >
-          <span className="nav-icon"><Icon /></span>
-          {t(id)}
-        </NavLink>
+      {NAV_GROUPS.map((group, i) => (
+        <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: i > 0 ? 8 : 0 }}>
+          {group.map(({ to, id, Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={to === "/"}
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+            >
+              <span className="nav-icon"><Icon /></span>
+              {t(id)}
+            </NavLink>
+          ))}
+          {i < NAV_GROUPS.length - 1 && <div className="divider" style={{ margin: "8px 6px 0" }} />}
+        </div>
       ))}
 
       {/* Spacer */}
@@ -111,6 +163,9 @@ export default function Sidebar() {
         </div>
       </div>
 
+      {/* Rate this app */}
+      <RateBanner onRated={setRatingStats} />
+
       {/* Version pill */}
       <div style={{
         padding: "8px 10px",
@@ -154,6 +209,37 @@ export default function Sidebar() {
           <span className="chip chip-green" style={{ fontSize: 9, padding: "2px 7px" }}>●  {t("live")}</span>
         )}
       </div>
+
+      {/* Global app rating */}
+      {ratingStats && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+          fontSize: 9.5, color: "var(--t3)", fontWeight: 600, marginTop: 6,
+        }}>
+          {ratingStats.count > 0 ? (
+            <>
+              <span style={{ color: "var(--amber)" }}>★</span>
+              <span>{ratingStats.average.toFixed(1)} · {ratingStats.count} {t("ratings")}</span>
+            </>
+          ) : (
+            <span>{t("no_ratings_yet")}</span>
+          )}
+        </div>
+      )}
+
+      {/* Live users online */}
+      {liveCount !== null && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+          fontSize: 9.5, color: "var(--t3)", fontWeight: 600, marginTop: 4,
+        }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+            background: "var(--green)", boxShadow: "0 0 5px var(--green)",
+          }} />
+          <span>{liveCount} {t("online_now")}</span>
+        </div>
+      )}
     </aside>
   );
 }
@@ -243,6 +329,9 @@ function IcAccounts() {
 }
 function IcHub() {
   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polygon points="8,1.5 10.2,6 15,6.5 11.5,10 12.5,15 8,12.5 3.5,15 4.5,10 1,6.5 5.8,6"/></svg>;
+}
+function IcRscript() {
+  return <img src="/rscript-icon.svg" alt="" width={14} height={14} style={{ filter: "var(--logo-filter)", display: "block" }} />;
 }
 function IcGrid() {
   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.5"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.5"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.5"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.5"/></svg>;

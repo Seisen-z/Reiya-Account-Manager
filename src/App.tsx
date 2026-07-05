@@ -7,6 +7,7 @@ import Sidebar      from "./components/Sidebar";
 import Home         from "./pages/Home";
 import Accounts     from "./pages/Accounts";
 import Hub          from "./pages/Hub";
+import Rscripts     from "./pages/Rscripts";
 import Utilities    from "./pages/Utilities";
 import Settings     from "./pages/Settings";
 import Bootstrapper from "./pages/Bootstrapper";
@@ -31,6 +32,7 @@ const PAGE_LABELS: Record<string, string> = {
   "/":             "On Home",
   "/accounts":     "Managing Accounts",
   "/hub":          "Using Hub",
+  "/rscript":      "Browsing Rscripts",
   "/utilities":    "Using Utilities",
   "/bootstrapper": "Using Bootstrapper",
   "/theme":        "Customizing Themes",
@@ -43,6 +45,7 @@ function AppContent() {
 
   useEffect(() => {
     if (isProgressWindow) return;
+    if (localStorage.getItem("reiya_discord_rpc_enabled") === "false") return;
     const label = PAGE_LABELS[location.pathname] ?? "In App";
     invoke("update_discord_rpc", { page: label }).catch(() => {});
   }, [location.pathname]);
@@ -65,6 +68,7 @@ function AppContent() {
             <Route path="/"             element={<Home />} />
             <Route path="/accounts"     element={<Accounts />} />
             <Route path="/hub"          element={<Hub />} />
+            <Route path="/rscript"      element={<Rscripts />} />
             <Route path="/utilities"    element={<Utilities />} />
             <Route path="/bootstrapper" element={<Bootstrapper />} />
             <Route path="/theme"        element={<ThemePage />} />
@@ -111,8 +115,17 @@ function AppInner() {
       if (settings?.AppLockEnabled) setLocked(true);
       if (settings?.AppLockOnMinimize) setLockOnMinimize(true);
       localStorage.setItem("reiya_use_bootstrapper", settings?.UseBootstrapperLaunch !== false ? "true" : "false");
-      invoke("start_discord_rpc").catch(() => {});
+      const rpcEnabled = settings?.DiscordRpcEnabled !== false;
+      localStorage.setItem("reiya_discord_rpc_enabled", rpcEnabled ? "true" : "false");
+      if (rpcEnabled) invoke("start_discord_rpc").catch(() => {});
     });
+  }, []);
+
+  // Presence heartbeat — powers the "online now" count shown in the sidebar
+  useEffect(() => {
+    invoke("send_heartbeat").catch(() => {});
+    const id = setInterval(() => invoke("send_heartbeat").catch(() => {}), 45000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {

@@ -159,10 +159,9 @@ html, body, #root {
   color: var(--t2);
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all .12s;
+  transition: all .2s ease-out;
   text-decoration: none;
 }
-.nav-item:hover { background: var(--surface-2); color: var(--t1); }
 .nav-item.active {
   background: var(--surface-2);
   border-color: var(--border-mid);
@@ -170,6 +169,14 @@ html, body, #root {
   font-weight: 600;
 }
 .nav-item.active .nav-icon { color: var(--accent); }
+.nav-item:hover {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-text);
+  transform: translate(1px, -1px);
+}
+.nav-item:hover .nav-icon { color: var(--accent-text); }
+.nav-item:active { transform: scale(0.99); }
 .nav-icon { flex-shrink: 0; }
 
 /* ── Divider ── */
@@ -205,6 +212,34 @@ html, body, #root {
   );
   background-size: 200% 100%;
   animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* ── Rate-this-app stars ── */
+.rate-stars {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: center;
+  gap: 6px;
+}
+.rate-star {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  padding: 0;
+  display: inline-flex;
+  transition: transform .15s ease;
+}
+.rate-star svg {
+  width: 16px;
+  height: 16px;
+  fill: var(--t3);
+  transition: fill .15s ease, filter .15s ease;
+}
+.rate-star:hover { transform: scale(1.15); }
+.rate-star:hover svg,
+.rate-star:hover ~ .rate-star svg {
+  fill: var(--amber);
+  filter: drop-shadow(0 0 4px rgba(251,191,36,.5));
 }
 
 /* ── Modern Premium UI Overrides ── */
