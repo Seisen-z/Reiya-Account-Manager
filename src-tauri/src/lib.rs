@@ -6498,12 +6498,12 @@ async fn import_accounts(app: tauri::AppHandle, password: String) -> Result<usiz
     let mut existing: Vec<serde_json::Value> = serde_json::from_str(&existing_content).unwrap_or_default();
 
     let existing_ids: std::collections::HashSet<i64> = existing.iter()
-        .filter_map(|a| a["UserId"].as_i64())
+        .filter_map(|a| a["user_id"].as_i64().or_else(|| a["UserId"].as_i64()))
         .collect();
 
     let mut added = 0usize;
     for acc in imported {
-        let uid = acc["UserId"].as_i64().unwrap_or(0);
+        let uid = acc["user_id"].as_i64().or_else(|| acc["UserId"].as_i64()).unwrap_or(0);
         if uid > 0 && !existing_ids.contains(&uid) {
             existing.push(acc);
             added += 1;

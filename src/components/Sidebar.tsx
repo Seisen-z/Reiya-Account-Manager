@@ -22,6 +22,9 @@ const NAV_GROUPS = [
     { to: "/theme",        id: "theme",        Icon: IcTheme },
     { to: "/settings",     id: "settings",     Icon: IcSettings },
   ],
+  [
+    { to: "/changelog",    id: "changelog",    Icon: IcChangelog },
+  ],
 ];
 
 export default function Sidebar() {
@@ -344,4 +347,7 @@ function IcTheme() {
 }
 function IcSettings() {
   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>;
+}
+function IcChangelog() {
+  return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h9M2 8h12M2 12h7"/><circle cx="13.2" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg>;
 }

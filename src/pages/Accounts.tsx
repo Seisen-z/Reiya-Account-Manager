@@ -115,10 +115,11 @@ export default function Accounts() {
   const [importOk,  setImportOk]  = useState("");
 
   const handleExport = async () => {
-    if (!exportPwd.trim()) { setExportErr("Enter a password to protect the backup."); return; }
+    const pwd = exportPwd.trim();
+    if (!pwd) { setExportErr("Enter a password to protect the backup."); return; }
     setExportLoading(true); setExportErr(""); setExportOk("");
     try {
-      const path = await invoke<string>("export_accounts", { password: exportPwd });
+      const path = await invoke<string>("export_accounts", { password: pwd });
       setExportOk(`Saved to: ${path}`);
       setExportPwd("");
     } catch (e) {
@@ -127,10 +128,11 @@ export default function Accounts() {
   };
 
   const handleImport = async () => {
-    if (!importPwd.trim()) { setImportErr("Enter the backup password."); return; }
+    const pwd = importPwd.trim();
+    if (!pwd) { setImportErr("Enter the backup password."); return; }
     setImportLoading(true); setImportErr(""); setImportOk("");
     try {
-      const added = await invoke<number>("import_accounts", { password: importPwd });
+      const added = await invoke<number>("import_accounts", { password: pwd });
       setImportOk(`Imported ${added} new account${added !== 1 ? "s" : ""}.`);
       setImportPwd("");
       await loadAccounts();
@@ -1194,6 +1196,7 @@ export default function Accounts() {
           <input
             type="password"
             autoFocus
+            autoComplete="off"
             value={exportPwd}
             onChange={e => setExportPwd(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") handleExport(); }}
@@ -1229,6 +1232,7 @@ export default function Accounts() {
           <input
             type="password"
             autoFocus
+            autoComplete="off"
             value={importPwd}
             onChange={e => setImportPwd(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") handleImport(); }}

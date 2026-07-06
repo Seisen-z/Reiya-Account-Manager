@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getChangesSince, ChangeKind } from "../data/changelog";
 
 interface UpdateInfo {
   has_update: boolean;
@@ -20,6 +21,12 @@ interface ProgressPayload {
 interface Props {
   info: UpdateInfo;
 }
+
+const KIND_STYLE: Record<ChangeKind, { label: string; color: string; bg: string }> = {
+  new:      { label: "NEW",      color: "var(--green)", bg: "rgba(34,197,94,0.10)" },
+  improved: { label: "IMPROVED", color: "#A78BFA",       bg: "rgba(167,139,250,0.10)" },
+  fixed:    { label: "FIXED",    color: "var(--red)",   bg: "rgba(248,113,113,0.10)" },
+};
 
 function fmtBytes(b: number) {
   if (b >= 1_048_576) return `${(b / 1_048_576).toFixed(1)} MB`;
@@ -52,6 +59,8 @@ export default function UpdatePrompt({ info }: Props) {
       setUiPhase("idle");
     }
   };
+
+  const releases = getChangesSince(info.current, info.version);
 
   const bar = Math.min(progress.percent, 100);
 
@@ -135,17 +144,53 @@ export default function UpdatePrompt({ info }: Props) {
           <span style={{ fontSize: 11, color: "var(--green)", fontWeight: 700, fontFamily: "monospace" }}>v{info.version}</span>
         </div>
 
-        {info.notes && uiPhase === "idle" && (
-          <div style={{
-            width: "100%", marginBottom: 24,
-            padding: "12px 16px", borderRadius: 12,
-            background: "var(--g03)",
-            border: "1px solid var(--g07)",
-            color: "var(--t2)", fontSize: 12, lineHeight: 1.6,
-            maxHeight: 80, overflowY: "auto",
-          }}>
-            {info.notes}
-          </div>
+        {uiPhase === "idle" && (
+          releases.length > 0 ? (
+            <div style={{
+              width: "100%", marginBottom: 24,
+              padding: "14px 16px", borderRadius: 12,
+              background: "var(--g03)",
+              border: "1px solid var(--g07)",
+              maxHeight: 220, overflowY: "auto",
+              textAlign: "left",
+            }}>
+              {releases.map((release, ri) => (
+                <div key={release.version} style={{ marginBottom: ri < releases.length - 1 ? 14 : 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "var(--t1)", marginBottom: 6 }}>
+                    v{release.version} — {release.title}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {release.changes.map((c, ci) => {
+                      const style = KIND_STYLE[c.kind];
+                      return (
+                        <div key={ci} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                          <span style={{
+                            flexShrink: 0, fontSize: 8.5, fontWeight: 800, letterSpacing: "0.04em",
+                            padding: "2px 6px", borderRadius: 5,
+                            color: style.color, background: style.bg, marginTop: 1,
+                          }}>
+                            {style.label}
+                          </span>
+                          <span style={{ fontSize: 11.5, color: "var(--t2)", lineHeight: 1.5 }}>{c.text}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : info.notes ? (
+            <div style={{
+              width: "100%", marginBottom: 24,
+              padding: "12px 16px", borderRadius: 12,
+              background: "var(--g03)",
+              border: "1px solid var(--g07)",
+              color: "var(--t2)", fontSize: 12, lineHeight: 1.6,
+              maxHeight: 80, overflowY: "auto",
+            }}>
+              {info.notes}
+            </div>
+          ) : null
         )}
 
         {/* Progress bar */}

@@ -12,6 +12,7 @@ import Utilities    from "./pages/Utilities";
 import Settings     from "./pages/Settings";
 import Bootstrapper from "./pages/Bootstrapper";
 import ThemePage    from "./pages/Theme";
+import Changelog     from "./pages/Changelog";
 import LaunchProgress from "./pages/LaunchProgress";
 import Onboarding    from "./pages/Onboarding";
 import KeyGate       from "./pages/KeyGate";
@@ -37,6 +38,7 @@ const PAGE_LABELS: Record<string, string> = {
   "/bootstrapper": "Using Bootstrapper",
   "/theme":        "Customizing Themes",
   "/settings":     "In Settings",
+  "/changelog":    "Viewing Changelog",
 };
 
 function AppContent() {
@@ -73,6 +75,7 @@ function AppContent() {
             <Route path="/bootstrapper" element={<Bootstrapper />} />
             <Route path="/theme"        element={<ThemePage />} />
             <Route path="/settings"     element={<Settings />} />
+            <Route path="/changelog"    element={<Changelog />} />
           </Routes>
         </main>
       </div>
