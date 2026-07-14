@@ -94,11 +94,11 @@ jobs:
           DEST="ReiyaAccountManager-$VERSION-setup.exe"
           cp "$EXE" "$DEST"
 
-          gh release delete "v$VERSION" --repo Seisen88/Key-System --yes 2>/dev/null || true
-          gh api --method DELETE /repos/Seisen88/Key-System/git/refs/tags/v$VERSION 2>/dev/null || true
+          gh release delete "v$VERSION" --repo Seisen-z/Key-System --yes 2>/dev/null || true
+          gh api --method DELETE /repos/Seisen-z/Key-System/git/refs/tags/v$VERSION 2>/dev/null || true
 
           gh release create "v$VERSION" "$DEST" \
-            --repo Seisen88/Key-System \
+            --repo Seisen-z/Key-System \
             --title "Reiya Account Manager v$VERSION" \
             --notes "Version $VERSION — download and run the installer to update." \
             --latest

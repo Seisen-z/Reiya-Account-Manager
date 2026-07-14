@@ -116,7 +116,6 @@ export default function Accounts() {
 
   const handleExport = async () => {
     const pwd = exportPwd.trim();
-    if (!pwd) { setExportErr("Enter a password to protect the backup."); return; }
     setExportLoading(true); setExportErr(""); setExportOk("");
     try {
       const path = await invoke<string>("export_accounts", { password: pwd });
@@ -129,7 +128,6 @@ export default function Accounts() {
 
   const handleImport = async () => {
     const pwd = importPwd.trim();
-    if (!pwd) { setImportErr("Enter the backup password."); return; }
     setImportLoading(true); setImportErr(""); setImportOk("");
     try {
       const added = await invoke<number>("import_accounts", { password: pwd });
@@ -1189,10 +1187,10 @@ export default function Accounts() {
       {showExport && (
         <AccountModal title="Export Backup" onClose={() => { if (!exportLoading) setShowExport(false); }}>
           <p style={{ fontSize: 11, color: "var(--t2)", marginBottom: 16, lineHeight: 1.7 }}>
-            All accounts will be exported to an encrypted <code style={{ color: "var(--amber)", fontFamily: "monospace" }}>.reiya</code> backup file.
-            Choose a strong password — it is required to restore the backup.
+            All accounts will be exported to a <code style={{ color: "var(--amber)", fontFamily: "monospace" }}>.reiya</code> backup file.
+            Add a password for extra protection, or leave it blank to skip — either way, account cookies stay tied to this device's own encryption.
           </p>
-          <FieldLabel>BACKUP PASSWORD</FieldLabel>
+          <FieldLabel>BACKUP PASSWORD (OPTIONAL)</FieldLabel>
           <input
             type="password"
             autoFocus
@@ -1200,7 +1198,7 @@ export default function Accounts() {
             value={exportPwd}
             onChange={e => setExportPwd(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") handleExport(); }}
-            placeholder="Enter a password to encrypt the backup"
+            placeholder="Leave blank for no password"
             disabled={exportLoading}
             style={{
               width: "100%", height: 38, padding: "0 13px", borderRadius: 10, outline: "none",
@@ -1216,7 +1214,7 @@ export default function Accounts() {
           )}
           <ModalActions>
             <ModalBtn label="Cancel" onClick={() => setShowExport(false)} disabled={exportLoading} />
-            <ModalBtn label={exportLoading ? "Exporting..." : "Export Backup"} onClick={handleExport} primary disabled={exportLoading || !exportPwd.trim()} />
+            <ModalBtn label={exportLoading ? "Exporting..." : "Export Backup"} onClick={handleExport} primary disabled={exportLoading} />
           </ModalActions>
         </AccountModal>
       )}
@@ -1228,7 +1226,7 @@ export default function Accounts() {
             Select a <code style={{ color: "var(--amber)", fontFamily: "monospace" }}>.reiya</code> backup file to restore.
             Duplicate accounts (matching User ID) will be skipped.
           </p>
-          <FieldLabel>BACKUP PASSWORD</FieldLabel>
+          <FieldLabel>BACKUP PASSWORD (IF SET)</FieldLabel>
           <input
             type="password"
             autoFocus
@@ -1236,7 +1234,7 @@ export default function Accounts() {
             value={importPwd}
             onChange={e => setImportPwd(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") handleImport(); }}
-            placeholder="Enter the backup password"
+            placeholder="Leave blank if the backup has no password"
             disabled={importLoading}
             style={{
               width: "100%", height: 38, padding: "0 13px", borderRadius: 10, outline: "none",
@@ -1252,7 +1250,7 @@ export default function Accounts() {
           )}
           <ModalActions>
             <ModalBtn label="Cancel" onClick={() => setShowImport(false)} disabled={importLoading} />
-            <ModalBtn label={importLoading ? "Importing..." : "Choose File & Import"} onClick={handleImport} primary disabled={importLoading || !importPwd.trim()} />
+            <ModalBtn label={importLoading ? "Importing..." : "Choose File & Import"} onClick={handleImport} primary disabled={importLoading} />
           </ModalActions>
         </AccountModal>
       )}

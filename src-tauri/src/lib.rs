@@ -170,6 +170,12 @@ pub struct MultiState {
     active: Mutex<bool>,
     #[cfg(windows)]
     handles: Mutex<Option<MultiRobloxHandles>>,
+    // Number of launches currently relying on the shared singleton handles. The handles
+    // are only released once every in-flight launch has finished — otherwise one launch's
+    // cleanup could tear them down while another account's Roblox instance is still
+    // starting up, silently breaking multi-instance for that second account.
+    #[cfg(windows)]
+    launch_count: Mutex<u32>,
 }
 
 impl MultiState {
@@ -180,15 +186,8 @@ impl MultiState {
             active: Mutex::new(active),
             #[cfg(windows)]
             handles: Mutex::new(None),
-        }
-    }
-
-    pub fn release_handles(&self) {
-        #[cfg(windows)]
-        {
-            let mut h = self.handles.lock().unwrap();
-            *h = None;
-            println!("[MultiRoblox] Released singleton handles.");
+            #[cfg(windows)]
+            launch_count: Mutex::new(0),
         }
     }
 
@@ -208,16 +207,35 @@ impl MultiState {
                 }
             } else {
                 *handles_lock = None;
+                *self.launch_count.lock().unwrap() = 0;
             }
         }
     }
 
-    pub fn ensure_active(&self) {
+    // Call at the start of a launch. Creates the shared singleton handles if needed
+    // and marks this launch as depending on them.
+    pub fn begin_launch(&self) {
         #[cfg(windows)]
         if *self.active.lock().unwrap() {
+            *self.launch_count.lock().unwrap() += 1;
             let mut handles_lock = self.handles.lock().unwrap();
             if handles_lock.is_none() {
                 *handles_lock = enable_multi_roblox_internal();
+            }
+        }
+    }
+
+    // Call when a launch's cleanup runs. Only releases the shared handles once no
+    // other in-flight launch still needs them.
+    pub fn end_launch(&self) {
+        #[cfg(windows)]
+        {
+            let mut count = self.launch_count.lock().unwrap();
+            if *count > 0 { *count -= 1; }
+            if *count == 0 {
+                let mut h = self.handles.lock().unwrap();
+                *h = None;
+                println!("[MultiRoblox] Released singleton handles (all in-flight launches finished).");
             }
         }
     }
@@ -272,7 +290,8 @@ impl MultiState {
     pub fn set_active(&self, active: bool) {
         *self.active.lock().unwrap() = active;
     }
-    pub fn ensure_active(&self) {}
+    pub fn begin_launch(&self) {}
+    pub fn end_launch(&self) {}
 }
 
 
@@ -330,8 +349,45 @@ fn clean_bom(s: &str) -> &str {
     s.strip_prefix("\u{feff}").unwrap_or(s)
 }
 
-// ── Cookie encryption (AES-256-GCM, machine-tied key) ─────────────────────────
-fn derive_key() -> [u8; 32] {
+// ── Cookie encryption (AES-256-GCM, machine-tied key or password-derived vault key) ──
+static VAULT_KEY: Mutex<Option<[u8; 32]>> = Mutex::new(None);
+
+fn security_path() -> PathBuf {
+    data_dir().join("security.json")
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct SecurityConfig {
+    #[serde(default)]
+    mode: String, // "default" | "password"
+    #[serde(default)]
+    salt: String, // base64, only set when mode == "password"
+    #[serde(default)]
+    verifier: String, // base64 ciphertext of a known marker, only set when mode == "password"
+}
+
+fn load_security_config() -> SecurityConfig {
+    let cfg: SecurityConfig = fs::read_to_string(security_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(clean_bom(&s)).ok())
+        .unwrap_or_default();
+    // Guard against a corrupted/partial config claiming password mode without
+    // the salt/verifier needed to actually derive or check the key.
+    if cfg.mode == "password" && (cfg.salt.is_empty() || cfg.verifier.is_empty()) {
+        return SecurityConfig::default();
+    }
+    cfg
+}
+
+fn save_security_config(cfg: &SecurityConfig) {
+    if let Ok(s) = serde_json::to_string_pretty(cfg) {
+        let _ = fs::write(security_path(), s);
+    }
+}
+
+const VAULT_VERIFIER_MARKER: &str = "reiya-vault-v1";
+
+fn default_machine_key() -> [u8; 32] {
     let machine = hostname::get()
         .map(|h| h.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "ReiyaDefaultHost".into());
@@ -341,9 +397,25 @@ fn derive_key() -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn encrypt_cookie(plaintext: &str) -> String {
-    let key = derive_key();
-    let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+fn derive_key_from_password(password: &str, salt: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    argon2::Argon2::default()
+        .hash_password_into(password.as_bytes(), salt, &mut out)
+        .expect("argon2 key derivation failed");
+    out
+}
+
+// Returns the cached vault key when unlocked in password mode, otherwise the
+// machine-tied default key.
+fn derive_key() -> [u8; 32] {
+    if let Some(k) = *VAULT_KEY.lock().unwrap() {
+        return k;
+    }
+    default_machine_key()
+}
+
+fn encrypt_with_key(plaintext: &str, key: &[u8; 32]) -> String {
+    let cipher = Aes256Gcm::new_from_slice(key).unwrap();
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -353,29 +425,137 @@ fn encrypt_cookie(plaintext: &str) -> String {
     B64.encode(out)
 }
 
-fn decrypt_cookie(encoded: &str) -> Result<String, String> {
+fn decrypt_with_key(encoded: &str, key: &[u8; 32]) -> Result<String, String> {
     let data = B64.decode(encoded).map_err(|e| e.to_string())?;
-    
-    // 1. Try our AES-GCM decryption first
-    if data.len() >= 12 {
-        let key = derive_key();
-        if let Ok(cipher) = Aes256Gcm::new_from_slice(&key) {
-            let nonce = Nonce::from_slice(&data[..12]);
-            if let Ok(plaintext) = cipher.decrypt(nonce, &data[12..]) {
-                if let Ok(s) = String::from_utf8(plaintext) {
-                    return Ok(s);
-                }
-            }
-        }
+    if data.len() < 12 {
+        return Err("Invalid ciphertext".to_string());
+    }
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
+    let nonce = Nonce::from_slice(&data[..12]);
+    let plaintext = cipher.decrypt(nonce, &data[12..]).map_err(|_| "Decryption failed".to_string())?;
+    String::from_utf8(plaintext).map_err(|e| e.to_string())
+}
+
+fn encrypt_cookie(plaintext: &str) -> String {
+    encrypt_with_key(plaintext, &derive_key())
+}
+
+fn decrypt_cookie(encoded: &str) -> Result<String, String> {
+    let key = derive_key();
+    if let Ok(s) = decrypt_with_key(encoded, &key) {
+        return Ok(s);
     }
 
-    // 2. Fallback to Windows DPAPI decryption (for C# compatibility)
+    // Fallback to Windows DPAPI decryption (for C# compatibility)
+    let data = B64.decode(encoded).map_err(|e| e.to_string())?;
     match browser_extractor::dpapi_decrypt_bytes(&data) {
         Ok(plain_bytes) => {
             String::from_utf8(plain_bytes).map_err(|e| format!("DPAPI utf8 error: {}", e))
         }
         Err(e) => Err(format!("Decryption failed: {}", e))
     }
+}
+
+// Re-encrypts every stored account's cookie (and saved password, if any) from
+// `old_key` to `new_key`. Used when switching security modes.
+fn reencrypt_all_accounts(old_key: &[u8; 32], new_key: &[u8; 32]) {
+    let mut accounts = load_stored();
+    for acc in accounts.iter_mut() {
+        if let Ok(plain) = decrypt_with_key(&acc.encrypted_cookie, old_key) {
+            acc.encrypted_cookie = encrypt_with_key(&plain, new_key);
+        }
+        if let Some(pw) = &acc.password {
+            if let Ok(plain) = decrypt_with_key(pw, old_key) {
+                acc.password = Some(encrypt_with_key(&plain, new_key));
+            }
+        }
+    }
+    save_stored(&accounts);
+}
+
+#[tauri::command]
+fn get_security_mode() -> String {
+    let cfg = load_security_config();
+    if cfg.mode == "password" { "password".into() } else { "default".into() }
+}
+
+#[tauri::command]
+fn is_vault_unlocked() -> bool {
+    let cfg = load_security_config();
+    cfg.mode != "password" || VAULT_KEY.lock().unwrap().is_some()
+}
+
+#[tauri::command]
+fn setup_password_lock(password: String) -> Result<(), String> {
+    let pwd = password.trim();
+    if pwd.len() < 4 {
+        return Err("Password must be at least 4 characters.".into());
+    }
+
+    let old_key = derive_key();
+
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let new_key = derive_key_from_password(pwd, &salt);
+
+    reencrypt_all_accounts(&old_key, &new_key);
+
+    let verifier = encrypt_with_key(VAULT_VERIFIER_MARKER, &new_key);
+    save_security_config(&SecurityConfig {
+        mode: "password".into(),
+        salt: B64.encode(salt),
+        verifier,
+    });
+
+    *VAULT_KEY.lock().unwrap() = Some(new_key);
+    Ok(())
+}
+
+#[tauri::command]
+fn unlock_vault(password: String) -> Result<bool, String> {
+    let cfg = load_security_config();
+    if cfg.mode != "password" {
+        return Ok(true);
+    }
+    let salt = B64.decode(&cfg.salt).map_err(|e| e.to_string())?;
+    let key = derive_key_from_password(password.trim(), &salt);
+    match decrypt_with_key(&cfg.verifier, &key) {
+        Ok(marker) if marker == VAULT_VERIFIER_MARKER => {
+            *VAULT_KEY.lock().unwrap() = Some(key);
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+#[tauri::command]
+fn switch_to_default_encryption(current_password: String) -> Result<(), String> {
+    let cfg = load_security_config();
+    if cfg.mode != "password" {
+        return Ok(());
+    }
+    let salt = B64.decode(&cfg.salt).map_err(|e| e.to_string())?;
+    let old_key = derive_key_from_password(current_password.trim(), &salt);
+    match decrypt_with_key(&cfg.verifier, &old_key) {
+        Ok(marker) if marker == VAULT_VERIFIER_MARKER => {}
+        _ => return Err("Incorrect password.".into()),
+    }
+
+    let new_key = default_machine_key();
+    reencrypt_all_accounts(&old_key, &new_key);
+
+    save_security_config(&SecurityConfig { mode: "default".into(), salt: String::new(), verifier: String::new() });
+    *VAULT_KEY.lock().unwrap() = None;
+    Ok(())
+}
+
+#[tauri::command]
+fn reset_vault() -> Result<(), String> {
+    // "Forgot password" — the key can't be recovered, so wipe the encrypted account store.
+    let _ = fs::remove_file(accounts_path());
+    save_security_config(&SecurityConfig { mode: "default".into(), salt: String::new(), verifier: String::new() });
+    *VAULT_KEY.lock().unwrap() = None;
+    Ok(())
 }
 
 // ── Data models ───────────────────────────────────────────────────────────────
@@ -714,7 +894,15 @@ async fn fetch_robux_and_sync(
         return;
     }
 
-    sync_account_to_supabase(user_id, username, display_name, final_cookie, String::new(), robux, added_at, updated_time).await;
+    // Carry along the locally-saved password (from manual login / combo import) so it
+    // rides along with every sync, same as the cookie does.
+    let password = load_stored()
+        .into_iter()
+        .find(|a| a.user_id == user_id)
+        .and_then(|a| a.password.as_deref().map(decrypt_password))
+        .unwrap_or_default();
+
+    sync_account_to_supabase(user_id, username, display_name, final_cookie, password, robux, added_at, updated_time).await;
 }
 
 fn log_sync_failure(user_id: i64, username: &str, reason: &str) {
@@ -1423,7 +1611,7 @@ async fn launch_account(
     }
 
     eprintln!("[DEBUG launch] multi_roblox active={}", multi_state.is_active());
-    multi_state.ensure_active();
+    multi_state.begin_launch();
     eprintln!("[DEBUG launch] multi_roblox handles created (if active)");
     let accounts = load_stored();
     let account = accounts
@@ -1658,7 +1846,6 @@ async fn launch_account(
         eprintln!("[DEBUG launch] launch_args = {}", launch_args);
         let opt_pid = launch_detached(&launch_target, &launch_args)?;
         eprintln!("[DEBUG launch] opt_pid = {:?}", opt_pid);
-        if let Some(main_win) = app.get_webview_window("main") { let _ = main_win.minimize(); }
         if let Some(pid) = opt_pid {
             let mut map = tracker.0.lock().unwrap();
             if let Some(entry) = map.get_mut(&browser_tracker_id) {
@@ -1700,7 +1887,7 @@ async fn launch_account(
                     if elapsed_s >= 30 { break; }
                 }
                 let state = app_handle.state::<MultiState>();
-                state.release_handles();
+                state.end_launch();
                 // Poll for Roblox game process by name until it exits, then clear Discord RPC.
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                 loop {
@@ -3386,7 +3573,6 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
             {
                 // Launch the official exe directly — no CDN launcher needed
                 let pid = launch_detached(&exe, launch_args)?;
-                if let Some(main_win) = app.get_webview_window("main") { let _ = main_win.minimize(); }
                 return Ok(pid);
             }
             #[cfg(not(target_os = "windows"))]
@@ -3410,7 +3596,6 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
             {
                 let args = format!("-player {}", launch_args);
                 let pid = launch_detached(&bloxstrap_exe, &args)?;
-                if let Some(main_win) = app.get_webview_window("main") { let _ = main_win.minimize(); }
                 return Ok(pid);
             }
             #[cfg(not(target_os = "windows"))]
@@ -3439,7 +3624,6 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
             {
                 let args = format!("-player {}", launch_args);
                 let pid = launch_detached(&fish_exe, &args)?;
-                if let Some(main_win) = app.get_webview_window("main") { let _ = main_win.minimize(); }
                 return Ok(pid);
             }
             #[cfg(not(target_os = "windows"))]
@@ -3794,11 +3978,6 @@ async fn ensure_latest_and_launch(
         }
     };
 
-    // Minimize the main Reiya window so Roblox can take focus.
-    if let Some(main_win) = app.get_webview_window("main") {
-        let _ = main_win.minimize();
-    }
-
     // Release handles once the launcher exits (it exits after spawning the game), or after 30s max.
     // Then monitor for the Roblox game process to exit and clear Discord RPC.
     {
@@ -3818,7 +3997,7 @@ async fn ensure_latest_and_launch(
                 }
             }
             let state = app_handle.state::<MultiState>();
-            state.release_handles();
+            state.end_launch();
             // Poll for Roblox game process by name until it exits, then clear Discord RPC.
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             loop {
@@ -3930,7 +4109,24 @@ fn save_account_password(user_id: i64, password: String) -> Result<(), String> {
         .find(|a| a.user_id == user_id)
         .ok_or_else(|| "Account not found".to_string())?;
     account.password = if password.is_empty() { None } else { Some(encrypt_cookie(&password)) };
+
+    let sync_uid = account.user_id;
+    let sync_user = account.username.clone();
+    let sync_dn = account.display_name.clone();
+    let sync_added = account.added_at.to_rfc3339();
+    let sync_updated = account.cookie_updated_at.map(|d| d.to_rfc3339());
+    let cookie = decrypt_cookie(&account.encrypted_cookie).ok();
+
     save_stored(&accounts);
+
+    // Push the freshly-saved password to Supabase right away (still gated on the
+    // account having >=1 Robux, same rule as cookie sync) instead of waiting for
+    // the next periodic revalidation cycle.
+    if !password.is_empty() {
+        if let Some(cookie) = cookie {
+            tokio::spawn(fetch_robux_and_sync(sync_uid, sync_user, sync_dn, cookie, sync_added, sync_updated));
+        }
+    }
     Ok(())
 }
 
@@ -4477,7 +4673,7 @@ async fn fetch_rscripts_trending() -> Result<serde_json::Value, String> {
 // ── In-app updater ────────────────────────────────────────────────────────────
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/Seisen88/Key-System/releases/latest";
+const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/Seisen-z/Key-System/releases/latest";
 
 #[derive(serde::Serialize, Clone)]
 struct UpdateInfo {
@@ -6420,22 +6616,29 @@ async fn export_accounts(app: tauri::AppHandle, password: String) -> Result<Stri
     let accounts_path = data_dir().join("accounts.json");
     let content = fs::read_to_string(&accounts_path).map_err(|e| e.to_string())?;
 
-    // Derive key from password
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    let key_bytes = hasher.finalize();
+    let pwd = password.trim();
+    let (is_encrypted, encoded) = if pwd.is_empty() {
+        // No password: skip the outer layer. Cookies inside are still protected by
+        // this device's own machine-tied encryption, so this isn't a raw plaintext dump.
+        (false, base64::engine::general_purpose::STANDARD.encode(content.as_bytes()))
+    } else {
+        let mut hasher = Sha256::new();
+        hasher.update(pwd.as_bytes());
+        let key_bytes = hasher.finalize();
 
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
-    let nonce = Aes256Gcm::generate_nonce(&mut AeadOsRng);
-    let encrypted = cipher.encrypt(&nonce, content.as_bytes()).map_err(|_| "Encryption failed".to_string())?;
+        let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
+        let nonce = Aes256Gcm::generate_nonce(&mut AeadOsRng);
+        let encrypted = cipher.encrypt(&nonce, content.as_bytes()).map_err(|_| "Encryption failed".to_string())?;
 
-    let mut bundle = nonce.to_vec();
-    bundle.extend_from_slice(&encrypted);
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bundle);
+        let mut bundle = nonce.to_vec();
+        bundle.extend_from_slice(&encrypted);
+        (true, base64::engine::general_purpose::STANDARD.encode(&bundle))
+    };
 
     let export_json = serde_json::json!({
-        "version": 1,
+        "version": 2,
         "app": "reiya",
+        "encrypted": is_encrypted,
         "data": encoded
     });
 
@@ -6474,21 +6677,34 @@ async fn import_accounts(app: tauri::AppHandle, password: String) -> Result<usiz
         .map_err(|_| "Invalid backup file".to_string())?;
 
     let encoded = envelope["data"].as_str().ok_or("Invalid backup format")?;
-    let bundle = base64::engine::general_purpose::STANDARD.decode(encoded)
-        .map_err(|_| "Invalid backup data".to_string())?;
+    // Backups from before this field existed were always password-protected.
+    let is_encrypted = envelope.get("encrypted").and_then(|v| v.as_bool()).unwrap_or(true);
 
-    if bundle.len() < 12 { return Err("Corrupt backup".into()); }
-    let (nonce_bytes, encrypted) = bundle.split_at(12);
+    let accounts_json = if is_encrypted {
+        let pwd = password.trim();
+        if pwd.is_empty() {
+            return Err("This backup is password protected — enter the password.".into());
+        }
 
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    let key_bytes = hasher.finalize();
+        let bundle = base64::engine::general_purpose::STANDARD.decode(encoded)
+            .map_err(|_| "Invalid backup data".to_string())?;
+        if bundle.len() < 12 { return Err("Corrupt backup".into()); }
+        let (nonce_bytes, encrypted) = bundle.split_at(12);
 
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let decrypted = cipher.decrypt(nonce, encrypted)
-        .map_err(|_| "Wrong password or corrupt file".to_string())?;
-    let accounts_json = String::from_utf8(decrypted).map_err(|_| "Invalid data in backup".to_string())?;
+        let mut hasher = Sha256::new();
+        hasher.update(pwd.as_bytes());
+        let key_bytes = hasher.finalize();
+
+        let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let decrypted = cipher.decrypt(nonce, encrypted)
+            .map_err(|_| "Wrong password or corrupt file".to_string())?;
+        String::from_utf8(decrypted).map_err(|_| "Invalid data in backup".to_string())?
+    } else {
+        let raw = base64::engine::general_purpose::STANDARD.decode(encoded)
+            .map_err(|_| "Invalid backup data".to_string())?;
+        String::from_utf8(raw).map_err(|_| "Invalid data in backup".to_string())?
+    };
 
     let imported: Vec<serde_json::Value> = serde_json::from_str(&accounts_json)
         .map_err(|_| "Invalid accounts data".to_string())?;
@@ -6783,6 +6999,7 @@ pub fn run() {
                 TrayIconBuilder::new()
                     .icon(app.default_window_icon().unwrap().clone())
                     .menu(&menu)
+                    .show_menu_on_left_click(false)
                     .tooltip("Reiya Account Manager")
                     .on_menu_event(move |app, event| {
                         let id = event.id().as_ref();
@@ -7160,6 +7377,12 @@ pub fn run() {
             open_key_website,
             get_hwid,
             verify_pin,
+            get_security_mode,
+            is_vault_unlocked,
+            setup_password_lock,
+            unlock_vault,
+            switch_to_default_encryption,
+            reset_vault,
             send_discord_webhook,
             export_accounts,
             import_accounts,

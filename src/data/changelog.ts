@@ -40,6 +40,20 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.1",
+    date: "2026-07-14",
+    title: "Password-locked encryption, multi-launch, MultiRoblox fix",
+    changes: [
+      { kind: "new", text: "Added an optional password-locked encryption mode — set a password and Reiya will ask for it every launch before decrypting your accounts. Available on first run or later from Settings." },
+      { kind: "new", text: "You can now select multiple accounts in the Home list and launch them all into the same game at once." },
+      { kind: "improved", text: "Backup export/import no longer requires a password — leave it blank to skip, or set one for extra protection. Old password-only backups still restore normally." },
+      { kind: "fixed", text: "MultiRoblox could silently stop working after the first launch — the shared multi-instance handles were being released as soon as any single launch finished, even while other accounts were still starting up. Handles are now only released once every in-flight launch is done." },
+      { kind: "improved", text: "MultiRoblox is now enabled by default." },
+      { kind: "fixed", text: "The tray icon's left-click opened the right-click menu instead of showing/hiding the window. Left-click now toggles the window; right-click shows the menu." },
+      { kind: "improved", text: "Launching an account or game no longer minimizes the main window." },
+    ],
+  },
+  {
     version: "1.1.0",
     date: "2026-07-06",
     title: "Changelog tab, backup fixes",

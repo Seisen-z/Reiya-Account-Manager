@@ -18,6 +18,8 @@ import Onboarding    from "./pages/Onboarding";
 import KeyGate       from "./pages/KeyGate";
 import UpdatePrompt  from "./pages/UpdatePrompt";
 import AppLock       from "./pages/AppLock";
+import SecuritySetup from "./pages/SecuritySetup";
+import VaultUnlock   from "./pages/VaultUnlock";
 import { BootstrapperProvider } from "./context/BootstrapperContext";
 import { UpdateProvider, useUpdate } from "./context/UpdateContext";
 import { useLanguage } from "./context/LanguageContext";
@@ -92,6 +94,13 @@ function AppInner() {
   const [onboardingDone, setOnboardingDone] = useState(
     () => localStorage.getItem("reiya_onboarding_v1") === "done"
   );
+  // Existing users (already past onboarding before this feature shipped) skip the
+  // first-run security choice — they stay on Default Encryption unless they opt in via Settings.
+  const [securitySetupDone, setSecuritySetupDone] = useState(
+    () => localStorage.getItem("reiya_security_setup_v1") === "done" || localStorage.getItem("reiya_onboarding_v1") === "done"
+  );
+  const [securityMode, setSecurityMode]   = useState<"default" | "password" | null>(null);
+  const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const [locked, setLocked]               = useState(false);
   const [lockOnMinimize, setLockOnMinimize] = useState(false);
   // Force re-render every 800ms while an update is pending so DevTools DOM removal is undone by React
@@ -106,9 +115,12 @@ function AppInner() {
     Promise.all([
       invoke<LicenseStatus>("check_license").catch(() => ({ needs_key: false, key: "", expires_at: null, reason: "valid" } as LicenseStatus)),
       invoke<any>("get_settings").catch(() => ({})),
-    ]).then(([status, settings]) => {
+      invoke<string>("get_security_mode").catch(() => "default"),
+    ]).then(([status, settings, secMode]) => {
       setLicenseStatus(status);
       setLicenseChecked(true);
+      setSecurityMode(secMode === "password" ? "password" : "default");
+      if (secMode !== "password") setVaultUnlocked(true);
       if (settings?.Language) setLanguage(settings.Language);
       if (settings?.ThemeName) {
         const saved = THEMES.find(t => t.id === settings.ThemeName);
@@ -156,23 +168,35 @@ function AppInner() {
 
   const needsKey   = licenseStatus?.needs_key ?? false;
   const keyReason  = licenseStatus?.reason ?? "missing";
+  // Data is encrypted with a password-derived key that hasn't been unlocked yet —
+  // block everything else so pages don't fetch/decrypt accounts with the wrong key.
+  const needsVaultUnlock = securityMode === "password" && !vaultUnlocked;
 
   return (
     <BrowserRouter>
       <BootstrapperProvider>
-        {locked && <AppLock onUnlocked={() => setLocked(false)} />}
+        {needsVaultUnlock && <VaultUnlock onUnlocked={() => setVaultUnlocked(true)} />}
+        {!needsVaultUnlock && locked && <AppLock onUnlocked={() => setLocked(false)} />}
         {/* Mandatory update blocker — cannot be dismissed, survives restarts */}
-        {updateInfo && <UpdatePrompt info={updateInfo} />}
-        {needsKey && (
+        {!needsVaultUnlock && updateInfo && <UpdatePrompt info={updateInfo} />}
+        {!needsVaultUnlock && needsKey && (
           <KeyGate
             reason={keyReason as "missing" | "expired" | "tampered"}
             onValidated={() => setLicenseStatus(s => s ? { ...s, needs_key: false, reason: "valid" } : s)}
           />
         )}
-        {!needsKey && !updateInfo && !onboardingDone && (
+        {!needsVaultUnlock && !needsKey && !updateInfo && !securitySetupDone && (
+          <SecuritySetup onDone={(mode) => {
+            setSecurityMode(mode);
+            setVaultUnlocked(true);
+            setSecuritySetupDone(true);
+            localStorage.setItem("reiya_security_setup_v1", "done");
+          }} />
+        )}
+        {!needsVaultUnlock && !needsKey && !updateInfo && securitySetupDone && !onboardingDone && (
           <Onboarding onDone={() => setOnboardingDone(true)} />
         )}
-        <AppContent />
+        {!needsVaultUnlock && <AppContent />}
       </BootstrapperProvider>
     </BrowserRouter>
   );

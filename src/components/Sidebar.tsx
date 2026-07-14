@@ -313,7 +313,7 @@ const SOCIALS = [
   },
   {
     label: "GitHub",
-    href: "https://github.com/Seisen88",
+    href: "https://github.com/Seisen-z",
     color: "#E8E8E8",
     Icon: () => (
       <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">

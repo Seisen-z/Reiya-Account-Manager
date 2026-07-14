@@ -366,6 +366,7 @@ export default function Settings() {
       {/* Settings content — 2 col grid */}
       <div className="scroll" style={{ flex: 1, padding: "20px 28px 24px" }}>
         {activeTab === "app" && <LicenseCard />}
+        {activeTab === "app" && <DataSecurityCard />}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 1100 }}>
           {settings && sections.map((section: any) => (
             <div key={section.id} style={{
@@ -575,6 +576,144 @@ function LicenseCard() {
           background: resetMsg.ok ? "rgba(52,211,153,0.05)" : "rgba(248,113,113,0.05)",
         }}>
           {resetMsg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DataSecurityCard() {
+  const [mode, setMode]       = useState<"default" | "password" | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [pwd1, setPwd1]       = useState("");
+  const [pwd2, setPwd2]       = useState("");
+  const [busy, setBusy]       = useState(false);
+  const [err, setErr]         = useState("");
+
+  const load = useCallback(() => {
+    invoke<string>("get_security_mode").then(m => setMode(m === "password" ? "password" : "default")).catch(() => setMode("default"));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const reset = () => { setExpanded(false); setPwd1(""); setPwd2(""); setErr(""); };
+
+  const handleEnable = async () => {
+    if (pwd1.length < 4) { setErr("Password must be at least 4 characters."); return; }
+    if (pwd1 !== pwd2) { setErr("Passwords don't match."); return; }
+    setBusy(true); setErr("");
+    try {
+      await invoke("setup_password_lock", { password: pwd1 });
+      window.location.reload();
+    } catch (e) {
+      setErr(String(e)); setBusy(false);
+    }
+  };
+
+  const handleDisable = async () => {
+    if (!pwd1) { setErr("Enter your current password."); return; }
+    setBusy(true); setErr("");
+    try {
+      await invoke("switch_to_default_encryption", { currentPassword: pwd1 });
+      window.location.reload();
+    } catch (e) {
+      setErr(String(e)); setBusy(false);
+    }
+  };
+
+  if (mode === null) return null;
+  const isPasswordMode = mode === "password";
+
+  return (
+    <div style={{ borderRadius: 14, marginBottom: 16, background: "var(--g01)", border: "1px solid var(--glass-line-strong)", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 18px" }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 9, flexShrink: 0,
+          background: isPasswordMode ? "rgba(167,139,250,0.14)" : "var(--g06)",
+          border: `1px solid ${isPasswordMode ? "rgba(167,139,250,0.3)" : "var(--g08)"}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <ShieldIcon size={15} color={isPasswordMode ? "#A78BFA" : "var(--t2)"} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "var(--t1)" }}>Data Security</span>
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 99,
+              background: isPasswordMode ? "rgba(167,139,250,0.14)" : "var(--g06)",
+              color: isPasswordMode ? "#A78BFA" : "var(--t3)",
+            }}>{isPasswordMode ? "PASSWORD LOCKED" : "DEFAULT ENCRYPTION"}</span>
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--t3)" }}>
+            {isPasswordMode
+              ? "Reiya asks for your password every time it starts."
+              : "Cookies are encrypted and tied to this device automatically."}
+          </div>
+        </div>
+        {!expanded && (
+          <button onClick={() => { setExpanded(true); setErr(""); }}
+            style={{
+              padding: "6px 13px", borderRadius: 8, flexShrink: 0,
+              border: "1px solid var(--g08)", background: "transparent",
+              color: "var(--t3)", fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all .12s",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = "#A78BFA"; e.currentTarget.style.borderColor = "rgba(167,139,250,0.3)"; }}
+            onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.borderColor = "var(--g08)"; }}
+          >
+            {isPasswordMode ? "Switch to Default" : "Enable Password Lock"}
+          </button>
+        )}
+      </div>
+
+      {expanded && (
+        <div style={{ padding: "0 18px 16px", borderTop: "1px solid var(--g05)", paddingTop: 14 }}>
+          {isPasswordMode ? (
+            <>
+              <div style={{ fontSize: 10.5, color: "var(--t3)", marginBottom: 10, lineHeight: 1.6 }}>
+                Enter your current password to switch back to default (device-tied) encryption.
+              </div>
+              <input
+                type="password" autoFocus autoComplete="off"
+                value={pwd1} onChange={e => { setPwd1(e.target.value); setErr(""); }}
+                onKeyDown={e => { if (e.key === "Enter") handleDisable(); }}
+                placeholder="Current password" disabled={busy}
+                style={{ width: "100%", maxWidth: 280, height: 34, padding: "0 12px", borderRadius: 8, outline: "none", background: "var(--g03)", border: "1px solid var(--g07)", color: "var(--t1)", fontSize: 11.5, marginBottom: 10 }}
+              />
+              {err && <div style={{ fontSize: 10.5, color: "var(--red)", fontWeight: 600, marginBottom: 10 }}>{err}</div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={reset} disabled={busy} style={{ padding: "6px 13px", borderRadius: 8, border: "1px solid var(--g08)", background: "transparent", color: "var(--t3)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                <button onClick={handleDisable} disabled={busy || !pwd1} style={{ padding: "6px 13px", borderRadius: 8, border: "none", background: "rgba(167,139,250,0.15)", color: "#A78BFA", fontSize: 11, fontWeight: 700, cursor: "pointer", opacity: busy || !pwd1 ? 0.5 : 1 }}>
+                  {busy ? "Switching…" : "Switch to Default"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 10.5, color: "var(--t3)", marginBottom: 10, lineHeight: 1.6 }}>
+                Set a password to encrypt your accounts. You'll need it every time Reiya starts — if you forget it, saved accounts can't be recovered.
+              </div>
+              <input
+                type="password" autoFocus autoComplete="off"
+                value={pwd1} onChange={e => { setPwd1(e.target.value); setErr(""); }}
+                placeholder="New password" disabled={busy}
+                style={{ width: "100%", maxWidth: 280, height: 34, padding: "0 12px", borderRadius: 8, outline: "none", background: "var(--g03)", border: "1px solid var(--g07)", color: "var(--t1)", fontSize: 11.5, marginBottom: 8 }}
+              />
+              <input
+                type="password" autoComplete="off"
+                value={pwd2} onChange={e => { setPwd2(e.target.value); setErr(""); }}
+                onKeyDown={e => { if (e.key === "Enter") handleEnable(); }}
+                placeholder="Confirm password" disabled={busy}
+                style={{ width: "100%", maxWidth: 280, height: 34, padding: "0 12px", borderRadius: 8, outline: "none", background: "var(--g03)", border: "1px solid var(--g07)", color: "var(--t1)", fontSize: 11.5, marginBottom: 10 }}
+              />
+              {err && <div style={{ fontSize: 10.5, color: "var(--red)", fontWeight: 600, marginBottom: 10 }}>{err}</div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={reset} disabled={busy} style={{ padding: "6px 13px", borderRadius: 8, border: "1px solid var(--g08)", background: "transparent", color: "var(--t3)", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                <button onClick={handleEnable} disabled={busy || !pwd1 || !pwd2} style={{ padding: "6px 13px", borderRadius: 8, border: "none", background: "rgba(167,139,250,0.15)", color: "#A78BFA", fontSize: 11, fontWeight: 700, cursor: "pointer", opacity: busy || !pwd1 || !pwd2 ? 0.5 : 1 }}>
+                  {busy ? "Securing…" : "Enable Password Lock"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

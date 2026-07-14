@@ -211,6 +211,14 @@ export default function Home() {
 
   // Launch state
   const [selAccount,      setSelAccount]      = useState<number | null>(null);
+  const [multiSelected,   setMultiSelected]   = useState<Set<number>>(new Set());
+  const toggleMultiSelect = (userId: number) => {
+    setMultiSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId); else next.add(userId);
+      return next;
+    });
+  };
   const [launchPlaceId,   setLaunchPlaceId]   = useState("");  // selected placeId (from recent or manual)
   const [jobId,           setJobId]           = useState("");
   const [accessCode,      setAccessCode]      = useState("");
@@ -1191,6 +1199,61 @@ export default function Home() {
     }
   };
 
+  const handleLaunchMultiple = async () => {
+    const ids = Array.from(multiSelected);
+    if (ids.length === 0) return;
+
+    setLaunching(true);
+    setLaunchError("");
+    const rpcLabel = effectiveGameName ? `Launching ${effectiveGameName}` : "Launching Roblox";
+    invoke("update_discord_rpc", { page: rpcLabel }).catch(() => {});
+
+    const failed: string[] = [];
+    for (const userId of ids) {
+      const account = accounts.find(a => a.user_id === userId);
+      if (!account) continue;
+      if (account.cookie_status !== "Valid") { failed.push(account.username); continue; }
+      try {
+        await invoke("launch_account", {
+          userId,
+          placeId:        effectivePlaceId,
+          jobId:          jobId    || null,
+          accessCode:     accessCode || null,
+          gameName:       effectiveGameName,
+          useBootstrapper,
+        });
+        if (effectivePlaceId && launchGame) pushAccGameHistory(userId, launchGame);
+        pushLaunchHistory(userId, account.username, effectivePlaceId || "", effectiveGameName || "");
+        setPlayingUserId(userId);
+        setPlayingGame(effectiveGameName || "Roblox");
+      } catch (e) {
+        failed.push(account.username);
+      }
+      // Stagger launches so Roblox auth-ticket requests don't collide.
+      await new Promise(res => setTimeout(res, 1500));
+    }
+
+    const gameName = effectiveGameName || "Roblox";
+    invoke("update_discord_rpc", { page: `Playing ${gameName}` }).catch(() => {});
+    if (failed.length > 0) {
+      setLaunchError(`Failed to launch: ${failed.join(", ")}`);
+    }
+    setMultiSelected(new Set());
+    setTimeout(async () => {
+      const [sess, evts, hist, recents] = await Promise.all([
+        invoke<Session[]>("get_live_sessions").catch(() => []),
+        invoke<EventEntry[]>("get_event_log").catch(() => []),
+        invoke<SessionRecord[]>("get_session_history").catch(() => []),
+        invoke<RecentGame[]>("get_recent_games").catch(() => []),
+      ]);
+      setSessions(sess);
+      setEvents(evts);
+      setSessionHistory(hist);
+      setRecentGames(recents);
+    }, 3000);
+    setLaunching(false);
+  };
+
   const handleLaunchApp = async () => {
     if (selAccount === null) return;
     const account = accounts.find(a => a.user_id === selAccount);
@@ -1485,6 +1548,8 @@ export default function Home() {
                 <CompactAccountRow key={a.user_id} account={a}
                   isActive={activeUserIds.has(a.user_id)}
                   isSelected={selAccount === a.user_id}
+                  isChecked={multiSelected.has(a.user_id)}
+                  onToggleCheck={() => toggleMultiSelect(a.user_id)}
                   checking={!!checkingCookie[a.user_id]}
                   health={healthStatus[a.user_id] ?? "unknown"}
                   onCheck={() => handleCheckCookie(a.user_id)}
@@ -1708,6 +1773,14 @@ export default function Home() {
             })()}
             {launchError && <div style={{ fontSize: 10, color: "var(--red)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{launchError}</div>}
             <div style={{ display: "flex", gap: 7, marginLeft: "auto", alignItems: "center", flexShrink: 0 }}>
+              {multiSelected.size > 0 && (
+                <button onClick={handleLaunchMultiple} disabled={launching}
+                  className="btn glow-btn"
+                  title={`Launch ${multiSelected.size} selected accounts into the same game`}
+                  style={{ padding: "7px 14px", borderRadius: 7, fontSize: 10.5, fontWeight: 800, display: "flex", alignItems: "center", gap: 5, background: "rgba(167,139,250,0.15)", color: "#A78BFA", border: "1px solid rgba(167,139,250,0.3)", cursor: launching ? "not-allowed" : "pointer", opacity: launching ? 0.5 : 1 }}>
+                  <PlayIcon size={11} color="#A78BFA" /> Launch {multiSelected.size} Selected
+                </button>
+              )}
               <button onClick={handleLaunchApp} disabled={launching || selAccount === null || accounts.length === 0}
                 className="btn btn-ghost glow-btn"
                 style={{ padding: "7px 12px", borderRadius: 7, fontSize: 10.5, fontWeight: 800, display: "flex", alignItems: "center", gap: 5, opacity: selAccount === null || accounts.length === 0 ? 0.4 : 1, cursor: selAccount === null ? "not-allowed" : "pointer" }}>
@@ -2931,8 +3004,9 @@ function GameCard({ g, isSelected, hasPrivateServer, thumb, onSelect, onContextM
   );
 }
 
-function CompactAccountRow({ account, isActive, isSelected, checking, health, onCheck, onSelect, onDoubleClick, onContextMenu, onToggleFav }: {
+function CompactAccountRow({ account, isActive, isSelected, isChecked, onToggleCheck, checking, health, onCheck, onSelect, onDoubleClick, onContextMenu, onToggleFav }: {
   account: Account; isActive: boolean; isSelected: boolean;
+  isChecked: boolean; onToggleCheck: () => void;
   checking: boolean; health: "checking" | "valid" | "invalid" | "unknown";
   onCheck: () => void; onSelect: () => void; onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -2958,6 +3032,19 @@ function CompactAccountRow({ account, isActive, isSelected, checking, health, on
         borderLeft: `2px solid ${isSelected ? "rgba(255,255,255,0.6)" : "transparent"}`,
         transition: "all .12s", userSelect: "none",
       }}>
+      <div
+        onClick={e => { e.stopPropagation(); onToggleCheck(); }}
+        title={isChecked ? "Remove from multi-launch selection" : "Add to multi-launch selection"}
+        style={{
+          width: 15, height: 15, borderRadius: 4, flexShrink: 0,
+          border: `1.5px solid ${isChecked ? "var(--accent)" : hov ? "var(--g14)" : "var(--g08)"}`,
+          background: isChecked ? "var(--accent)" : "transparent",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: "pointer", transition: "all .12s",
+          opacity: hov || isChecked ? 1 : 0.5,
+        }}>
+        {isChecked && <CheckIcon size={9} color="#07080a" strokeWidth={3} />}
+      </div>
       <div style={{ position: "relative", flexShrink: 0 }}>
         {account.avatar_url
           ? <img src={account.avatar_url} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover" }} />
