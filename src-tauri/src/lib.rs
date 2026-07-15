@@ -203,7 +203,7 @@ impl MultiState {
             let mut handles_lock = self.handles.lock().unwrap();
             if active {
                 if handles_lock.is_none() {
-                    *handles_lock = enable_multi_roblox_internal();
+                    *handles_lock = enable_multi_roblox_internal().map(|(h, _)| h);
                 }
             } else {
                 *handles_lock = None;
@@ -213,16 +213,25 @@ impl MultiState {
     }
 
     // Call at the start of a launch. Creates the shared singleton handles if needed
-    // and marks this launch as depending on them.
-    pub fn begin_launch(&self) {
+    // and marks this launch as depending on them. Returns true only when this call
+    // just discovered the singleton objects were already owned by another process
+    // (almost always a Roblox instance started outside Reiya) — multi-instance can't
+    // work until all Roblox windows are closed and Reiya creates it fresh.
+    pub fn begin_launch(&self) -> bool {
         #[cfg(windows)]
-        if *self.active.lock().unwrap() {
-            *self.launch_count.lock().unwrap() += 1;
-            let mut handles_lock = self.handles.lock().unwrap();
-            if handles_lock.is_none() {
-                *handles_lock = enable_multi_roblox_internal();
+        {
+            if *self.active.lock().unwrap() {
+                *self.launch_count.lock().unwrap() += 1;
+                let mut handles_lock = self.handles.lock().unwrap();
+                if handles_lock.is_none() {
+                    if let Some((h, conflict)) = enable_multi_roblox_internal() {
+                        *handles_lock = Some(h);
+                        return conflict;
+                    }
+                }
             }
         }
+        false
     }
 
     // Call when a launch's cleanup runs. Only releases the shared handles once no
@@ -241,9 +250,14 @@ impl MultiState {
     }
 }
 
+// Returns the handles plus whether Reiya actually won creation of the singleton mutex
+// (false) or merely attached to one that already existed (true) — the latter means some
+// other process (almost always a Roblox instance started outside Reiya) already owns
+// singleton detection for this session, so the multi-instance bypass cannot take effect
+// until all Roblox windows are closed and Reiya gets to create it first.
 #[cfg(windows)]
-fn enable_multi_roblox_internal() -> Option<MultiRobloxHandles> {
-    use windows_sys::Win32::Foundation::GetLastError;
+fn enable_multi_roblox_internal() -> Option<(MultiRobloxHandles, bool)> {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows_sys::Win32::System::Threading::{CreateEventW, CreateMutexW};
 
     // ROBLOX_singletonEvent must be created as a Windows Event, not a Mutex.
@@ -269,9 +283,14 @@ fn enable_multi_roblox_internal() -> Option<MultiRobloxHandles> {
         unsafe { windows_sys::Win32::Foundation::CloseHandle(singleton_event); }
         return None;
     }
-    println!("[MultiRoblox] Created singleton mutex.");
+    let attached_to_existing = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    if attached_to_existing {
+        eprintln!("[MultiRoblox] Singleton mutex already existed (likely a Roblox instance running outside Reiya) — multi-instance may not work this session.");
+    } else {
+        println!("[MultiRoblox] Created singleton mutex.");
+    }
 
-    Some(MultiRobloxHandles { singleton_event, singleton_mutex })
+    Some((MultiRobloxHandles { singleton_event, singleton_mutex }, attached_to_existing))
 }
 
 #[cfg(not(windows))]
@@ -290,7 +309,7 @@ impl MultiState {
     pub fn set_active(&self, active: bool) {
         *self.active.lock().unwrap() = active;
     }
-    pub fn begin_launch(&self) {}
+    pub fn begin_launch(&self) -> bool { false }
     pub fn end_launch(&self) {}
 }
 
@@ -1567,22 +1586,6 @@ fn is_uuid(s: &str) -> bool {
     true
 }
 
-fn format_as_uuid(s: &str) -> Option<String> {
-    let cleaned = s.trim().trim_matches('{').trim_matches('}');
-    if cleaned.len() == 32 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(format!(
-            "{}-{}-{}-{}-{}",
-            &cleaned[0..8],
-            &cleaned[8..12],
-            &cleaned[12..16],
-            &cleaned[16..20],
-            &cleaned[20..32]
-        ))
-    } else {
-        None
-    }
-}
-
 #[tauri::command]
 async fn launch_account(
     user_id: i64,
@@ -1611,7 +1614,9 @@ async fn launch_account(
     }
 
     eprintln!("[DEBUG launch] multi_roblox active={}", multi_state.is_active());
-    multi_state.begin_launch();
+    if multi_state.begin_launch() {
+        let _ = app.emit("multiroblox-conflict", ());
+    }
     eprintln!("[DEBUG launch] multi_roblox handles created (if active)");
     let accounts = load_stored();
     let account = accounts
@@ -4460,7 +4465,7 @@ fn open_key_website() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", "https://seistem.vercel.app/"])
+            .args(["/c", "start", "", "https://reiyaa.vercel.app/"])
             .spawn();
     }
     Ok(())
@@ -6954,7 +6959,32 @@ fn acquire_single_instance_mutex() -> *mut std::ffi::c_void {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// Logs panics (message + location + backtrace) to a file before the process goes down,
+// so a crash that would otherwise only show up as a generic Windows fail-fast event
+// leaves an actual diagnosable trace.
+fn install_panic_logger() {
+    std::env::set_var("RUST_BACKTRACE", "full");
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let entry = format!(
+            "\n[{}] PANIC: {}\n{}\n",
+            chrono::Utc::now().to_rfc3339(),
+            info,
+            backtrace
+        );
+        let path = data_dir().join("panic.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = f.write_all(entry.as_bytes());
+        }
+        default_hook(info);
+    }));
+}
+
 pub fn run() {
+    install_panic_logger();
+
     // Prevent multiple instances — shows a dialog and exits if one is already open.
     #[cfg(windows)]
     let _instance_mutex = acquire_single_instance_mutex();

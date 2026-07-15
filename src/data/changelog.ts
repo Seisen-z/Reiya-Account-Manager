@@ -40,6 +40,16 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.2",
+    date: "2026-07-15",
+    title: "MultiRoblox conflict warning, crash logging",
+    changes: [
+      { kind: "new", text: "If MultiRoblox can't activate because a Roblox window was already open before Reiya launched, you'll now get a clear warning with a one-click \"Close All Roblox Windows\" button instead of it silently only running one account." },
+      { kind: "improved", text: "Crashes now get logged with a full error message and stack trace instead of vanishing silently." },
+      { kind: "fixed", text: "Fixed the \"Get a Free Key\" link and website button pointing at an old domain." },
+    ],
+  },
+  {
     version: "1.1.1",
     date: "2026-07-14",
     title: "Password-locked encryption, multi-launch, MultiRoblox fix",
