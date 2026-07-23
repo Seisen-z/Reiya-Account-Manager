@@ -170,22 +170,22 @@ pub struct MultiState {
     active: Mutex<bool>,
     #[cfg(windows)]
     handles: Mutex<Option<MultiRobloxHandles>>,
-    // Number of launches currently relying on the shared singleton handles. The handles
-    // are only released once every in-flight launch has finished — otherwise one launch's
-    // cleanup could tear them down while another account's Roblox instance is still
-    // starting up, silently breaking multi-instance for that second account.
     #[cfg(windows)]
     launch_count: Mutex<u32>,
 }
 
 impl MultiState {
     pub fn new(active: bool) -> Self {
-        // Never create handles at startup — only when a launch actually requests them.
-        // Holding them at startup blocks official Roblox from working while Reiya is open.
+        #[cfg(windows)]
+        let handles = if active {
+            enable_multi_roblox_internal().map(|(h, _)| h)
+        } else {
+            None
+        };
         Self {
             active: Mutex::new(active),
             #[cfg(windows)]
-            handles: Mutex::new(None),
+            handles: Mutex::new(handles),
             #[cfg(windows)]
             launch_count: Mutex::new(0),
         }
@@ -212,40 +212,28 @@ impl MultiState {
         }
     }
 
-    // Call at the start of a launch. Creates the shared singleton handles if needed
-    // and marks this launch as depending on them. Returns true only when this call
-    // just discovered the singleton objects were already owned by another process
-    // (almost always a Roblox instance started outside Reiya) — multi-instance can't
-    // work until all Roblox windows are closed and Reiya creates it fresh.
-    pub fn begin_launch(&self) -> bool {
+    pub fn begin_launch(&self) {
         #[cfg(windows)]
         {
             if *self.active.lock().unwrap() {
                 *self.launch_count.lock().unwrap() += 1;
                 let mut handles_lock = self.handles.lock().unwrap();
                 if handles_lock.is_none() {
-                    if let Some((h, conflict)) = enable_multi_roblox_internal() {
+                    if let Some((h, _)) = enable_multi_roblox_internal() {
                         *handles_lock = Some(h);
-                        return conflict;
                     }
                 }
             }
         }
-        false
     }
 
-    // Call when a launch's cleanup runs. Only releases the shared handles once no
-    // other in-flight launch still needs them.
     pub fn end_launch(&self) {
         #[cfg(windows)]
         {
             let mut count = self.launch_count.lock().unwrap();
             if *count > 0 { *count -= 1; }
-            if *count == 0 {
-                let mut h = self.handles.lock().unwrap();
-                *h = None;
-                println!("[MultiRoblox] Released singleton handles (all in-flight launches finished).");
-            }
+            // Note: Singleton handles remain active in `handles` as long as MultiRoblox is active
+            // so that running Roblox instances are protected continuously from singleton single-instance termination.
         }
     }
 }
@@ -1614,9 +1602,7 @@ async fn launch_account(
     }
 
     eprintln!("[DEBUG launch] multi_roblox active={}", multi_state.is_active());
-    if multi_state.begin_launch() {
-        let _ = app.emit("multiroblox-conflict", ());
-    }
+    multi_state.begin_launch();
     eprintln!("[DEBUG launch] multi_roblox handles created (if active)");
     let accounts = load_stored();
     let account = accounts
@@ -1846,7 +1832,7 @@ async fn launch_account(
         // Reiya no longer holds conflicting kernel objects (singleton mutex/event fixes).
         let launcher_found = ensure_launcher_downloaded(&roblox_path).await;
         eprintln!("[DEBUG launch] launcher_found = {:?}", launcher_found);
-        let launch_target = launcher_found.unwrap_or(roblox_path);
+        let launch_target = roblox_path;
         eprintln!("[DEBUG launch] launch_target = {:?}", launch_target);
         eprintln!("[DEBUG launch] launch_args = {}", launch_args);
         let opt_pid = launch_detached(&launch_target, &launch_args)?;
@@ -4678,6 +4664,7 @@ async fn fetch_rscripts_trending() -> Result<serde_json::Value, String> {
 // ── In-app updater ────────────────────────────────────────────────────────────
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[allow(dead_code)]
 const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/Seisen-z/Key-System/releases/latest";
 
 #[derive(serde::Serialize, Clone)]
@@ -4689,6 +4676,7 @@ struct UpdateInfo {
     current:      String,
 }
 
+#[allow(dead_code)]
 fn version_is_newer(latest: &str, current: &str) -> bool {
     let parse = |v: &str| -> (u64, u64, u64) {
         let p: Vec<&str> = v.trim_start_matches('v').split('.').collect();
@@ -4701,39 +4689,44 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
 #[tauri::command]
 async fn check_for_update() -> Result<UpdateInfo, String> {
     #[cfg(debug_assertions)]
-    return Ok(UpdateInfo { has_update: false, version: String::new(), download_url: String::new(), notes: String::new(), current: APP_VERSION.to_string() });
+    {
+        return Ok(UpdateInfo { has_update: false, version: String::new(), download_url: String::new(), notes: String::new(), current: APP_VERSION.to_string() });
+    }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent("ReiyaAccountManager")
-        .build()
-        .map_err(|e| e.to_string())?;
+    #[cfg(not(debug_assertions))]
+    {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .user_agent("ReiyaAccountManager")
+            .build()
+            .map_err(|e| e.to_string())?;
 
-    let resp = client
-        .get(GITHUB_RELEASES_API)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        let resp = client
+            .get(GITHUB_RELEASES_API)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
 
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    let tag_name = json["tag_name"].as_str().unwrap_or("");
-    let latest_ver = tag_name.trim_start_matches('v').to_string();
+        let tag_name = json["tag_name"].as_str().unwrap_or("");
+        let latest_ver = tag_name.trim_start_matches('v').to_string();
 
-    let download_url = json["assets"]
-        .as_array()
-        .and_then(|arr| arr.iter().find(|a| {
-            a["name"].as_str().map(|n| n.ends_with(".exe")).unwrap_or(false)
-        }))
-        .and_then(|a| a["browser_download_url"].as_str())
-        .unwrap_or("")
-        .to_string();
+        let download_url = json["assets"]
+            .as_array()
+            .and_then(|arr| arr.iter().find(|a| {
+                a["name"].as_str().map(|n| n.ends_with(".exe")).unwrap_or(false)
+            }))
+            .and_then(|a| a["browser_download_url"].as_str())
+            .unwrap_or("")
+            .to_string();
 
-    let notes      = json["body"].as_str().unwrap_or("").to_string();
-    let has_update = !latest_ver.is_empty() && version_is_newer(&latest_ver, APP_VERSION);
+        let notes      = json["body"].as_str().unwrap_or("").to_string();
+        let has_update = !latest_ver.is_empty() && version_is_newer(&latest_ver, APP_VERSION);
 
-    Ok(UpdateInfo { has_update, version: latest_ver, download_url, notes, current: APP_VERSION.to_string() })
+        Ok(UpdateInfo { has_update, version: latest_ver, download_url, notes, current: APP_VERSION.to_string() })
+    }
 }
 
 #[tauri::command]
@@ -5621,8 +5614,15 @@ fn apply_fastflags_to_exe(exe: &PathBuf) {
     if let Ok(content) = fs::read_to_string(&ff_path) {
         if let Some(dir) = exe.parent() {
             let cs_dir = dir.join("ClientSettings");
-            let _ = fs::create_dir_all(&cs_dir);
-            let _ = fs::write(cs_dir.join("ClientAppSettings.json"), &content);
+            if let Err(e) = fs::create_dir_all(&cs_dir) {
+                eprintln!("[WARN FastFlags] Failed to create ClientSettings directory {:?}: {}", cs_dir, e);
+            }
+            let target_file = cs_dir.join("ClientAppSettings.json");
+            if let Err(e) = fs::write(&target_file, &content) {
+                eprintln!("[WARN FastFlags] Failed to write ClientAppSettings.json to {:?}: {}", target_file, e);
+            } else {
+                println!("[FastFlags] Applied FastFlags to {:?}", target_file);
+            }
         }
     }
 }
@@ -7160,10 +7160,7 @@ pub fn run() {
                                         if session_age > 45 {
                                             state.1 += 1;
                                             if state.1 >= 5 {
-                                                // No window for >= 15 seconds after game was running, kill hung process
-                                                if let Some(proc) = sys.processes().get(&sysinfo_pid) {
-                                                    proc.kill();
-                                                }
+                                                // No window for >= 15 seconds after game was running, mark session ended without auto-killing
                                                 keys_to_remove.push(bt_id);
                                                 exited_sessions.push((pid, info.clone()));
                                                 window_states.remove(&pid);

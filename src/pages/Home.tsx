@@ -212,20 +212,6 @@ export default function Home() {
   // Launch state
   const [selAccount,      setSelAccount]      = useState<number | null>(null);
   const [multiSelected,   setMultiSelected]   = useState<Set<number>>(new Set());
-  const [multiRobloxWarning, setMultiRobloxWarning] = useState(false);
-  const [closingRoblox,      setClosingRoblox]      = useState(false);
-  const handleCloseAllRoblox = async () => {
-    setClosingRoblox(true);
-    try {
-      const killed = await invoke<number>("kill_all_sessions");
-      showToast(killed > 0 ? `Closed ${killed} Roblox window${killed !== 1 ? "s" : ""}. Try launching again.` : "No Roblox windows were found running.", "success");
-      setMultiRobloxWarning(false);
-    } catch (e) {
-      showToast("Failed to close Roblox: " + e, "error");
-    } finally {
-      setClosingRoblox(false);
-    }
-  };
   const toggleMultiSelect = (userId: number) => {
     setMultiSelected(prev => {
       const next = new Set(prev);
@@ -404,11 +390,7 @@ export default function Home() {
     // Listen for session status changes to reload statistics and sessions dynamically
     let unlisten: (() => void) | null = null;
     let unlistenAccounts: (() => void) | null = null;
-    let unlistenMultiRobloxConflict: (() => void) | null = null;
     const setupListener = async () => {
-      unlistenMultiRobloxConflict = await listen("multiroblox-conflict", () => {
-        setMultiRobloxWarning(true);
-      });
       unlisten = await listen("session-status-changed", () => {
         Promise.all([
           invoke<Session[]>("get_live_sessions").catch(() => []),
@@ -474,7 +456,6 @@ export default function Home() {
       clearInterval(interval);
       if (unlisten) unlisten();
       if (unlistenAccounts) unlistenAccounts();
-      if (unlistenMultiRobloxConflict) unlistenMultiRobloxConflict();
       document.removeEventListener("keydown", handleKey);
     };
   }, []);
@@ -2180,36 +2161,7 @@ export default function Home() {
         </HomeModal>
       )}
 
-      {/* MultiRoblox conflict warning */}
-      {multiRobloxWarning && (
-        <HomeModal title="Can't Launch Multiple Accounts" onClose={() => setMultiRobloxWarning(false)}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: 9, flexShrink: 0,
-                background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.25)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
-                <AlertTriangleIcon size={16} color="#FBBF24" />
-              </div>
-              <div style={{ fontSize: 12.5, color: "var(--t2)", lineHeight: 1.7 }}>
-                Roblox was already open before you launched from Reiya, so only one account can run right now.
-                <br /><br />
-                Close all your Roblox windows, then launch again.
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => setMultiRobloxWarning(false)} className="btn btn-ghost" style={{ flex: 1 }}>
-                Dismiss
-              </button>
-              <button onClick={handleCloseAllRoblox} disabled={closingRoblox} className="btn"
-                style={{ flex: 2, background: "rgba(251,191,36,0.12)", color: "#FBBF24", border: "1px solid rgba(251,191,36,0.3)", fontWeight: 800, opacity: closingRoblox ? 0.6 : 1 }}>
-                {closingRoblox ? "Closing..." : "Close All Roblox Windows"}
-              </button>
-            </div>
-          </div>
-        </HomeModal>
-      )}
+
 
       {/* Group Modal */}
       {groupModal && (

@@ -40,6 +40,17 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.3",
+    date: "2026-07-23",
+    title: "Roblox Multi-Instance persistent handles & launch fixes",
+    changes: [
+      { kind: "fixed", text: "Multi-Instance Roblox: singleton mutex and event handles remain active continuously so opening another game no longer closes active Roblox windows." },
+      { kind: "fixed", text: "Direct launching: Roblox launches execute RobloxPlayerBeta.exe directly, preventing the launcher from terminating active Roblox instances." },
+      { kind: "improved", text: "Session monitor: Removed automatic process termination during loading screens and place teleports." },
+      { kind: "improved", text: "Removed unnecessary multi-instance conflict warning dialog." },
+    ],
+  },
+  {
     version: "1.1.2",
     date: "2026-07-15",
     title: "MultiRoblox conflict warning, crash logging",
