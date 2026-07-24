@@ -1,6 +1,6 @@
 import { useLanguage } from "../context/LanguageContext";
 import { useToast } from "../components/Toast";
-import { useState, useEffect, useCallback, useRef, type ReactNode, type DragEvent } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode, type DragEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -211,15 +211,17 @@ export default function Accounts() {
 
   // Groups sorted by preset order (Main → Alts → Trading → Farming → others alphabetically)
   const PRESET_GROUP_ORDER = ["Main", "Alts", "Trading", "Farming"];
-  const groups = Array.from(new Set(accounts.map(a => a.group).filter((g): g is string => !!g)))
-    .sort((a, b) => {
-      const ai = PRESET_GROUP_ORDER.indexOf(a);
-      const bi = PRESET_GROUP_ORDER.indexOf(b);
-      if (ai !== -1 && bi !== -1) return ai - bi;
-      if (ai !== -1) return -1;
-      if (bi !== -1) return 1;
-      return a.localeCompare(b);
-    });
+  const groups = useMemo(() => {
+    return Array.from(new Set(accounts.map(a => a.group).filter((g): g is string => !!g)))
+      .sort((a, b) => {
+        const ai = PRESET_GROUP_ORDER.indexOf(a);
+        const bi = PRESET_GROUP_ORDER.indexOf(b);
+        if (ai !== -1 && bi !== -1) return ai - bi;
+        if (ai !== -1) return -1;
+        if (bi !== -1) return 1;
+        return a.localeCompare(b);
+      });
+  }, [accounts]);
 
   // Reset active group if it no longer exists (e.g. all accounts in that group were removed)
   useEffect(() => {
@@ -1831,6 +1833,7 @@ function Avatar({ name, avatarUrl, size }: { name: string; avatarUrl: string; si
     return (
       <img
         src={avatarUrl} alt={name}
+        loading="lazy" decoding="async"
         onError={() => setImgFailed(true)}
         style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", display: "block" }}
       />

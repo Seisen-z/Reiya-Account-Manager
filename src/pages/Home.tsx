@@ -417,7 +417,10 @@ export default function Home() {
     setupListener();
 
     const interval = setInterval(() => {
-      invoke<Session[]>("get_live_sessions").then(setSessions).catch(() => {});
+      if (document.hidden) return;
+      invoke<Session[]>("get_live_sessions").then(sess => {
+        setSessions(prev => JSON.stringify(prev) === JSON.stringify(sess) ? prev : sess);
+      }).catch(() => {});
     }, 5000);
 
     // Keyboard shortcuts
@@ -3119,7 +3122,8 @@ function LiveSessionRow({ session, onKill, onShowDetail }: { session: Session; o
       const h = Math.floor(s / 3600);
       const m = Math.floor((s % 3600) / 60);
       const sec = s % 60;
-      setElapsed(h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`);
+      const nextStr = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+      setElapsed(prev => prev === nextStr ? prev : nextStr);
     };
     tick();
     const id = setInterval(tick, 1000);
@@ -3424,7 +3428,8 @@ function SessionElapsed({ startTime }: { startTime: string | null }) {
       const h = Math.floor(s / 3600);
       const m = Math.floor((s % 3600) / 60);
       const sec = s % 60;
-      setElapsed(h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`);
+      const nextStr = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+      setElapsed(prev => prev === nextStr ? prev : nextStr);
     };
     tick();
     const id = setInterval(tick, 1000);

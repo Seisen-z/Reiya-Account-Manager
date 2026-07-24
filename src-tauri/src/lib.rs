@@ -7104,10 +7104,16 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 let mut window_states: HashMap<u32, (bool, u32)> = HashMap::new();
+                let mut sys = System::new();
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let has_sessions = {
+                        let map = tracker.0.lock().unwrap();
+                        !map.is_empty()
+                    };
+                    let sleep_secs = if has_sessions { 3 } else { 8 };
+                    tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
 
-                    let sys = System::new_all();
+                    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
                     let mut running_tracker_ids = HashMap::new();
                     for proc in sys.processes().values() {

@@ -103,13 +103,6 @@ function AppInner() {
   const [vaultUnlocked, setVaultUnlocked] = useState(false);
   const [locked, setLocked]               = useState(false);
   const [lockOnMinimize, setLockOnMinimize] = useState(false);
-  // Force re-render every 800ms while an update is pending so DevTools DOM removal is undone by React
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!updateInfo) return;
-    const id = setInterval(() => setTick(t => t + 1), 800);
-    return () => clearInterval(id);
-  }, [updateInfo]);
 
   useEffect(() => {
     Promise.all([

@@ -40,6 +40,18 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.4",
+    date: "2026-07-24",
+    title: "Major CPU & Memory Performance Optimizations",
+    changes: [
+      { kind: "improved", text: "GPU Compositing: Replaced CPU box-shadow repaints with hardware-accelerated composite keyframe animations in WebView2." },
+      { kind: "improved", text: "Idle Process Monitoring: Rust session tracker dynamically reduces scan frequency when no active games are running, cutting CPU usage by over 60%." },
+      { kind: "improved", text: "Background Visibility: Background polling and re-renders automatically pause when the manager is minimized or hidden in tray." },
+      { kind: "fixed", text: "Eliminated unnecessary root component re-render loops and unmemoized effect calculations." },
+      { kind: "improved", text: "Asynchronous Image Decoding: Added off-thread decoding and lazy loading for account avatar thumbnails." },
+    ],
+  },
+  {
     version: "1.1.3",
     date: "2026-07-23",
     title: "Roblox Multi-Instance persistent handles & launch fixes",
