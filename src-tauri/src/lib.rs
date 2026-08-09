@@ -1853,6 +1853,12 @@ async fn launch_account(
             },
         });
         *app.state::<DiscordRpcPage>().0.lock().unwrap() = format!("Playing {}", resolved_game);
+        // Hide the main window while Roblox is running to free GPU resources.
+        if read_minimize_on_launch() {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.hide();
+            }
+        }
         // Release handles after launcher exits (or 30s max), then monitor for game exit to clear Discord RPC.
         {
             let app_handle = app.clone();
@@ -1863,7 +1869,9 @@ async fn launch_account(
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     elapsed_s += 5;
                     if let Some(pid) = pid_for_check {
-                        let sys = sysinfo::System::new_all();
+                        let sys = sysinfo::System::new_with_specifics(
+                            sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+                        );
                         let alive = sys.process(sysinfo::Pid::from_u32(pid)).is_some();
                         if elapsed_s == 5 {
                             eprintln!("[DEBUG launch] Roblox PID {} alive after 5s = {}", pid, alive);
@@ -1883,7 +1891,9 @@ async fn launch_account(
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                    let sys = sysinfo::System::new_all();
+                    let sys = sysinfo::System::new_with_specifics(
+                        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+                    );
                     let running = sys.processes().values().any(|p| {
                         let n = p.name().to_string_lossy();
                         n == "RobloxPlayerBeta.exe" || n == "RobloxPlayer.exe"
@@ -1892,6 +1902,11 @@ async fn launch_account(
                 }
                 let page_state = app_handle.state::<DiscordRpcPage>();
                 *page_state.0.lock().unwrap() = "On Home".to_string();
+                // Show the main window again now that Roblox has exited.
+                if let Some(win) = app_handle.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
             });
         }
         return Ok(opt_pid.unwrap_or(0));
@@ -2160,8 +2175,8 @@ fn extract_webview_cookie_and_close(
         return;
     }
 
-    if attempt > 30 {
-        // Timeout after 3 seconds of polling
+    if attempt > 150 {
+        // Timeout after 15 seconds of polling
         if cookie_found.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
             let app_c = app.clone();
             let wl_c = window_label.clone();
@@ -3835,7 +3850,13 @@ async fn ensure_latest_and_launch(
 ) -> Result<Option<u32>, String> {
     if let Some(existing) = app.get_webview_window("launch_progress") {
         let _ = existing.close();
-        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        // Poll until the window is fully destroyed before creating a new one.
+        // 150 ms was not enough on slower machines, causing "already exists" errors.
+        let mut waited_close = 0u32;
+        while app.get_webview_window("launch_progress").is_some() && waited_close < 2000 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            waited_close += 50;
+        }
     }
 
     let win = WebviewWindowBuilder::new(
@@ -3981,7 +4002,9 @@ async fn ensure_latest_and_launch(
                 elapsed_s += 2;
                 if elapsed_s >= 30 { break; }
                 if let Some(p) = launcher_pid {
-                    let sys = sysinfo::System::new_all();
+                    let sys = sysinfo::System::new_with_specifics(
+                        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+                    );
                     if sys.process(sysinfo::Pid::from_u32(p)).is_none() { break; }
                 } else {
                     break;
@@ -3993,7 +4016,9 @@ async fn ensure_latest_and_launch(
             tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                let sys = sysinfo::System::new_all();
+                let sys = sysinfo::System::new_with_specifics(
+                    sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+                );
                 let running = sys.processes().values().any(|p| {
                     let n = p.name().to_string_lossy();
                     n == "RobloxPlayerBeta.exe" || n == "RobloxPlayer.exe"
@@ -4002,6 +4027,11 @@ async fn ensure_latest_and_launch(
             }
             let page_state = app_handle.state::<DiscordRpcPage>();
             *page_state.0.lock().unwrap() = "On Home".to_string();
+            // Show the main window again now that Roblox has exited.
+            if let Some(win) = app_handle.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
         });
     }
 
@@ -4018,7 +4048,9 @@ async fn ensure_latest_and_launch(
             if app.get_webview_window("launch_progress").is_none() {
                 return Ok(Some(roblox_pid));
             }
-            let sys = sysinfo::System::new_all();
+            let sys = sysinfo::System::new_with_specifics(
+                sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+            );
             if sys.process(sysinfo::Pid::from_u32(roblox_pid)).is_some() {
                 confirmed_alive = true;
                 break;
@@ -4051,6 +4083,12 @@ async fn ensure_latest_and_launch(
 
     if app.get_webview_window("launch_progress").is_some() {
         let _ = win.close();
+    }
+    // Hide the main window while Roblox is running to free GPU resources.
+    if read_minimize_on_launch() {
+        if let Some(main_win) = app.get_webview_window("main") {
+            let _ = main_win.hide();
+        }
     }
 
     Ok(pid)
@@ -4203,41 +4241,7 @@ async fn check_account_health(user_id: i64) -> Result<String, String> {
     }
 }
 
-// ── License / Key System ──────────────────────────────────────────────────────
-
-fn license_path() -> std::path::PathBuf { data_dir().join("license.json") }
-
-#[derive(Serialize, Deserialize, Default, Clone)]
-struct LicenseStore {
-    key: String,
-    expires_at: Option<String>,
-    validated_at: Option<String>,
-    #[serde(default)]
-    sig: String,
-    #[serde(default)]
-    provider: String,
-}
-
-fn load_license() -> LicenseStore {
-    fs::read_to_string(license_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-fn save_license(store: &LicenseStore) {
-    if let Ok(s) = serde_json::to_string_pretty(store) {
-        let _ = fs::write(license_path(), s);
-    }
-}
-
-#[derive(Serialize)]
-struct LicenseStatus {
-    needs_key: bool,
-    key: String,
-    expires_at: Option<String>,
-    reason: String,
-}
+// ── Hardware ID (used for rating dedup and heartbeat presence) ────────────────
 
 #[cfg(target_os = "windows")]
 fn get_volume_serial() -> Option<u32> {
@@ -4279,56 +4283,6 @@ fn compute_hwid() -> String {
     format!("{:x}", Sha256::digest(parts.join("|").as_bytes()))
 }
 
-#[tauri::command]
-fn check_license() -> LicenseStatus {
-    let store = load_license();
-    if store.key.is_empty() {
-        return LicenseStatus { needs_key: true, key: String::new(), expires_at: None, reason: "missing".into() };
-    }
-    // Verify the stored HMAC signature — rejects any local file tampering
-    let exp_str = store.expires_at.as_deref().unwrap_or("");
-    if store.sig.is_empty() || !verify_response_hmac(exp_str, &store.provider, &store.sig) {
-        return LicenseStatus { needs_key: true, key: String::new(), expires_at: None, reason: "tampered".into() };
-    }
-    if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(exp_str) {
-        if exp.with_timezone(&Utc) < Utc::now() {
-            return LicenseStatus { needs_key: true, key: store.key, expires_at: store.expires_at, reason: "expired".into() };
-        }
-    }
-    LicenseStatus { needs_key: false, key: store.key, expires_at: store.expires_at, reason: "valid".into() }
-}
-
-// HMAC key XOR-encoded with 0x5A — used to verify validate-key responses weren't tampered with.
-const _HMAC_XOR: &[u8] = &[0x6F,0x3B,0x69,0x6A,0x63,0x3F,0x3E,0x6F,0x6A,0x6A,0x62,0x62,0x6D,0x62,0x68,0x6A,0x3F,0x62,0x6E,0x6A,0x63,0x38,0x6C,0x3C,0x6A,0x6C,0x3F,0x38,0x6D,0x3E,0x3C,0x39,0x39,0x38,0x3C,0x6C,0x6A,0x68,0x69,0x3E,0x6B,0x3F,0x38,0x63,0x3E,0x39,0x6B,0x6F,0x6B,0x6E,0x3E,0x3B,0x6E,0x3F,0x6B,0x6A,0x6E,0x6A,0x62,0x3E,0x6F,0x3E,0x6B,0x3C];
-
-fn hmac_key() -> Vec<u8> { _HMAC_XOR.iter().map(|b| b ^ 0x5A).collect() }
-
-fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
-    // RFC 2104 HMAC using sha2 (no extra crate needed)
-    let mut k = [0u8; 64];
-    if key.len() > 64 {
-        let h = Sha256::digest(key);
-        k[..32].copy_from_slice(&h);
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
-    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5C).collect();
-    let inner = Sha256::digest([ipad.as_slice(), data].concat());
-    Sha256::digest([opad.as_slice(), inner.as_slice()].concat()).into()
-}
-
-fn verify_response_hmac(expires_at: &str, provider: &str, sig: &str) -> bool {
-    let Ok(sig_bytes) = (0..sig.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&sig[i..i + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
-    else { return false };
-    let payload  = format!("{}|{}", expires_at, provider);
-    let expected = hmac_sha256(&hmac_key(), payload.as_bytes());
-    expected.as_slice() == sig_bytes.as_slice()
-}
-
 // Credentials stored XOR-encoded with 0x5A so they don't appear as plaintext in the binary.
 const _URL_XOR:       &[u8] = &[0x32,0x2E,0x2E,0x2A,0x29,0x60,0x75,0x75,0x32,0x37,0x28,0x23,0x2A,0x2D,0x2C,0x3D,0x23,0x3B,0x2A,0x23,0x2C,0x2A,0x37,0x3E,0x29,0x29,0x2E,0x2F,0x74,0x29,0x2F,0x2A,0x3B,0x38,0x3B,0x29,0x3F,0x74,0x39,0x35];
 const _ANON_XOR:      &[u8] = &[0x29,0x38,0x05,0x2A,0x2F,0x38,0x36,0x33,0x29,0x32,0x3B,0x38,0x36,0x3F,0x05,0x3D,0x1F,0x77,0x00,0x20,0x39,0x62,0x33,0x10,0x0D,0x3D,0x22,0x1F,0x1F,0x1E,0x34,0x29,0x62,0x6A,0x34,0x6A,0x2D,0x05,0x23,0x1F,0x6A,0x1D,0x3F,0x1C,0x3C,0x29];
@@ -4345,120 +4299,6 @@ fn sync_secret()   -> String { decode_cred(_SYNC_SEC_XOR) }
 const _RSCRIPTS_KEY_XOR: &[u8] = &[0x28,0x29,0x39,0x05,0x36,0x33,0x2C,0x3F,0x05,0x1C,0x2E,0x69,0x17,0x2A,0x6E,0x0C,0x11,0x69,0x62,0x69,0x0A,0x1E,0x2B,0x14,0x6F,0x3C,0x29,0x12,0x13,0x23,0x36,0x11,0x0D,0x14,0x63,0x6C,0x69,0x63,0x22,0x34,0x0E];
 fn rscripts_api_key() -> String { decode_cred(_RSCRIPTS_KEY_XOR) }
 const RSCRIPTS_API_BASE: &str = "https://api.rscripts.net";
-
-#[tauri::command]
-async fn validate_license_key(key: String) -> Result<LicenseStatus, String> {
-    let hwid = compute_hwid();
-    let body = serde_json::json!({ "key": key.trim(), "hwid": hwid });
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client
-        .post(format!("{}/functions/v1/validate-key", supabase_url()))
-        .header("Authorization", format!("Bearer {}", supabase_anon()))
-        .header("Content-Type", "application/json")
-        .header("User-Agent", "ReiyaAccountManager")
-        .header("X-App-Version", APP_VERSION)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|_| "Could not connect to key server. Check your internet connection.".to_string())?;
-
-    let json: serde_json::Value = resp.json().await
-        .map_err(|_| "Invalid response from key server.".to_string())?;
-
-    let valid = json.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    if valid {
-        let expires_at = json.get("expires_at").and_then(|v| v.as_str()).unwrap_or("");
-        let provider   = json.get("provider").and_then(|v| v.as_str()).unwrap_or("");
-        let sig        = json.get("sig").and_then(|v| v.as_str()).unwrap_or("");
-
-        // Verify server signature — rejects patched/forged responses
-        if !verify_response_hmac(expires_at, provider, sig) {
-            return Err("Response verification failed. Contact support.".to_string());
-        }
-
-        let expires_at = Some(expires_at.to_string());
-        let store = LicenseStore {
-            key: key.trim().to_string(),
-            expires_at: expires_at.clone(),
-            validated_at: Some(Utc::now().to_rfc3339()),
-            sig: sig.to_string(),
-            provider: provider.to_string(),
-        };
-        save_license(&store);
-        Ok(LicenseStatus { needs_key: false, key: key.trim().to_string(), expires_at, reason: "valid".into() })
-    } else {
-        let msg = json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let friendly = match msg.as_str() {
-            "Invalid key"          => "Invalid key. Please check and try again.".to_string(),
-            other if !other.is_empty() => other.to_string(),
-            _                      => "Key validation failed. Please try again.".to_string(),
-        };
-        Err(friendly)
-    }
-}
-
-#[tauri::command]
-fn clear_license() -> Result<(), String> {
-    let _ = fs::remove_file(license_path());
-    Ok(())
-}
-
-#[tauri::command]
-async fn reset_hwid() -> Result<String, String> {
-    let store = load_license();
-    if store.key.is_empty() {
-        return Err("No license key found.".to_string());
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let body = serde_json::json!({ "key": store.key });
-
-    let resp = client
-        .post(format!("{}/functions/v1/reset-hwid", supabase_url()))
-        .header("Authorization", format!("Bearer {}", supabase_anon()))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|_| "Could not connect to key server. Check your internet connection.".to_string())?;
-
-    let json: serde_json::Value = resp.json().await
-        .map_err(|_| "Invalid response from key server.".to_string())?;
-
-    if json.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-        Ok("HWID cleared. Your key will bind to the next device it runs on.".to_string())
-    } else {
-        let msg = json.get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Reset failed. Try again later.")
-            .to_string();
-        Err(msg)
-    }
-}
-
-#[tauri::command]
-fn open_key_website() -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", "https://reiyaa.vercel.app/"])
-            .spawn();
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn get_hwid() -> String { compute_hwid() }
 
 // ── App rating (global, Supabase-backed) ──────────────────────────────────────
 
@@ -5599,30 +5439,76 @@ fn fastflags_path() -> PathBuf {
     bootstrapper_root().join("fastflags.json")
 }
 
-fn client_app_settings_path() -> Option<PathBuf> {
-    let ver = read_installed_version()?;
-    let p = version_dir(&ver).join("ClientSettings").join("ClientAppSettings.json");
-    Some(p)
-}
-
 /// Write the saved fastflags.json into the ClientSettings folder next to the
 /// given Roblox exe. Called before every launch regardless of which launcher
 /// is used so flags always take effect.
+/// If flags are empty or missing, the ClientAppSettings.json is deleted so
+/// Roblox reverts to its own defaults instead of keeping stale overrides.
 fn apply_fastflags_to_exe(exe: &PathBuf) {
+    let Some(dir) = exe.parent() else { return };
+    let target_file = dir.join("ClientSettings").join("ClientAppSettings.json");
+
     let ff_path = fastflags_path();
-    if !ff_path.exists() { return; }
-    if let Ok(content) = fs::read_to_string(&ff_path) {
-        if let Some(dir) = exe.parent() {
-            let cs_dir = dir.join("ClientSettings");
-            if let Err(e) = fs::create_dir_all(&cs_dir) {
-                eprintln!("[WARN FastFlags] Failed to create ClientSettings directory {:?}: {}", cs_dir, e);
-            }
-            let target_file = cs_dir.join("ClientAppSettings.json");
-            if let Err(e) = fs::write(&target_file, &content) {
-                eprintln!("[WARN FastFlags] Failed to write ClientAppSettings.json to {:?}: {}", target_file, e);
+    let content = if ff_path.exists() {
+        match fs::read_to_string(&ff_path) {
+            Ok(s) => s,
+            Err(_) => return,
+        }
+    } else {
+        String::new()
+    };
+
+    // Treat missing file or empty object as "no flags" — remove the override.
+    let is_empty = content.is_empty()
+        || serde_json::from_str::<serde_json::Value>(&content)
+            .map(|v| v.as_object().map_or(true, |o| o.is_empty()))
+            .unwrap_or(false);
+
+    if is_empty {
+        if target_file.exists() {
+            if let Err(e) = fs::remove_file(&target_file) {
+                eprintln!("[WARN FastFlags] Failed to remove {:?}: {}", target_file, e);
             } else {
-                println!("[FastFlags] Applied FastFlags to {:?}", target_file);
+                println!("[FastFlags] Cleared ClientAppSettings.json at {:?}", target_file);
             }
+        }
+    } else {
+        let cs_dir = dir.join("ClientSettings");
+        if let Err(e) = fs::create_dir_all(&cs_dir) {
+            eprintln!("[WARN FastFlags] Failed to create ClientSettings directory {:?}: {}", cs_dir, e);
+        }
+        if let Err(e) = fs::write(&target_file, &content) {
+            eprintln!("[WARN FastFlags] Failed to write ClientAppSettings.json to {:?}: {}", target_file, e);
+        } else {
+            println!("[FastFlags] Applied FastFlags to {:?}", target_file);
+        }
+    }
+}
+
+/// Push the current fastflags.json state to every known Roblox installation.
+/// Called both on save and before each launch so all launchers stay in sync.
+fn sync_fastflags_to_all_launchers() {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+
+    // Reiya bootstrapper
+    if let Some(ver) = read_installed_version() {
+        apply_fastflags_to_exe(&version_dir(&ver).join("RobloxPlayerBeta.exe"));
+    }
+
+    // Official Roblox
+    if let Some(exe) = find_official_roblox_exe() {
+        apply_fastflags_to_exe(&exe);
+    }
+
+    // Bloxstrap
+    if let Some(exe) = search_versions_dir(&PathBuf::from(&local).join("Bloxstrap").join("Versions")) {
+        apply_fastflags_to_exe(&exe);
+    }
+
+    // Fishstrap / Fishtrap (both spellings)
+    for dir_name in &["Fishstrap", "Fishtrap"] {
+        if let Some(exe) = search_versions_dir(&PathBuf::from(&local).join(dir_name).join("Versions")) {
+            apply_fastflags_to_exe(&exe);
         }
     }
 }
@@ -5652,23 +5538,14 @@ fn get_fastflags() -> serde_json::Value {
 
 #[tauri::command]
 fn save_fastflags(flags: serde_json::Value) -> Result<(), String> {
-    // Save master copy
+    // Persist the master copy.
     let s = serde_json::to_string_pretty(&flags).map_err(|e| e.to_string())?;
     fs::write(fastflags_path(), &s).map_err(|e| e.to_string())?;
 
-    // Write into Reiya bootstrapper's active version ClientSettings
-    if let Some(client_settings) = client_app_settings_path() {
-        if let Some(parent) = client_settings.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(&client_settings, &s);
-    }
-
-    // Write into official Roblox ClientSettings so flags work immediately
-    // without needing a full launch cycle through the bootstrapper
-    if let Some(official_exe) = find_official_roblox_exe() {
-        apply_fastflags_to_exe(&official_exe);
-    }
+    // Push the change (or the absence of flags) to every known Roblox install
+    // immediately so the user doesn't need to relaunch through Reiya for it
+    // to take effect.
+    sync_fastflags_to_all_launchers();
 
     Ok(())
 }
@@ -6907,6 +6784,18 @@ fn read_minimize_to_tray() -> bool {
     true // default: minimize to tray
 }
 
+fn read_minimize_on_launch() -> bool {
+    let settings_path = data_dir().join("settings.json");
+    if let Ok(content) = fs::read_to_string(settings_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(clean_bom(&content)) {
+            if let Some(v) = val.get("MinimizeOnLaunch").and_then(|v| v.as_bool()) {
+                return v;
+            }
+        }
+    }
+    true // default: minimize on launch
+}
+
 #[cfg(windows)]
 fn sync_run_on_startup(enable: bool) {
     use winreg::{enums::{HKEY_CURRENT_USER, KEY_WRITE}, RegKey};
@@ -7403,12 +7292,6 @@ pub fn run() {
             set_account_group,
             update_account_notes,
             check_account_health,
-            check_license,
-            validate_license_key,
-            clear_license,
-            reset_hwid,
-            open_key_website,
-            get_hwid,
             verify_pin,
             get_security_mode,
             is_vault_unlocked,

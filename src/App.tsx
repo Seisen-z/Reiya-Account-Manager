@@ -15,7 +15,6 @@ import ThemePage    from "./pages/Theme";
 import Changelog     from "./pages/Changelog";
 import LaunchProgress from "./pages/LaunchProgress";
 import Onboarding    from "./pages/Onboarding";
-import KeyGate       from "./pages/KeyGate";
 import UpdatePrompt  from "./pages/UpdatePrompt";
 import AppLock       from "./pages/AppLock";
 import SecuritySetup from "./pages/SecuritySetup";
@@ -23,13 +22,6 @@ import VaultUnlock   from "./pages/VaultUnlock";
 import { BootstrapperProvider } from "./context/BootstrapperContext";
 import { UpdateProvider, useUpdate } from "./context/UpdateContext";
 import { useLanguage } from "./context/LanguageContext";
-
-interface LicenseStatus {
-  needs_key: boolean;
-  key: string;
-  expires_at: string | null;
-  reason: "missing" | "expired" | "tampered" | "valid";
-}
 
 const PAGE_LABELS: Record<string, string> = {
   "/":             "On Home",
@@ -89,13 +81,10 @@ function AppInner() {
   const { updateInfo } = useUpdate();
   const { t, setLanguage } = useLanguage();
   const { setTheme } = useTheme();
-  const [licenseChecked, setLicenseChecked] = useState(false);
-  const [licenseStatus, setLicenseStatus]   = useState<LicenseStatus | null>(null);
+  const [ready, setReady] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(
     () => localStorage.getItem("reiya_onboarding_v1") === "done"
   );
-  // Existing users (already past onboarding before this feature shipped) skip the
-  // first-run security choice — they stay on Default Encryption unless they opt in via Settings.
   const [securitySetupDone, setSecuritySetupDone] = useState(
     () => localStorage.getItem("reiya_security_setup_v1") === "done" || localStorage.getItem("reiya_onboarding_v1") === "done"
   );
@@ -106,12 +95,10 @@ function AppInner() {
 
   useEffect(() => {
     Promise.all([
-      invoke<LicenseStatus>("check_license").catch(() => ({ needs_key: false, key: "", expires_at: null, reason: "valid" } as LicenseStatus)),
       invoke<any>("get_settings").catch(() => ({})),
       invoke<string>("get_security_mode").catch(() => "default"),
-    ]).then(([status, settings, secMode]) => {
-      setLicenseStatus(status);
-      setLicenseChecked(true);
+    ]).then(([settings, secMode]) => {
+      setReady(true);
       setSecurityMode(secMode === "password" ? "password" : "default");
       if (secMode !== "password") setVaultUnlocked(true);
       if (settings?.Language) setLanguage(settings.Language);
@@ -143,7 +130,7 @@ function AppInner() {
     return () => { if (unlisten) unlisten(); };
   }, [lockOnMinimize]);
 
-  if (!licenseChecked) {
+  if (!ready) {
     return (
       <div style={{
         position: "fixed", inset: 0, background: "#07080a",
@@ -159,10 +146,6 @@ function AppInner() {
     );
   }
 
-  const needsKey   = licenseStatus?.needs_key ?? false;
-  const keyReason  = licenseStatus?.reason ?? "missing";
-  // Data is encrypted with a password-derived key that hasn't been unlocked yet —
-  // block everything else so pages don't fetch/decrypt accounts with the wrong key.
   const needsVaultUnlock = securityMode === "password" && !vaultUnlocked;
 
   return (
@@ -170,15 +153,8 @@ function AppInner() {
       <BootstrapperProvider>
         {needsVaultUnlock && <VaultUnlock onUnlocked={() => setVaultUnlocked(true)} />}
         {!needsVaultUnlock && locked && <AppLock onUnlocked={() => setLocked(false)} />}
-        {/* Mandatory update blocker — cannot be dismissed, survives restarts */}
         {!needsVaultUnlock && updateInfo && <UpdatePrompt info={updateInfo} />}
-        {!needsVaultUnlock && needsKey && (
-          <KeyGate
-            reason={keyReason as "missing" | "expired" | "tampered"}
-            onValidated={() => setLicenseStatus(s => s ? { ...s, needs_key: false, reason: "valid" } : s)}
-          />
-        )}
-        {!needsVaultUnlock && !needsKey && !updateInfo && !securitySetupDone && (
+        {!needsVaultUnlock && !updateInfo && !securitySetupDone && (
           <SecuritySetup onDone={(mode) => {
             setSecurityMode(mode);
             setVaultUnlocked(true);
@@ -186,7 +162,7 @@ function AppInner() {
             localStorage.setItem("reiya_security_setup_v1", "done");
           }} />
         )}
-        {!needsVaultUnlock && !needsKey && !updateInfo && securitySetupDone && !onboardingDone && (
+        {!needsVaultUnlock && !updateInfo && securitySetupDone && !onboardingDone && (
           <Onboarding onDone={() => setOnboardingDone(true)} />
         )}
         {!needsVaultUnlock && <AppContent />}
@@ -200,8 +176,6 @@ import { ThemeProvider, useTheme, THEMES, applyTheme } from "./context/ThemeCont
 import { ToastProvider } from "./components/Toast";
 
 export default function App() {
-  // The launch_progress window loads index.html with pathname replaced via initialization_script.
-  // Render it immediately — no license check, no settings load, no delay.
   if (window.location.pathname === "/launch-progress") {
     return (
       <LanguageProvider>

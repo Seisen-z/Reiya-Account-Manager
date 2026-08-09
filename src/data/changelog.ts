@@ -40,6 +40,15 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.5",
+    date: "2026-08-09",
+    title: "Remove key system, minimize on launch",
+    changes: [
+      { kind: "improved", text: "Removed the license key requirement — Reiya is now free to use without a key." },
+      { kind: "new", text: "Added a 'Minimize on launch' setting — hides Reiya to the tray when a game starts, reducing GPU load. The window reopens automatically when Roblox exits." },
+    ],
+  },
+  {
     version: "1.1.4",
     date: "2026-07-24",
     title: "Major CPU & Memory Performance Optimizations",
