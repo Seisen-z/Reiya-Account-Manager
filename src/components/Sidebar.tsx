@@ -72,17 +72,25 @@ export default function Sidebar() {
     fetchCount();
     const fetchId = setInterval(fetchCount, 30000);
 
-    // Every 8–14s, nudge ±1 to simulate users joining/leaving.
+    // Every 1–2 minutes, add or remove a random amount to simulate users joining/leaving.
     const tick = () => {
       if (cancelled) return;
-      if (Math.random() < 0.65) {
-        const dir = Math.random() < 0.5 ? 1 : -1;
-        displayed.current = Math.min(50, Math.max(10, displayed.current + dir));
+      const cur = displayed.current;
+      const atMax = cur >= 50;
+      const atMin = cur <= 10;
+      // Pick direction: if at ceiling force decrease, if at floor force increase, else 50/50
+      const adding = atMax ? false : atMin ? true : Math.random() < 0.5;
+      if (adding) {
+        const amount = Math.floor(Math.random() * 3) + 2; // 2, 3, or 4
+        displayed.current = Math.min(50, cur + amount);
+      } else {
+        const amount = Math.floor(Math.random() * 2) + 2; // 2 or 3
+        displayed.current = Math.max(10, cur - amount);
       }
       setLiveCount(displayed.current);
-      tickId = setTimeout(tick, Math.floor(Math.random() * 6000) + 8000);
+      tickId = setTimeout(tick, Math.floor(Math.random() * 60000) + 60000);
     };
-    let tickId = setTimeout(tick, Math.floor(Math.random() * 4000) + 3000);
+    let tickId = setTimeout(tick, Math.floor(Math.random() * 30000) + 30000);
 
     return () => { cancelled = true; clearInterval(fetchId); clearTimeout(tickId); };
   }, []);
