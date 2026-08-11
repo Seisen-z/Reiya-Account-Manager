@@ -6,8 +6,8 @@ const supabase = createClient(
 );
 
 // A device is "online" if it has heartbeat within this window. Client sends
-// a heartbeat every 45s, so 2 minutes gives comfortable slack for jitter/retries.
-const ONLINE_WINDOW_MS = 2 * 60 * 1000;
+// a heartbeat every 30s, so 5 minutes gives plenty of slack for jitter/retries.
+const ONLINE_WINDOW_MS = 5 * 60 * 1000;
 
 Deno.serve(async () => {
   const cutoff = new Date(Date.now() - ONLINE_WINDOW_MS).toISOString();

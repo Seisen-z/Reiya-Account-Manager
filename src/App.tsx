@@ -119,7 +119,7 @@ function AppInner() {
   // Presence heartbeat — powers the "online now" count shown in the sidebar
   useEffect(() => {
     invoke("send_heartbeat").catch(() => {});
-    const id = setInterval(() => invoke("send_heartbeat").catch(() => {}), 45000);
+    const id = setInterval(() => invoke("send_heartbeat").catch(() => {}), 30000);
     return () => clearInterval(id);
   }, []);
 

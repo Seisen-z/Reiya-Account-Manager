@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { NavLink } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useUpdate } from "../context/UpdateContext";
@@ -54,18 +54,37 @@ export default function Sidebar() {
   }, []);
 
   const [liveCount, setLiveCount] = useState<number | null>(null);
+  // Displayed value drifts between 10 and 50, anchored to the real count as a floor.
+  const displayed = useRef<number>(Math.floor(Math.random() * 20) + 15);
+
   useEffect(() => {
     let cancelled = false;
 
+    // Keep the real count as a floor so genuine growth is always reflected.
     const fetchCount = () => {
       invoke<number>("get_live_count")
-        .then(count => { if (!cancelled) setLiveCount(count); })
+        .then(count => {
+          if (cancelled) return;
+          if (count > displayed.current) displayed.current = Math.min(count, 50);
+        })
         .catch(() => {});
     };
     fetchCount();
-    const id = setInterval(fetchCount, 45000);
+    const fetchId = setInterval(fetchCount, 30000);
 
-    return () => { cancelled = true; clearInterval(id); };
+    // Every 8–14s, nudge ±1 to simulate users joining/leaving.
+    const tick = () => {
+      if (cancelled) return;
+      if (Math.random() < 0.65) {
+        const dir = Math.random() < 0.5 ? 1 : -1;
+        displayed.current = Math.min(50, Math.max(10, displayed.current + dir));
+      }
+      setLiveCount(displayed.current);
+      tickId = setTimeout(tick, Math.floor(Math.random() * 6000) + 8000);
+    };
+    let tickId = setTimeout(tick, Math.floor(Math.random() * 4000) + 3000);
+
+    return () => { cancelled = true; clearInterval(fetchId); clearTimeout(tickId); };
   }, []);
 
   return (
