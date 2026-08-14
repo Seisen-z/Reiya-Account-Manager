@@ -10,6 +10,8 @@ import {
   GamepadIcon, ZapIcon, ShieldIcon, UserIcon,
 } from "../components/Icons";
 
+interface ComboResult { username: string; ok: boolean; reason: string; }
+
 interface BulkAddResult {
   preview: string;
   success: boolean;
@@ -101,6 +103,8 @@ export default function Accounts() {
   const [comboText,      setComboText]      = useState("");
   const [loginLoading,   setLoginLoading]   = useState(false);
   const [loginError,     setLoginError]     = useState("");
+
+  const [comboResults,   setComboResults]   = useState<ComboResult[]>([]);
 
   // Import / Export
   const [showExport, setShowExport] = useState(false);
@@ -508,15 +512,14 @@ export default function Accounts() {
       if (u) pwMap[u.toLowerCase()] = p ?? "";
     }
 
-    const failedAccounts: string[] = [];
-    const succeededAccounts: string[] = [];
+    const results: ComboResult[] = [];
 
     // Process all imports in parallel (staggered window opening)
     const promises = lines.map(async (line, index) => {
       const [username, password] = line.split(":", 2).map(s => s.trim());
       // Stagger window opens by 800ms each so WebView2 environments initialise cleanly
       await new Promise(r => setTimeout(r, index * 800));
-      
+
       setLoginError(`Opening window ${index + 1}/${total}: ${username}...`);
       const res = await loginOneAccount(username, password);
       doneCount++;
@@ -531,15 +534,19 @@ export default function Accounts() {
             const idx = prev.findIndex(a => a.user_id === acc.user_id);
             return idx >= 0 ? prev.map((a, i) => i === idx ? acc : a) : [...prev, acc];
           });
-          succeededAccounts.push(acc.username);
+          results.push({ username: acc.username, ok: true, reason: "Imported successfully" });
           successCount++;
         } catch (err) {
-          console.error("add_account failed:", err);
-          failedAccounts.push(`${username} (add_account error: ${err})`);
+          const reason = `Cookie captured but add_account failed: ${String(err)}`;
+          console.error("[combo-import] add_account failed for", username, err);
+          results.push({ username, ok: false, reason });
         }
       } else {
-        const reason = res?.error || "Window closed or interception timed out.";
-        failedAccounts.push(`${username} (${reason})`);
+        const reason = res?.error
+          ? `Login window closed — ${res.error}`
+          : "Login window closed before the auth cookie could be captured (no error detail returned).";
+        console.error(`[combo-import] ${username} failed:`, reason, res);
+        results.push({ username, ok: false, reason });
       }
     });
 
@@ -549,10 +556,12 @@ export default function Accounts() {
     setLoginLoading(false); setShowUserPass(false); setComboText("");
     await loadAccounts();
 
-    if (failedAccounts.length === 0) {
+    setComboResults(results);
+
+    if (results.every(r => r.ok)) {
       toast.success(`Imported ${successCount}/${total} accounts successfully.`);
     } else {
-      toast.warning(`Imported ${successCount}/${total} accounts. ${failedAccounts.length} failed: ${failedAccounts.slice(0, 3).join(", ")}${failedAccounts.length > 3 ? "..." : ""}`);
+      toast.warning(`Imported ${successCount}/${total} accounts — see result details.`);
     }
   };
 
@@ -1111,6 +1120,60 @@ export default function Accounts() {
           <ModalActions>
             <ModalBtn label={t("cancel")} onClick={() => setShowUserPass(false)} disabled={loginLoading} />
             <ModalBtn label={loginLoading ? t("validating_btn") : t("start_import_btn")} onClick={() => handleComboImport(comboText)} primary disabled={loginLoading || !comboText.trim()} />
+          </ModalActions>
+        </AccountModal>
+      )}
+
+      {/* Combo Import Result Details */}
+      {comboResults.length > 0 && (
+        <AccountModal
+          title={`Import Results — ${comboResults.filter(r => r.ok).length}/${comboResults.length} succeeded`}
+          onClose={() => setComboResults([])}
+          wide
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+            {comboResults.map((r, i) => (
+              <div key={i} style={{
+                padding: "10px 13px", borderRadius: 10,
+                background: r.ok ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
+                border: `1px solid ${r.ok ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: r.ok ? 0 : 5 }}>
+                  <span style={{
+                    width: 16, height: 16, borderRadius: 99, flexShrink: 0,
+                    background: r.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+                    color: r.ok ? "#4ade80" : "#f87171",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 9, fontWeight: 900,
+                  }}>{r.ok ? "✓" : "✕"}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)" }}>{r.username}</span>
+                </div>
+                {!r.ok && (
+                  <div style={{
+                    fontSize: 11, color: "var(--t2)", lineHeight: 1.55,
+                    paddingLeft: 24, wordBreak: "break-word", whiteSpace: "pre-wrap",
+                  }}>
+                    {r.reason}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 14, lineHeight: 1.6 }}>
+            Copy the details below and share them when reporting the issue.
+          </div>
+          <ModalActions>
+            <ModalBtn label="Close" onClick={() => setComboResults([])} />
+            <ModalBtn
+              label="Copy Details"
+              onClick={() => {
+                const text = comboResults.map(r =>
+                  `${r.ok ? "[OK]" : "[FAIL]"} ${r.username}: ${r.reason}`
+                ).join("\n");
+                navigator.clipboard.writeText(text).catch(() => {});
+              }}
+              primary
+            />
           </ModalActions>
         </AccountModal>
       )}

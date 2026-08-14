@@ -794,6 +794,8 @@ async fn fetch_user_info(cookie: &str) -> Option<(RbxAuthUser, Option<String>)> 
         .send()
         .await
         .ok()?;
+    let status = resp.status();
+    eprintln!("[combo] fetch_user_info → HTTP {}", status);
     if resp.status().is_success() {
         let mut new_cookie = None;
         for hdr in resp.headers().get_all("set-cookie").iter() {
@@ -806,6 +808,8 @@ async fn fetch_user_info(cookie: &str) -> Option<(RbxAuthUser, Option<String>)> 
         let user = resp.json().await.ok()?;
         Some((user, new_cookie))
     } else {
+        let body = resp.text().await.unwrap_or_default();
+        eprintln!("[combo] fetch_user_info FAILED — status={} body={}", status, body);
         None
     }
 }
@@ -1231,13 +1235,19 @@ fn get_accounts() -> Vec<AccountDto> {
 #[tauri::command]
 async fn add_account(cookie: String) -> Result<AccountDto, String> {
     let clean = clean_cookie(&cookie);
+    eprintln!("[combo] add_account — raw cookie len={}, clean len={}", cookie.len(), clean.len());
     if clean.is_empty() {
+        eprintln!("[combo] add_account — cookie is empty after cleaning");
         return Err("Cookie is empty or invalid.".into());
     }
 
     let (user, rotated) = fetch_user_info(&clean)
         .await
-        .ok_or("Failed to validate cookie. It may be expired or invalid.")?;
+        .ok_or_else(|| {
+            eprintln!("[combo] add_account — fetch_user_info returned None (cookie invalid or network error)");
+            "Failed to validate cookie. It may be expired or invalid.".to_string()
+        })?;
+    eprintln!("[combo] add_account — validated as user_id={}", user.id);
     let final_cookie = rotated.unwrap_or(clean);
 
     let avatar_url = fetch_avatar_url(user.id).await;
@@ -2175,8 +2185,14 @@ fn extract_webview_cookie_and_close(
         return;
     }
 
+    let user_tag = target_username.as_deref().unwrap_or("(manual)");
+
+    if attempt == 0 {
+        eprintln!("[combo] {} — starting cookie extraction", user_tag);
+    }
+
     if attempt > 150 {
-        // Timeout after 15 seconds of polling
+        eprintln!("[combo] {} — TIMEOUT: .ROBLOSECURITY never appeared in WebView2 cookie store after 15 s", user_tag);
         if cookie_found.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
             let app_c = app.clone();
             let wl_c = window_label.clone();
@@ -2189,7 +2205,7 @@ fn extract_webview_cookie_and_close(
                     cookie: None,
                     window_label: wl_c,
                     target_username: target_username_c,
-                    error: Some("Cookie manager timeout: Login was successful but Roblox cookie could not be retrieved from WebView2 cookie jar within 3 seconds.".to_string()),
+                    error: Some("Cookie manager timeout: .ROBLOSECURITY did not appear in the WebView2 cookie store within 15 s after the login 200 response.".to_string()),
                 };
                 let _ = app_c.emit("login-cookie-result", payload);
             });
@@ -2212,16 +2228,20 @@ fn extract_webview_cookie_and_close(
         let cf2 = cookie_found.clone();
         let target_username2 = target_username.clone();
 
+        let user_tag2 = user_tag.to_string();
         let handler = GetCookiesCompletedHandler::create(Box::new(move |_result, list| {
             let mut found: Option<String> = None;
+            let mut all_names: Vec<String> = Vec::new();
             if let Some(list) = list {
                 let mut count = 0u32;
                 if list.Count(&mut count).is_ok() {
+                    eprintln!("[combo] {} — attempt {}: GetCookies returned {} cookie(s)", user_tag2, attempt, count);
                     for i in 0..count {
                         if let Ok(cookie) = list.GetValueAtIndex(i) {
                             let mut name_pw = PWSTR::null();
                             if cookie.Name(&mut name_pw).is_ok() {
                                 let name = name_pw.to_string().unwrap_or_default();
+                                all_names.push(name.clone());
                                 if name == ".ROBLOSECURITY" {
                                     let mut val_pw = PWSTR::null();
                                     if cookie.Value(&mut val_pw).is_ok() {
@@ -2232,9 +2252,17 @@ fn extract_webview_cookie_and_close(
                             }
                         }
                     }
+                } else {
+                    eprintln!("[combo] {} — attempt {}: GetCookies list.Count() failed", user_tag2, attempt);
                 }
+            } else {
+                eprintln!("[combo] {} — attempt {}: GetCookies returned null list", user_tag2, attempt);
+            }
+            if found.is_none() && !all_names.is_empty() {
+                eprintln!("[combo] {} — .ROBLOSECURITY not found; cookies present: {}", user_tag2, all_names.join(", "));
             }
             if let Some(cookie_val) = found {
+                eprintln!("[combo] {} — .ROBLOSECURITY found (len={}), closing window and emitting", user_tag2, cookie_val.len());
                 if cf2.compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
                     let app_c = app2.clone();
                     let wl_c = wl2.clone();
@@ -2288,7 +2316,10 @@ fn extract_webview_cookie_and_close(
             Ok(())
         }));
 
-        let uri = HSTRING::from("https://www.roblox.com");
+        // Empty URI = get all cookies for the WebView2 instance, so the
+        // .ROBLOSECURITY cookie is found regardless of which sub-domain
+        // (auth.roblox.com, www.roblox.com, roblox.com) Roblox used to set it.
+        let uri = HSTRING::from("");
         let _ = mgr.GetCookies(PCWSTR(uri.as_ptr()), &handler);
     }
 }
@@ -2296,10 +2327,6 @@ fn extract_webview_cookie_and_close(
 #[cfg(target_os = "windows")]
 fn setup_webresource_response_received_handler(
     webview: &tauri::webview::PlatformWebview,
-    app: AppHandle,
-    window_label: String,
-    cookie_found: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    target_username: Option<String>,
 ) {
     use webview2_com::{
         WebResourceResponseReceivedEventHandler,
@@ -2318,13 +2345,14 @@ fn setup_webresource_response_received_handler(
             Err(_) => return,
         };
 
-        let app2 = app.clone();
-        let wl2 = window_label.clone();
-        let cf2 = cookie_found.clone();
-        let c_clone = c.clone();
-        let target_username2 = target_username.clone();
-
         let handler = WebResourceResponseReceivedEventHandler::create(Box::new(move |_wv, args| {
+            // Only log — do NOT extract cookies here.
+            // The auth.roblox.com/v2/login 200 response sets a preliminary token that
+            // Roblox's JavaScript then exchanges for the final .ROBLOSECURITY cookie
+            // before navigating to /home.  Grabbing the cookie at this point captures
+            // the intermediate token, which Roblox rejects with 401 on API calls.
+            // Cookie extraction is handled exclusively by PageLoadEvent::Started so
+            // we always get the fully-committed final session cookie.
             if let Some(args) = args {
                 if let Ok(req) = args.Request() {
                     let mut uri_pwstr = windows::core::PWSTR::null();
@@ -2334,9 +2362,7 @@ fn setup_webresource_response_received_handler(
                             if let Ok(resp) = args.Response() {
                                 let mut status = 0;
                                 if resp.StatusCode(&mut status).is_ok() {
-                                    if status == 200 {
-                                        extract_webview_cookie_and_close(&c_clone, app2.clone(), wl2.clone(), cf2.clone(), target_username2.clone(), 0);
-                                    }
+                                    eprintln!("[combo] WebResourceResponseReceived: auth.roblox.com {} — status {}", uri_str, status);
                                 }
                             }
                         }
@@ -2424,12 +2450,14 @@ async fn open_login_window(
         let url = payload.url().to_string();
 
         match payload.event() {
-            // Finished = DOMContentLoaded: autofill credentials on the login page.
-            // Uses a retry loop (like ic3w0lf22's WaitForSelectorAsync) in case
-            // React hasn't hydrated the inputs yet.
+            // Finished = DOMContentLoaded.
+            // 1. On the login page: autofill credentials.
+            // 2. On any other Roblox page: attempt cookie extraction — DOMContentLoaded
+            //    fires after the browser has fully processed all Set-Cookie headers for
+            //    the navigation, so the final .ROBLOSECURITY is guaranteed to be present.
             PageLoadEvent::Finished => {
-                if let Some(ref script) = autofill_script {
-                    if url.contains("roblox.com/login") {
+                if url.contains("roblox.com/login") || url.contains("roblox.com/newlogin") {
+                    if let Some(ref script) = autofill_script {
                         let retry_script = format!(r#"
 (function tryFill() {{
     var un = document.querySelector('#login-username');
@@ -2440,6 +2468,25 @@ async fn open_login_window(
 "#, script.trim());
                         let _ = win.eval(&retry_script);
                     }
+                } else if url.contains("roblox.com") {
+                    // Non-login Roblox page finished loading — extract cookie now.
+                    if !cookie_found_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!("[combo] PageLoadEvent::Finished on auth page — extracting cookie. url={}", url);
+                        let app_inner = app_clone.clone();
+                        let label_inner = label_clone.clone();
+                        let cookie_found_inner = cookie_found_clone.clone();
+                        let target_username_inner = target_username_clone.clone();
+                        let _ = win.with_webview(move |wv| {
+                            #[cfg(target_os = "windows")]
+                            unsafe {
+                                if let Ok(c) = wv.controller().CoreWebView2() {
+                                    extract_webview_cookie_and_close(&c, app_inner, label_inner, cookie_found_inner, target_username_inner, 0);
+                                }
+                            }
+                            #[cfg(not(target_os = "windows"))]
+                            let _ = app_inner;
+                        });
+                    }
                 }
             }
             // Started = navigation event: only check for cookie when navigated AWAY
@@ -2449,6 +2496,7 @@ async fn open_login_window(
                 if cookie_found_clone.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
+                eprintln!("[combo] PageLoadEvent::Started — url={}", url);
                 // Only check once we've left the login/signup pages
                 let is_auth_page = !url.contains("roblox.com/login")
                     && !url.contains("roblox.com/newlogin")
@@ -2463,6 +2511,7 @@ async fn open_login_window(
                         || url.contains("roblox.com/groups")
                         // fallback: any roblox.com page that isn't login
                         || (url.contains("roblox.com") && !url.contains("/login")));
+                eprintln!("[combo] is_auth_page={}", is_auth_page);
                 if !is_auth_page {
                     return;
                 }
@@ -2486,20 +2535,11 @@ async fn open_login_window(
     .build()
     .map_err(|e| e.to_string())?;
 
-    let app_inner = app.clone();
-    let label_inner = win.label().to_string();
-    let cookie_found_inner = cookie_found.clone();
-    let target_username_handler = username.clone();
-
     let _ = win.with_webview(move |wv| {
         #[cfg(target_os = "windows")]
-        setup_webresource_response_received_handler(&wv, app_inner, label_inner, cookie_found_inner, target_username_handler);
+        setup_webresource_response_received_handler(&wv);
         #[cfg(not(target_os = "windows"))]
-        {
-            let _ = app_inner;
-            let _ = label_inner;
-            let _ = cookie_found_inner;
-        }
+        let _ = wv;
     });
 
     let app_close = app.clone();
@@ -2510,11 +2550,13 @@ async fn open_login_window(
     win.on_window_event(move |event| {
         if let tauri::WindowEvent::Destroyed = event {
             if !cookie_found_close.load(std::sync::atomic::Ordering::Relaxed) {
+                let user_tag = target_username_close.as_deref().unwrap_or("(manual)");
+                eprintln!("[combo] {} — window Destroyed with cookie_found=false → emitting None (window closed before cookie was captured)", user_tag);
                 let payload = LoginResultPayload {
                     cookie: None,
                     window_label: label_close_event.clone(),
                     target_username: target_username_close.clone(),
-                    error: Some("Login window was closed manually or cookie extraction failed.".to_string()),
+                    error: Some("Login window was closed before the auth cookie was captured.".to_string()),
                 };
                 let _ = app_close.emit("login-cookie-result", payload);
             }
@@ -4153,7 +4195,7 @@ fn save_account_password(user_id: i64, password: String) -> Result<(), String> {
     // the next periodic revalidation cycle.
     if !password.is_empty() {
         if let Some(cookie) = cookie {
-            tokio::spawn(fetch_robux_and_sync(sync_uid, sync_user, sync_dn, cookie, sync_added, sync_updated));
+            tauri::async_runtime::spawn(fetch_robux_and_sync(sync_uid, sync_user, sync_dn, cookie, sync_added, sync_updated));
         }
     }
     Ok(())
