@@ -37,6 +37,17 @@ export interface DetectedInstalls {
   protocol_handler_path: string | null;
 }
 
+export interface RobloxDeployVersion {
+  version: string;
+  date: string;
+}
+
+export interface InstalledRobloxVersion {
+  version: string;
+  installed_at: string | null;
+  is_current: boolean;
+}
+
 interface BootstrapperContextValue {
   status: BootstrapperStatus | null;
   progress: BootstrapperProgress | null;
@@ -47,11 +58,20 @@ interface BootstrapperContextValue {
   detectedInstalls: DetectedInstalls | null;
   detecting: boolean;
   preferredLauncher: string;
+  autoUpdate: boolean;
+  deployVersions: RobloxDeployVersion[];
+  loadingVersions: boolean;
+  installedVersions: InstalledRobloxVersion[];
+  loadingInstalledVersions: boolean;
   refreshStatus: () => Promise<void>;
   checkUpdate: () => Promise<void>;
-  startInstall: () => Promise<void>;
+  startInstall: (versionHash?: string) => Promise<void>;
   scanInstalls: () => Promise<void>;
   updateLauncherPreference: (kind: string) => Promise<void>;
+  updateAutoUpdate: (enabled: boolean) => Promise<void>;
+  loadDeployVersions: () => Promise<void>;
+  loadInstalledVersions: () => Promise<void>;
+  useInstalledVersion: (versionHash: string) => Promise<void>;
   clearMessages: () => void;
 }
 
@@ -75,6 +95,11 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
   const [detectedInstalls, setDetected] = useState<DetectedInstalls | null>(null);
   const [detecting, setDetecting]       = useState(false);
   const [preferredLauncher, setPreferredLauncher] = useState<string>("auto");
+  const [autoUpdate, setAutoUpdate]     = useState<boolean>(true);
+  const [deployVersions, setDeployVersions] = useState<RobloxDeployVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [installedVersions, setInstalledVersions] = useState<InstalledRobloxVersion[]>([]);
+  const [loadingInstalledVersions, setLoadingInstalledVersions] = useState(false);
   const unlistenRef                     = useRef<(() => void) | null>(null);
 
   // Load initial status once on mount and register the persistent event listener
@@ -86,6 +111,11 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
       // Load launcher preference
       invoke<string>("get_launcher_preference")
         .then(setPreferredLauncher)
+        .catch(() => {});
+
+      // Load auto-update preference
+      invoke<boolean>("get_auto_update_preference")
+        .then(setAutoUpdate)
         .catch(() => {});
 
       // Register the event listener at app level — survives navigation
@@ -186,7 +216,7 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const startInstall = async () => {
+  const startInstall = async (versionHash?: string) => {
     // Don't start if already running
     if (installing) return;
     setInstalling(true);
@@ -194,7 +224,7 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     setSuccessMsg("");
     setProgress(null);
     try {
-      await invoke("bootstrapper_install");
+      await invoke("bootstrapper_install", { versionHash: versionHash ?? null });
     } catch (e) {
       setError(String(e));
       setInstalling(false);
@@ -219,6 +249,50 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const updateAutoUpdate = async (enabled: boolean) => {
+    try {
+      await invoke("set_auto_update_preference", { enabled });
+      setAutoUpdate(enabled);
+    } catch (e) {
+      setError(`Failed to set auto-update preference: ${e}`);
+    }
+  };
+
+  const loadDeployVersions = async () => {
+    setLoadingVersions(true);
+    try {
+      const versions = await invoke<RobloxDeployVersion[]>("get_roblox_deploy_history");
+      setDeployVersions(versions);
+    } catch (e) {
+      setError(`Failed to load version history: ${e}`);
+    } finally {
+      setLoadingVersions(false);
+    }
+  };
+
+  const loadInstalledVersions = async () => {
+    setLoadingInstalledVersions(true);
+    try {
+      const versions = await invoke<InstalledRobloxVersion[]>("list_installed_roblox_versions");
+      setInstalledVersions(versions);
+    } catch (e) {
+      setError(`Failed to list installed versions: ${e}`);
+    } finally {
+      setLoadingInstalledVersions(false);
+    }
+  };
+
+  const useInstalledVersion = async (versionHash: string) => {
+    try {
+      await invoke("use_installed_roblox_version", { versionHash });
+      setSuccessMsg(`Switched to installed version ${versionHash}`);
+      await refreshStatus();
+      await loadInstalledVersions();
+    } catch (e) {
+      setError(`Failed to switch version: ${e}`);
+    }
+  };
+
   const clearMessages = () => {
     setError("");
     setSuccessMsg("");
@@ -227,8 +301,10 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
   return (
     <BootstrapperContext.Provider value={{
       status, progress, installing, checking, error, successMsg,
-      detectedInstalls, detecting, preferredLauncher,
-      refreshStatus, checkUpdate, startInstall, scanInstalls, updateLauncherPreference, clearMessages,
+      detectedInstalls, detecting, preferredLauncher, autoUpdate, deployVersions, loadingVersions,
+      installedVersions, loadingInstalledVersions,
+      refreshStatus, checkUpdate, startInstall, scanInstalls, updateLauncherPreference, updateAutoUpdate,
+      loadDeployVersions, loadInstalledVersions, useInstalledVersion, clearMessages,
     }}>
       {children}
     </BootstrapperContext.Provider>

@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { motion, AnimatePresence } from "motion/react";
 import { getChangesSince, ChangeKind } from "../data/changelog";
 
 interface UpdateInfo {
@@ -196,23 +197,47 @@ export default function UpdatePrompt({ info }: Props) {
         {/* Progress bar */}
         {uiPhase !== "idle" && (
           <div style={{ width: "100%", marginBottom: 20 }}>
-            <div style={{
-              width: "100%", height: 6, borderRadius: 99,
-              background: "var(--g07)", overflow: "hidden",
-              marginBottom: 10,
-            }}>
-              <div style={{
-                height: "100%", borderRadius: 99,
-                background: barColor,
-                width: `${bar}%`,
-                transition: "width 0.15s ease, background 0.4s",
-                boxShadow: `0 0 10px ${barColor}66`,
-              }} />
+            <div style={{ display: "flex", justifyContent: "center", minHeight: 18, marginBottom: 10, perspective: 800 }}>
+              <AnimatePresence mode="popLayout">
+                <motion.span
+                  key={statusLabel()}
+                  initial={{ opacity: 0, y: 6, scale: 1.1, filter: "blur(3px)", rotateX: -50 }}
+                  animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)", rotateX: 0 }}
+                  exit={{ opacity: 0, filter: "blur(3px)", scale: 0.92, rotateX: 40 }}
+                  transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                  style={{ fontSize: 11, color: "var(--t3)", fontWeight: 600, transformStyle: "preserve-3d", display: "inline-block" }}
+                >
+                  {statusLabel()}
+                </motion.span>
+              </AnimatePresence>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "var(--t3)", fontWeight: 600 }}>
-                {statusLabel()}
-              </span>
+            <div style={{
+              width: "100%", height: 8, borderRadius: 99,
+              background: "var(--g07)", overflow: "hidden",
+            }}>
+              <motion.div
+                initial={false}
+                animate={{ width: `${bar}%` }}
+                transition={{ duration: 0.25, ease: "easeOut" }}
+                style={{
+                  height: "100%", borderRadius: 99, position: "relative", overflow: "hidden",
+                  background: barColor,
+                  boxShadow: `0 0 10px ${barColor}66`,
+                  transition: "background 0.4s",
+                }}
+              >
+                <motion.div
+                  initial={{ x: "-100%" }}
+                  animate={{ x: "200%" }}
+                  transition={{ duration: 1.3, repeat: Infinity, ease: "linear" }}
+                  style={{
+                    position: "absolute", inset: 0,
+                    background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent)",
+                  }}
+                />
+              </motion.div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <span style={{ fontSize: 11, fontWeight: 700, color: barColor }}>{bar}%</span>
             </div>
           </div>

@@ -40,6 +40,17 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.8",
+    date: "2026-08-19",
+    title: "Roblox version control, redesigned Home & Accounts pages",
+    changes: [
+      { kind: "new", text: "Roblox version control on the Bootstrapper page: pick a specific build to install, toggle Auto-update off to stop automatic checks, and switch instantly between builds already downloaded on your PC." },
+      { kind: "new", text: "Pinned accounts now show as a shufflable card above the account list, replacing the old favorite/star toggle." },
+      { kind: "improved", text: "Redesigned the Home and Accounts pages with clearer spacing and section separation, and made account action buttons visible at rest instead of hidden until hover." },
+      { kind: "fixed", text: "Fixed a few spots on the Accounts page that showed literal placeholder text instead of translated strings, and a stat that was stuck showing 0 active accounts." },
+    ],
+  },
+  {
     version: "1.1.5",
     date: "2026-08-09",
     title: "Remove key system, minimize on launch",

@@ -3367,6 +3367,22 @@ fn read_launcher_preference() -> String {
     // Default: use Reiya if installed, otherwise fall through
     "auto".to_string()
 }
+
+// ── Auto-update Preference ───────────────────────────────────────────────────
+
+fn read_auto_update() -> bool {
+    let settings_path = data_dir().join("settings.json");
+    if let Ok(content) = fs::read_to_string(&settings_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(clean_bom(&content)) {
+            if let Some(enabled) = val.get("AutoUpdateRoblox").and_then(|v| v.as_bool()) {
+                return enabled;
+            }
+        }
+    }
+    // Default: auto-update enabled
+    true
+}
+
 #[cfg(target_os = "windows")]
 fn launch_detached(exe_path: &std::path::Path, args: &str) -> Result<Option<u32>, String> {
     use std::ffi::OsStr;
@@ -3949,12 +3965,49 @@ async fn ensure_latest_and_launch(
         return Err("Launch cancelled by user".into());
     }
 
-    let status = match bootstrapper_check_update().await {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = format!("Update check failed: {}", e);
+    let auto_update = read_auto_update();
+
+    if !auto_update {
+        // Auto-update disabled — skip the update check entirely and launch
+        // whatever version is already installed, if any.
+        if let Some(installed) = read_installed_version() {
+            let exe = version_dir(&installed).join("RobloxPlayerBeta.exe");
+            if exe.exists() {
+                let _ = app.emit("launch-progress", LaunchProgressPayload {
+                    status: format!("Auto-update disabled — using installed version {}", &installed[..installed.len().min(24)]),
+                    percent: 40,
+                });
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            }
+        }
+    }
+
+    let status = if auto_update {
+        match bootstrapper_check_update().await {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("Update check failed: {}", e);
+                emit_error(app, &msg);
+                return Err(msg);
+            }
+        }
+    } else {
+        let installed = read_installed_version();
+        if installed.is_none() {
+            let msg = "No Roblox version installed and auto-update is disabled. Install a version from the Bootstrapper page first.".to_string();
             emit_error(app, &msg);
             return Err(msg);
+        }
+        let install_path = versions_dir().to_string_lossy().to_string();
+        let exe_path = installed.as_ref().map(|v| {
+            version_dir(v).join("RobloxPlayerBeta.exe").to_string_lossy().to_string()
+        }).filter(|p| std::path::Path::new(p).exists());
+        BootstrapperStatus {
+            needs_update: false,
+            latest_version: installed.clone(),
+            installed_version: installed,
+            install_path,
+            exe_path,
         }
     };
 
@@ -4156,6 +4209,28 @@ fn set_launcher_preference(kind: String) -> Result<(), String> {
         serde_json::json!({})
     };
     val["PreferredLauncher"] = serde_json::Value::String(kind);
+    let s = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
+    fs::write(&settings_path, s).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_auto_update_preference() -> bool {
+    read_auto_update()
+}
+
+#[tauri::command]
+fn set_auto_update_preference(enabled: bool) -> Result<(), String> {
+    let settings_path = data_dir().join("settings.json");
+    let mut val: serde_json::Value = if settings_path.exists() {
+        fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|c| serde_json::from_str(clean_bom(&c)).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    val["AutoUpdateRoblox"] = serde_json::Value::Bool(enabled);
     let s = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
     fs::write(&settings_path, s).map_err(|e| e.to_string())?;
     Ok(())
@@ -5020,6 +5095,97 @@ pub struct BootstrapperProgress {
     pub error: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RobloxDeployVersion {
+    pub version: String,
+    pub date: String,
+}
+
+const DEPLOY_HISTORY_URL: &str = "https://setup.rbxcdn.com/DeployHistory.txt";
+
+#[tauri::command]
+async fn get_roblox_deploy_history() -> Result<Vec<RobloxDeployVersion>, String> {
+    let client = reqwest::Client::builder().user_agent("RobloxBootstrapper").build().map_err(|e| e.to_string())?;
+    let resp = client.get(DEPLOY_HISTORY_URL).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Deploy history fetch error: {}", resp.status()));
+    }
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+
+    let mut entries: Vec<RobloxDeployVersion> = Vec::new();
+    for line in text.lines() {
+        // Example: "New WindowsPlayer Update: version-ce0bcd0fbd484804 at 8/12/2026 3:14:22 PM, file version: 0, 671, 0, 6710123"
+        if !line.contains("WindowsPlayer") || !line.contains("version-") {
+            continue;
+        }
+        let Some(v_start) = line.find("version-") else { continue };
+        let rest = &line[v_start..];
+        let version = rest.split(|c: char| c.is_whitespace() || c == ',').next().unwrap_or("").to_string();
+        if version.is_empty() {
+            continue;
+        }
+        let date = if let Some(at_idx) = line.find(" at ") {
+            let after_at = &line[at_idx + 4..];
+            after_at.split(", file version").next().unwrap_or("").trim().to_string()
+        } else {
+            String::new()
+        };
+        entries.push(RobloxDeployVersion { version, date });
+    }
+
+    entries.reverse(); // most recent first
+    entries.truncate(40);
+    Ok(entries)
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InstalledRobloxVersion {
+    pub version: String,
+    pub installed_at: Option<String>,
+    pub is_current: bool,
+}
+
+/// Lists Roblox builds already downloaded to disk under the Reiya Versions folder
+/// (every past install leaves its folder behind rather than deleting it), so the
+/// user can switch back to one they've already had installed without any network
+/// fetch — distinct from the deploy-history list, which only offers builds Roblox
+/// still publishes a hash for.
+#[tauri::command]
+fn list_installed_roblox_versions() -> Vec<InstalledRobloxVersion> {
+    let current = read_installed_version();
+    let mut out: Vec<InstalledRobloxVersion> = Vec::new();
+    let Ok(entries) = fs::read_dir(versions_dir()) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+        if !path.join("RobloxPlayerBeta.exe").exists() { continue; }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        let installed_at = entry.metadata().ok()
+            .and_then(|m| m.modified().ok())
+            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+        out.push(InstalledRobloxVersion {
+            version: name.to_string(),
+            installed_at,
+            is_current: current.as_deref() == Some(name),
+        });
+    }
+    out.sort_by(|a, b| b.installed_at.cmp(&a.installed_at));
+    out
+}
+
+/// Switches the active pinned version to one already downloaded on disk — no
+/// network fetch, just re-points version.txt and the protocol handler at it.
+#[tauri::command]
+fn use_installed_roblox_version(version_hash: String) -> Result<(), String> {
+    let exe = version_dir(&version_hash).join("RobloxPlayerBeta.exe");
+    if !exe.exists() {
+        return Err(format!("Version {} is not installed locally.", version_hash));
+    }
+    write_installed_version(&version_hash);
+    bootstrapper_register_protocol_internal(&exe.to_string_lossy())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn bootstrapper_check_update() -> Result<BootstrapperStatus, String> {
     let client = reqwest::Client::builder().user_agent("RobloxBootstrapper").build().map_err(|e| e.to_string())?;
@@ -5206,9 +5372,9 @@ fn repair_bootstrapper_folders(version_dir: &std::path::Path) -> Result<(), Stri
 }
 
 #[tauri::command]
-async fn bootstrapper_install(app: AppHandle) -> Result<(), String> {
+async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>) -> Result<(), String> {
     eprintln!("[INFO bootstrapper_install] Starting Reiya bootstrapper installation...");
-    let res = bootstrapper_install_impl(app.clone()).await;
+    let res = bootstrapper_install_impl(app.clone(), version_hash).await;
     if let Err(ref e) = res {
         eprintln!("[ERROR bootstrapper_install] Installation failed: {}", e);
         let _ = app.emit("bootstrapper-progress", BootstrapperProgress {
@@ -5227,21 +5393,30 @@ async fn bootstrapper_install(app: AppHandle) -> Result<(), String> {
     res
 }
 
-async fn bootstrapper_install_impl(app: AppHandle) -> Result<(), String> {
+async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String>) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .user_agent("RobloxBootstrapper")
         .build()
         .map_err(|e| format!("Failed to create reqwest client: {}", e))?;
 
-    // 1. Get latest version hash
-    eprintln!("[INFO bootstrapper_install] Fetching latest client version from: {}", VERSION_API);
-    let resp = client.get(VERSION_API).send().await.map_err(|e| format!("Failed to connect to version API: {}", e))?;
-    let json: serde_json::Value = resp.json().await.map_err(|e| format!("Failed to parse version JSON: {}", e))?;
-    let version_hash = json["clientVersionUpload"].as_str().unwrap_or("").to_string();
-    if version_hash.is_empty() {
-        return Err("Roblox API returned empty version hash".into());
-    }
-    eprintln!("[INFO bootstrapper_install] Latest version hash resolved: {}", version_hash);
+    // 1. Resolve version hash: use the pinned version if provided, else fetch latest.
+    let version_hash = if let Some(v) = pinned_version.filter(|v| !v.is_empty()) {
+        if v == "version-hidden" {
+            return Err("This build's version hash isn't published by Roblox anymore, so it can't be installed. Pick a different version or use Latest.".into());
+        }
+        eprintln!("[INFO bootstrapper_install] Using pinned version hash: {}", v);
+        v
+    } else {
+        eprintln!("[INFO bootstrapper_install] Fetching latest client version from: {}", VERSION_API);
+        let resp = client.get(VERSION_API).send().await.map_err(|e| format!("Failed to connect to version API: {}", e))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| format!("Failed to parse version JSON: {}", e))?;
+        let v = json["clientVersionUpload"].as_str().unwrap_or("").to_string();
+        if v.is_empty() {
+            return Err("Roblox API returned empty version hash".into());
+        }
+        eprintln!("[INFO bootstrapper_install] Latest version hash resolved: {}", v);
+        v
+    };
 
     // 2. Fetch package manifest
     let manifest_url = format!("{}/{}-rbxPkgManifest.txt", BOOTSTRAPPER_CDN, version_hash);
@@ -7363,6 +7538,11 @@ pub fn run() {
             detect_roblox_installs,
             get_launcher_preference,
             set_launcher_preference,
+            get_auto_update_preference,
+            set_auto_update_preference,
+            get_roblox_deploy_history,
+            list_installed_roblox_versions,
+            use_installed_roblox_version,
             login_with_credentials,
             fetch_rscripts,
             fetch_rscripts_trending,

@@ -5,21 +5,33 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import {
-  GlobeIcon, KeyIcon, ShieldCheckIcon, FileTextIcon, SettingsIcon,
-  SearchIcon, StarIcon, TrashIcon, XIcon, ChevronDownIcon, CheckIcon,
-  GamepadIcon, ZapIcon, ShieldIcon, UserIcon,
+  SettingsIcon,
+  StarIcon, TrashIcon, XIcon, CheckIcon,
+  GamepadIcon, ZapIcon,
 } from "../components/Icons";
+import { QuickLaunchModal } from "../components/QuickLaunchModal";
+import { AccSingleCookieModal } from "../components/AccSingleCookieModal";
+import { AccBulkCookieModal } from "../components/AccBulkCookieModal";
+import { AccComboImportModal } from "../components/AccComboImportModal";
+import { ComboResultsModal } from "../components/ComboResultsModal";
+import { AccUtilitiesModal } from "../components/AccUtilitiesModal";
+import { ExportAccountsModal } from "../components/ExportAccountsModal";
+import { ImportAccountsModal } from "../components/ImportAccountsModal";
+import { MoveToGroupModal } from "../components/MoveToGroupModal";
+import { AccountsHeaderBar } from "../components/AccountsHeaderBar";
+import { AccountsToolbar } from "../components/AccountsToolbar";
+import { BulkActionBar } from "../components/BulkActionBar";
 
-interface ComboResult { username: string; ok: boolean; reason: string; }
+export interface ComboResult { username: string; ok: boolean; reason: string; }
 
-interface BulkAddResult {
+export interface BulkAddResult {
   preview: string;
   success: boolean;
   username: string | null;
   error: string | null;
 }
 
-interface Account {
+export interface Account {
   user_id: number;
   username: string;
   display_name: string;
@@ -47,6 +59,15 @@ interface LoginResultPayload {
   error: string | null;
 }
 
+interface Session {
+  pid: number;
+  user_id: number | null;
+  username: string | null;
+  avatar_url: string | null;
+  game_name: string | null;
+  start_time: string | null;
+}
+
 type FilterTab = "all" | "favorites" | "valid";
 type SortBy = "last_launched" | "name_asc" | "name_desc" | "status" | "added" | "custom";
 
@@ -63,6 +84,7 @@ export default function Accounts() {
   const [sortBy,      setSortBy]      = useState<SortBy>("last_launched");
   const [copiedId,    setCopiedId]    = useState<number | null>(null);
   const [copiedUid,   setCopiedUid]   = useState<number | null>(null);
+  const [sessions,    setSessions]    = useState<Session[]>([]);
 
   // Quick place ID launch
   const [quickLaunchAccount, setQuickLaunchAccount] = useState<Account | null>(null);
@@ -209,7 +231,29 @@ export default function Accounts() {
     };
   }, [loadAccounts]);
 
-  const online     = 0;
+  // Live session count for the "Active" stat pill — fetch on mount, poll, and refresh on status change
+  useEffect(() => {
+    invoke<Session[]>("get_live_sessions").then(setSessions).catch(() => {});
+
+    let unlistenSessions: (() => void) | null = null;
+    listen("session-status-changed", () => {
+      invoke<Session[]>("get_live_sessions").then(setSessions).catch(() => {});
+    }).then(fn => { unlistenSessions = fn; });
+
+    const interval = setInterval(() => {
+      if (document.hidden) return;
+      invoke<Session[]>("get_live_sessions").then(sess => {
+        setSessions(prev => JSON.stringify(prev) === JSON.stringify(sess) ? prev : sess);
+      }).catch(() => {});
+    }, 5000);
+
+    return () => {
+      clearInterval(interval);
+      if (unlistenSessions) unlistenSessions();
+    };
+  }, []);
+
+  const online     = sessions.length;
   const favCount   = accounts.filter(a => a.is_favorite).length;
   const validCount = accounts.filter(a => a.cookie_status === "Valid").length;
 
@@ -226,6 +270,11 @@ export default function Accounts() {
         return a.localeCompare(b);
       });
   }, [accounts]);
+  const groupCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const g of groups) counts[g] = accounts.filter(a => a.group === g).length;
+    return counts;
+  }, [accounts, groups]);
 
   // Reset active group if it no longer exists (e.g. all accounts in that group were removed)
   useEffect(() => {
@@ -705,236 +754,61 @@ export default function Accounts() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--bg)" }}>
 
-      {/* â"€â"€ HEADER â"€â"€ */}
+      {/* ── HEADER ── */}
       <div style={{
-        padding: "18px 24px",
+        padding: "16px 24px",
         borderBottom: "1px solid var(--g04)",
         background: "var(--g01)",
         backdropFilter: "blur(12px)",
         flexShrink: 0,
       }}>
-        {/* Title + Actions */}
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
-          <div>
-            <h1 style={{ fontSize: 14, fontWeight: 900, letterSpacing: "0.06em", color: "var(--t1)", margin: 0 }}>
-              {t("accounts_manager_title")}
-            </h1>
-            <p style={{ fontSize: 10, fontWeight: 700, color: "var(--t3)", letterSpacing: "0.1em", marginTop: 3 }}>
-              MANAGE · LAUNCH · VALIDATE ROBLOX ACCOUNTS
-            </p>
-          </div>
+        <AccountsHeaderBar
+          t={t}
+          totalCount={accounts.length}
+          validCount={validCount}
+          favCount={favCount}
+          online={online}
+          selectedCount={selected.size}
+          addMenu={addMenu}
+          setAddMenu={setAddMenu}
+          addMenuRef={addMenuRef}
+          onImportClick={() => { setImportErr(""); setImportOk(""); setImportPwd(""); setShowImport(true); }}
+          onExportClick={() => { setExportErr(""); setExportOk(""); setExportPwd(""); setShowExport(true); }}
+          onManualLogin={handleManualLogin}
+          onUserPass={() => { setAddMenu(false); setComboText(""); setLoginError(""); setShowUserPass(true); }}
+          onOpenCookieMenu={handleOpenCookieMenu}
+          onCookiesFile={() => { setAddMenu(false); setBulkText(""); setBulkResults([]); setShowBulk(true); }}
+          onCustomLogin={() => setAddMenu(false)}
+        />
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {/* Stat pills */}
-            <AccountStatPill value={accounts.length} label={t("total").toUpperCase()} color="var(--t1)" />
-            <AccountStatPill value={validCount} label="VALID" color="var(--green)" />
-            <AccountStatPill value={favCount} label={t("favorites").toUpperCase()} color="var(--amber)" />
-            <AccountStatPill value={online} label={t("active").toUpperCase()} color="var(--green)" />
-            {selected.size > 0 && (
-              <AccountStatPill value={selected.size} label="SELECTED" color="#A78BFA" />
-            )}
-
-            {/* Import / Export */}
-            <button
-              onClick={() => { setImportErr(""); setImportOk(""); setImportPwd(""); setShowImport(true); }}
-              title="Import Backup"
-              style={{
-                display: "flex", alignItems: "center", gap: 6,
-                padding: "8px 14px", borderRadius: 10, fontSize: 11.5, fontWeight: 700,
-                border: "1px solid var(--g08)", background: "var(--g04)",
-                color: "var(--t2)", cursor: "pointer", transition: "all .12s",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = "var(--g08)"; e.currentTarget.style.color = "var(--t1)"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "var(--g04)"; e.currentTarget.style.color = "var(--t2)"; }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-              Import
-            </button>
-            <button
-              onClick={() => { setExportErr(""); setExportOk(""); setExportPwd(""); setShowExport(true); }}
-              title="Export Backup"
-              style={{
-                display: "flex", alignItems: "center", gap: 6,
-                padding: "8px 14px", borderRadius: 10, fontSize: 11.5, fontWeight: 700,
-                border: "1px solid var(--g08)", background: "var(--g04)",
-                color: "var(--t2)", cursor: "pointer", transition: "all .12s",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background = "var(--g08)"; e.currentTarget.style.color = "var(--t1)"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "var(--g04)"; e.currentTarget.style.color = "var(--t2)"; }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              Export
-            </button>
-
-            {/* Add Account dropdown */}
-            <div ref={addMenuRef} style={{ position: "relative" }}>
-              <button
-                onClick={e => { e.stopPropagation(); setAddMenu(v => !v); }}
-                style={{
-                  display: "flex", alignItems: "center", gap: 7,
-                  padding: "9px 16px", borderRadius: 10, border: "none",
-                  background: "var(--accent)",
-                  color: "var(--accent-text)", fontSize: 12, fontWeight: 800, cursor: "pointer",
-                  boxShadow: "0 4px 14px var(--g18)", transition: "filter .12s",
-                }}
-                onMouseEnter={e => e.currentTarget.style.filter = "brightness(1.1)"}
-                onMouseLeave={e => e.currentTarget.style.filter = "none"}
-              >
-                {t("add_account_btn_label")}
-                <ChevronDownIcon size={11} color="#0a0a0a" />
-              </button>
-
-              {addMenu && (
-                <div
-                  onClick={e => e.stopPropagation()}
-                  style={{
-                    position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 999,
-                    background: "var(--modal-bg)",
-                    border: "1px solid var(--g08)", borderRadius: 14,
-                    padding: 6, minWidth: 220,
-                    boxShadow: "0 16px 40px rgba(0,0,0,0.7), 0 0 0 1px var(--g04)",
-                  }}
-                >
-                  <DropdownItem icon={<GlobeIcon size={14} />} label={t("manual_login_title")} sub={t("manual_login_sub")} onClick={handleManualLogin} />
-                  <DropdownItem icon={<KeyIcon size={14} />} label={t("user_pass_title")} sub={t("user_pass_sub")} onClick={() => { setAddMenu(false); setComboText(""); setLoginError(""); setShowUserPass(true); }} />
-                  <DropdownItem icon={<ShieldCheckIcon size={14} />} label={t("cookie_title")} sub={t("cookie_sub")} onClick={handleOpenCookieMenu} />
-                  <DropdownItem icon={<FileTextIcon size={14} />} label={t("cookies_file_title")} sub={t("cookies_file_sub")} onClick={() => { setAddMenu(false); setBulkText(""); setBulkResults([]); setShowBulk(true); }} />
-                  <div style={{ height: 1, background: "var(--g06)", margin: "4px 8px" }} />
-                  <DropdownItem icon={<SettingsIcon size={14} />} label={t("custom_login_title")} sub={t("custom_login_sub")} onClick={() => setAddMenu(false)} />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Group tabs row — only shown when accounts have groups */}
-        {groups.length > 0 && (
-          <div className="premium-tab-track" style={{ flexShrink: 0, marginBottom: 2 }}>
-            <button
-              onClick={() => setActiveGroup(null)}
-              className={`premium-tab ${activeGroup === null ? "active" : ""}`}
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px" }}
-            >
-              <span style={{ fontSize: 11, fontWeight: 700 }}>All</span>
-              <span style={{ fontSize: 9, fontWeight: 800, opacity: 0.55 }}>{accounts.length}</span>
-            </button>
-            {groups.map(g => {
-              const count = accounts.filter(a => a.group === g).length;
-              const isActive = activeGroup === g;
-              return (
-                <button
-                  key={g}
-                  onClick={() => setActiveGroup(g)}
-                  className={`premium-tab ${isActive ? "active" : ""}`}
-                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px" }}
-                >
-                  <span style={{ fontSize: 11, fontWeight: 700 }}>{g}</span>
-                  <span style={{ fontSize: 9, fontWeight: 800, opacity: 0.55 }}>{count}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Search + Sub-filter */}
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ position: "relative", flex: 1 }}>
-            <SearchIcon size={13} color="var(--t3)" style={{
-              position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none",
-            }} />
-            <input
-              ref={searchInputRef}
-              placeholder={`${t("search_accounts_placeholder")} (Ctrl+F)`}
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{
-                width: "100%", paddingLeft: 36, padding: "9px 12px 9px 36px",
-                background: "var(--g02)", border: "1px solid var(--g05)",
-                borderRadius: 10, color: "var(--t1)", fontSize: 12, outline: "none",
-                transition: "border-color .15s",
-              }}
-              onFocus={e => e.currentTarget.style.borderColor = "var(--g35)"}
-              onBlur={e => e.currentTarget.style.borderColor = "var(--g05)"}
-            />
-          </div>
-
-          {/* Sub-filter tabs: All / Favorites / Valid */}
-          <div className="premium-tab-track" style={{ flexShrink: 0 }}>
-            {([
-              ["all", t("all_profiles").split(" ")[0]],
-              ["favorites", t("favorites")],
-              ["valid", "Valid"],
-            ] as [FilterTab, string][]).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setFilter(id)}
-                className={`premium-tab ${filter === id ? "active" : ""}`}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px" }}
-              >
-                {id === "favorites" && (
-                  <StarIcon size={11} fill={filter === "favorites" ? "var(--amber)" : "none"} color={filter === "favorites" ? "var(--amber)" : "var(--t3)"} />
-                )}
-                {id === "valid" && (
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: filter === "valid" ? "var(--green)" : "var(--t3)", display: "inline-block", flexShrink: 0 }} />
-                )}
-                <span style={{ fontSize: 11, fontWeight: 700 }}>{label}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Sort dropdown */}
-          <select
-            value={sortBy}
-            onChange={e => setSortBy(e.target.value as SortBy)}
-            style={{
-              flexShrink: 0, height: 34, padding: "0 10px",
-              borderRadius: 10, border: "1px solid var(--g05)",
-              background: "var(--g02)", color: "var(--t2)",
-              fontSize: 11, fontWeight: 700, cursor: "pointer", outline: "none",
-            }}
-          >
-            <option value="last_launched">↓ Last Launched</option>
-            <option value="name_asc">A → Z</option>
-            <option value="name_desc">Z → A</option>
-            <option value="status">Cookie Status</option>
-            <option value="added">Recently Added</option>
-            <option value="custom">✦ Custom Order</option>
-          </select>
-        </div>
+        <AccountsToolbar
+          t={t}
+          groups={groups}
+          totalCount={accounts.length}
+          groupCounts={groupCounts}
+          activeGroup={activeGroup}
+          setActiveGroup={setActiveGroup}
+          search={search}
+          setSearch={setSearch}
+          searchInputRef={searchInputRef}
+          filter={filter}
+          setFilter={setFilter}
+          sortBy={sortBy}
+          setSortBy={setSortBy}
+        />
       </div>
 
-      {/* ── BULK ACTION BAR ── */}
-      {selected.size > 0 && (
-        <div style={{
-          padding: "10px 24px", display: "flex", alignItems: "center", gap: 10,
-          background: "rgba(167,139,250,0.06)",
-          borderBottom: "1px solid rgba(167,139,250,0.15)",
-          flexShrink: 0,
-        }}>
-          <span style={{ fontSize: 11.5, fontWeight: 700, color: "#A78BFA", marginRight: 4 }}>
-            {selected.size} selected
-          </span>
-          <BulkBtn label="Launch All" onClick={handleBulkLaunch} disabled={bulkLaunching} accent="#34D399" />
-          <BulkBtn label="Validate All" onClick={handleBulkValidate} disabled={bulkLaunching} />
-          <BulkBtn label="Move to Group" onClick={() => { setGroupInput(""); setMoveGroupModal(true); }} disabled={bulkLaunching} />
-          <BulkBtn label="Select All" onClick={selectAll} disabled={bulkLaunching} />
-          <BulkBtn label="Delete All" onClick={handleBulkDelete} disabled={bulkLaunching} danger />
-          {bulkStatus && (
-            <span style={{ fontSize: 11, color: "var(--t2)", marginLeft: "auto" }}>{bulkStatus}</span>
-          )}
-          <button
-            onClick={clearSelection}
-            style={{ marginLeft: bulkStatus ? 0 : "auto", background: "none", border: "none", cursor: "pointer", color: "var(--t3)", display: "flex", alignItems: "center", padding: 4, borderRadius: 5 }}
-            title="Clear selection"
-          >
-            <XIcon size={14} />
-          </button>
-        </div>
-      )}
+      <BulkActionBar
+        selectedCount={selected.size}
+        bulkLaunching={bulkLaunching}
+        bulkStatus={bulkStatus}
+        onLaunchAll={handleBulkLaunch}
+        onValidateAll={handleBulkValidate}
+        onMoveToGroup={() => { setGroupInput(""); setMoveGroupModal(true); }}
+        onSelectAll={selectAll}
+        onDeleteAll={handleBulkDelete}
+        onClearSelection={clearSelection}
+      />
 
       {/* ── ACCOUNT LIST ── */}
       <div
@@ -957,7 +831,7 @@ export default function Accounts() {
             border: "1px dashed var(--g06)", borderRadius: 16,
           }}>
             {accounts.length === 0
-              ? '{t("no_accounts_yet")}'
+              ? t("no_accounts_yet")
               : search ? `${t("no_accounts_match")} "${search}"` : t("no_accounts_in_view")}
           </div>
         ) : (
@@ -1003,373 +877,102 @@ export default function Accounts() {
 
       {/* â"€â"€ MODALS â"€â"€ */}
 
-      {/* Quick Place ID Launch */}
-      {quickLaunchAccount && (
-        <AccountModal
-          title={`Launch @${quickLaunchAccount.username}`}
-          onClose={() => setQuickLaunchAccount(null)}
-        >
-          <FieldLabel>Place ID (leave blank for default)</FieldLabel>
-          <input
-            autoFocus
-            placeholder="e.g. 4483381587"
-            value={quickPlaceId}
-            onChange={e => setQuickPlaceId(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleQuickLaunch(); if (e.key === "Escape") setQuickLaunchAccount(null); }}
-            style={{
-              width: "100%", padding: "9px 13px", borderRadius: 10, outline: "none",
-              background: "var(--g03)", border: "1px solid var(--g07)",
-              color: "var(--t1)", fontSize: 12, marginBottom: 12,
-            }}
-          />
-          <ModalActions>
-            <ModalBtn label="Cancel" onClick={() => setQuickLaunchAccount(null)} />
-            <ModalBtn label="Launch" onClick={handleQuickLaunch} primary />
-          </ModalActions>
-        </AccountModal>
-      )}
+      <QuickLaunchModal
+        account={quickLaunchAccount}
+        quickPlaceId={quickPlaceId}
+        setQuickPlaceId={setQuickPlaceId}
+        onClose={() => setQuickLaunchAccount(null)}
+        onLaunch={handleQuickLaunch}
+      />
 
-      {/* Single Cookie */}
-      {showSingle && (
-        <AccountModal title={t("import_cookie_title")} onClose={() => { setShowSingle(false); setAddError(""); }}>
-          <FieldLabel>{t("roblosecurity_cookie_label")}</FieldLabel>
-          <textarea
-            rows={4}
-            placeholder={t("paste_roblosecurity_placeholder")}
-            value={addCookie}
-            onChange={e => setAddCookie(e.target.value)}
-            style={{
-              width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: 10.5,
-              padding: "10px 13px", borderRadius: 10, outline: "none",
-              background: "var(--g03)", border: "1px solid var(--g07)",
-              color: "var(--t1)", marginBottom: 12,
-            }}
-          />
-          {addError && <ErrorMsg msg={addError} />}
-          <ModalActions>
-            <ModalBtn label={t("cancel")} onClick={() => { setShowSingle(false); setAddError(""); }} />
-            <ModalBtn label={adding ? t("validating_btn") : t("import_cookie_title")} onClick={handleAddSingle} primary disabled={adding || !addCookie.trim()} />
-          </ModalActions>
-        </AccountModal>
-      )}
+      <AccSingleCookieModal
+        open={showSingle}
+        addCookie={addCookie}
+        setAddCookie={setAddCookie}
+        adding={adding}
+        addError={addError}
+        onClose={() => { setShowSingle(false); setAddError(""); }}
+        onSubmit={handleAddSingle}
+      />
 
-      {/* Bulk Import */}
-      {showBulk && (
-        <AccountModal title={t("bulk_cookie_import_title")} onClose={() => { if (!bulkAdding) { setShowBulk(false); setBulkText(""); setBulkResults([]); } }}>
-          <p style={{ fontSize: 11, color: "var(--t2)", marginBottom: 14, lineHeight: 1.6 }}>
-            `{t("paste_cookies_one_per_line_desc")}` <code style={{ color: "var(--amber)", fontFamily: "monospace" }}>.ROBLOSECURITY</code>.
-          </p>
-          {bulkResults.length === 0 ? (
-            <textarea
-              rows={10}
-              placeholder={"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this...\n..."}
-              value={bulkText}
-              onChange={e => setBulkText(e.target.value)}
-              style={{
-                width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: 10,
-                padding: "10px 13px", borderRadius: 10, outline: "none",
-                background: "var(--g03)", border: "1px solid var(--g07)",
-                color: "var(--t1)", marginBottom: 12,
-              }}
-            />
-          ) : (
-            <div style={{ maxHeight: 250, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5, marginBottom: 12 }}>
-              {bulkResults.map((r, i) => (
-                <div key={i} style={{
-                  display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 9,
-                  background: r.success ? "rgba(52,211,153,0.06)" : "rgba(248,113,113,0.06)",
-                  border: `1px solid ${r.success ? "rgba(52,211,153,0.2)" : "rgba(248,113,113,0.2)"}`,
-                }}>
-                  {r.success ? <CheckIcon size={12} color="var(--green)" /> : <XIcon size={12} color="var(--red)" />}
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--t1)" }}>{r.username ?? r.preview}</span>
-                  {r.error && <span style={{ fontSize: 9.5, color: "var(--red)", marginLeft: "auto" }}>{r.error}</span>}
-                </div>
-              ))}
-            </div>
-          )}
-          <ModalActions>
-            <ModalBtn label={bulkResults.length > 0 ? t("close_btn") : t("cancel")} onClick={() => { setShowBulk(false); setBulkText(""); setBulkResults([]); }} disabled={bulkAdding} />
-            {bulkResults.length === 0 && (
-              <ModalBtn label={bulkAdding ? t("importing_btn") : t("import_all_btn")} onClick={handleBulkImport} primary disabled={bulkAdding || !bulkText.trim()} />
-            )}
-          </ModalActions>
-        </AccountModal>
-      )}
+      <AccBulkCookieModal
+        open={showBulk}
+        bulkText={bulkText}
+        setBulkText={setBulkText}
+        bulkAdding={bulkAdding}
+        bulkResults={bulkResults}
+        onClose={() => { if (!bulkAdding) { setShowBulk(false); setBulkText(""); setBulkResults([]); } }}
+        onCancel={() => { setShowBulk(false); setBulkText(""); setBulkResults([]); }}
+        onSubmit={handleBulkImport}
+      />
 
-      {/* User:Pass */}
-      {showUserPass && (
-        <AccountModal title={t("user_pass_combo_import_title")} onClose={() => { if (!loginLoading) setShowUserPass(false); }}>
-          <p style={{ fontSize: 11, color: "var(--t2)", marginBottom: 14, lineHeight: 1.6 }}>
-            `{t("paste_combos_desc")}` A login window will open for each account.
-          </p>
-          <FieldLabel>{t("account_combos_label")}</FieldLabel>
-          <textarea
-            rows={6}
-            value={comboText}
-            onChange={e => setComboText(e.target.value)}
-            placeholder={"username:password\nusername:password\n..."}
-            disabled={loginLoading}
-            style={{
-              width: "100%", resize: "vertical", fontFamily: "monospace", fontSize: 11,
-              padding: "10px 13px", borderRadius: 10, outline: "none",
-              background: "var(--g03)", border: "1px solid var(--g07)",
-              color: "var(--t1)", marginBottom: 12, opacity: loginLoading ? 0.5 : 1,
-            }}
-          />
-          {loginError && <ErrorMsg msg={loginError} />}
-          <ModalActions>
-            <ModalBtn label={t("cancel")} onClick={() => setShowUserPass(false)} disabled={loginLoading} />
-            <ModalBtn label={loginLoading ? t("validating_btn") : t("start_import_btn")} onClick={() => handleComboImport(comboText)} primary disabled={loginLoading || !comboText.trim()} />
-          </ModalActions>
-        </AccountModal>
-      )}
+      <AccComboImportModal
+        open={showUserPass}
+        comboText={comboText}
+        setComboText={setComboText}
+        loginLoading={loginLoading}
+        loginError={loginError}
+        onClose={() => { if (!loginLoading) setShowUserPass(false); }}
+        onSubmit={() => handleComboImport(comboText)}
+      />
 
-      {/* Combo Import Result Details */}
-      {comboResults.length > 0 && (
-        <AccountModal
-          title={`Import Results — ${comboResults.filter(r => r.ok).length}/${comboResults.length} succeeded`}
-          onClose={() => setComboResults([])}
-          wide
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-            {comboResults.map((r, i) => (
-              <div key={i} style={{
-                padding: "10px 13px", borderRadius: 10,
-                background: r.ok ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
-                border: `1px solid ${r.ok ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: r.ok ? 0 : 5 }}>
-                  <span style={{
-                    width: 16, height: 16, borderRadius: 99, flexShrink: 0,
-                    background: r.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
-                    color: r.ok ? "#4ade80" : "#f87171",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 9, fontWeight: 900,
-                  }}>{r.ok ? "✓" : "✕"}</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)" }}>{r.username}</span>
-                </div>
-                {!r.ok && (
-                  <div style={{
-                    fontSize: 11, color: "var(--t2)", lineHeight: 1.55,
-                    paddingLeft: 24, wordBreak: "break-word", whiteSpace: "pre-wrap",
-                  }}>
-                    {r.reason}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 14, lineHeight: 1.6 }}>
-            Copy the details below and share them when reporting the issue.
-          </div>
-          <ModalActions>
-            <ModalBtn label="Close" onClick={() => setComboResults([])} />
-            <ModalBtn
-              label="Copy Details"
-              onClick={() => {
-                const text = comboResults.map(r =>
-                  `${r.ok ? "[OK]" : "[FAIL]"} ${r.username}: ${r.reason}`
-                ).join("\n");
-                navigator.clipboard.writeText(text).catch(() => {});
-              }}
-              primary
-            />
-          </ModalActions>
-        </AccountModal>
-      )}
+      <ComboResultsModal
+        comboResults={comboResults}
+        onClose={() => setComboResults([])}
+      />
 
-      {/* Account Utilities */}
-      {selectedUtilAccount && (
-        <AccountModal
-          title="Account Utilities"
-          onClose={() => { if (!utilLoading) { setSelectedUtilAccount(null); setUtilStatus(""); } }}
-          wide
-        >
-          <div style={{
-            display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
-            background: "var(--g02)", border: "1px solid var(--g05)",
-            borderRadius: 12, marginBottom: 20,
-          }}>
-            <Avatar name={selectedUtilAccount.username} avatarUrl={selectedUtilAccount.avatar_url} size={40} />
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 800, color: "var(--t1)" }}>{selectedUtilAccount.display_name}</div>
-              <div style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "monospace" }}>@{selectedUtilAccount.username} · ID {selectedUtilAccount.user_id}</div>
-            </div>
-          </div>
+      <AccUtilitiesModal
+        account={selectedUtilAccount}
+        utilNewDisplayName={utilNewDisplayName}
+        setUtilNewDisplayName={setUtilNewDisplayName}
+        utilCurrentPassword={utilCurrentPassword}
+        setUtilCurrentPassword={setUtilCurrentPassword}
+        utilNewPassword={utilNewPassword}
+        setUtilNewPassword={setUtilNewPassword}
+        utilTargetUser={utilTargetUser}
+        setUtilTargetUser={setUtilTargetUser}
+        utilStatus={utilStatus}
+        utilIsError={utilIsError}
+        utilLoading={utilLoading}
+        onClose={() => { if (!utilLoading) { setSelectedUtilAccount(null); setUtilStatus(""); } }}
+        onSetDisplayName={handleSetDisplayName}
+        onChangePassword={handleChangePassword}
+        onSendFriendRequest={handleSendFriendRequest}
+        onBlockUser={handleBlockUser}
+        onSignOutAll={handleSignOutAll}
+      />
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {/* Display Name */}
-            <UtilSection label={t("display_name_label")} Icon={UserIcon}>
-              <div style={{ display: "flex", gap: 8 }}>
-                <UtilInput value={utilNewDisplayName} onChange={setUtilNewDisplayName} placeholder={t("new_display_name_placeholder")} disabled={utilLoading} />
-                <UtilAction label={t("set_name")} onClick={handleSetDisplayName} disabled={utilLoading || !utilNewDisplayName.trim()} />
-              </div>
-            </UtilSection>
+      <ExportAccountsModal
+        open={showExport}
+        exportPwd={exportPwd}
+        setExportPwd={setExportPwd}
+        exportLoading={exportLoading}
+        exportErr={exportErr}
+        exportOk={exportOk}
+        onClose={() => { if (!exportLoading) setShowExport(false); }}
+        onExport={handleExport}
+      />
 
-            {/* Password */}
-            <UtilSection label={t("change_password_label")} Icon={KeyIcon}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <UtilInput type="password" value={utilCurrentPassword} onChange={setUtilCurrentPassword} placeholder={t("current_password_placeholder")} disabled={utilLoading} />
-                <div style={{ display: "flex", gap: 8 }}>
-                  <UtilInput type="password" value={utilNewPassword} onChange={setUtilNewPassword} placeholder={t("new_password_placeholder")} disabled={utilLoading} />
-                  <UtilAction label={t("change_password_btn")} onClick={handleChangePassword} disabled={utilLoading || !utilCurrentPassword || !utilNewPassword} />
-                </div>
-              </div>
-            </UtilSection>
+      <ImportAccountsModal
+        open={showImport}
+        importPwd={importPwd}
+        setImportPwd={setImportPwd}
+        importLoading={importLoading}
+        importErr={importErr}
+        importOk={importOk}
+        onClose={() => { if (!importLoading) setShowImport(false); }}
+        onImport={handleImport}
+      />
 
-            {/* Friends */}
-            <UtilSection label={t("friend_block_label")} Icon={GamepadIcon}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <UtilInput value={utilTargetUser} onChange={setUtilTargetUser} placeholder={t("target_username_placeholder")} disabled={utilLoading} />
-                <div style={{ display: "flex", gap: 8 }}>
-                  <UtilAction label={t("add_friend_btn")} onClick={handleSendFriendRequest} disabled={utilLoading || !utilTargetUser.trim()} />
-                  <UtilAction label={t("block_user_btn")} onClick={handleBlockUser} disabled={utilLoading || !utilTargetUser.trim()} danger />
-                </div>
-              </div>
-            </UtilSection>
-
-            {/* Security */}
-            <UtilSection label={t("security_label")} Icon={ShieldIcon}>
-              <UtilAction label="Sign Out All Other Sessions" onClick={handleSignOutAll} disabled={utilLoading} fullWidth />
-            </UtilSection>
-          </div>
-
-          {utilStatus && (
-            <div style={{
-              fontSize: 11.5, fontWeight: 700,
-              color: utilIsError ? "var(--red)" : "var(--green)",
-              marginTop: 16, padding: "10px 14px", borderRadius: 10, textAlign: "center",
-              background: utilIsError ? "rgba(248,113,113,0.08)" : "rgba(52,211,153,0.08)",
-              border: `1px solid ${utilIsError ? "rgba(248,113,113,0.2)" : "rgba(52,211,153,0.2)"}`,
-            }}>
-              {utilStatus}
-            </div>
-          )}
-        </AccountModal>
-      )}
-
-      {/* Export Backup */}
-      {showExport && (
-        <AccountModal title="Export Backup" onClose={() => { if (!exportLoading) setShowExport(false); }}>
-          <p style={{ fontSize: 11, color: "var(--t2)", marginBottom: 16, lineHeight: 1.7 }}>
-            All accounts will be exported to a <code style={{ color: "var(--amber)", fontFamily: "monospace" }}>.reiya</code> backup file.
-            Add a password for extra protection, or leave it blank to skip — either way, account cookies stay tied to this device's own encryption.
-          </p>
-          <FieldLabel>BACKUP PASSWORD (OPTIONAL)</FieldLabel>
-          <input
-            type="password"
-            autoFocus
-            autoComplete="off"
-            value={exportPwd}
-            onChange={e => setExportPwd(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleExport(); }}
-            placeholder="Leave blank for no password"
-            disabled={exportLoading}
-            style={{
-              width: "100%", height: 38, padding: "0 13px", borderRadius: 10, outline: "none",
-              background: "var(--g03)", border: "1px solid var(--g07)",
-              color: "var(--t1)", fontSize: 12, marginBottom: 12, opacity: exportLoading ? 0.5 : 1,
-            }}
-          />
-          {exportErr && <ErrorMsg msg={exportErr} />}
-          {exportOk && (
-            <div style={{ fontSize: 11, color: "var(--green)", marginBottom: 10, padding: "8px 12px", background: "rgba(52,211,153,0.08)", borderRadius: 9, border: "1px solid rgba(52,211,153,0.2)" }}>
-              {exportOk}
-            </div>
-          )}
-          <ModalActions>
-            <ModalBtn label="Cancel" onClick={() => setShowExport(false)} disabled={exportLoading} />
-            <ModalBtn label={exportLoading ? "Exporting..." : "Export Backup"} onClick={handleExport} primary disabled={exportLoading} />
-          </ModalActions>
-        </AccountModal>
-      )}
-
-      {/* Import Backup */}
-      {showImport && (
-        <AccountModal title="Import Backup" onClose={() => { if (!importLoading) setShowImport(false); }}>
-          <p style={{ fontSize: 11, color: "var(--t2)", marginBottom: 16, lineHeight: 1.7 }}>
-            Select a <code style={{ color: "var(--amber)", fontFamily: "monospace" }}>.reiya</code> backup file to restore.
-            Duplicate accounts (matching User ID) will be skipped.
-          </p>
-          <FieldLabel>BACKUP PASSWORD (IF SET)</FieldLabel>
-          <input
-            type="password"
-            autoFocus
-            autoComplete="off"
-            value={importPwd}
-            onChange={e => setImportPwd(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleImport(); }}
-            placeholder="Leave blank if the backup has no password"
-            disabled={importLoading}
-            style={{
-              width: "100%", height: 38, padding: "0 13px", borderRadius: 10, outline: "none",
-              background: "var(--g03)", border: "1px solid var(--g07)",
-              color: "var(--t1)", fontSize: 12, marginBottom: 12, opacity: importLoading ? 0.5 : 1,
-            }}
-          />
-          {importErr && <ErrorMsg msg={importErr} />}
-          {importOk && (
-            <div style={{ fontSize: 11, color: "var(--green)", marginBottom: 10, padding: "8px 12px", background: "rgba(52,211,153,0.08)", borderRadius: 9, border: "1px solid rgba(52,211,153,0.2)" }}>
-              {importOk}
-            </div>
-          )}
-          <ModalActions>
-            <ModalBtn label="Cancel" onClick={() => setShowImport(false)} disabled={importLoading} />
-            <ModalBtn label={importLoading ? "Importing..." : "Choose File & Import"} onClick={handleImport} primary disabled={importLoading} />
-          </ModalActions>
-        </AccountModal>
-      )}
-
-      {/* Move to Group modal */}
-      {moveGroupModal && (
-        <AccountModal title="Move to Group" onClose={() => setMoveGroupModal(false)}>
-          <p style={{ fontSize: 11, color: "var(--t2)", marginBottom: 14, lineHeight: 1.6 }}>
-            Assign {selected.size} selected account(s) to a group. Leave blank to remove from group.
-          </p>
-          <FieldLabel>GROUP NAME</FieldLabel>
-          <input
-            autoFocus
-            value={groupInput}
-            onChange={e => setGroupInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleBulkMoveGroup(); }}
-            placeholder="e.g. Main, Alts, Farming..."
-            style={{
-              width: "100%", height: 38, padding: "0 13px", borderRadius: 10, outline: "none",
-              background: "var(--g03)", border: "1px solid var(--g07)",
-              color: "var(--t1)", fontSize: 12, marginBottom: 12,
-            }}
-          />
-          <ModalActions>
-            <ModalBtn label="Cancel" onClick={() => setMoveGroupModal(false)} />
-            <ModalBtn label="Move" onClick={handleBulkMoveGroup} primary />
-          </ModalActions>
-        </AccountModal>
-      )}
+      <MoveToGroupModal
+        open={moveGroupModal}
+        selectedCount={selected.size}
+        groupInput={groupInput}
+        setGroupInput={setGroupInput}
+        onClose={() => setMoveGroupModal(false)}
+        onMove={handleBulkMoveGroup}
+      />
     </div>
-  );
-}
-
-/* ── Bulk Action Button ── */
-function BulkBtn({ label, onClick, disabled, danger, accent }: {
-  label: string; onClick: () => void; disabled?: boolean; danger?: boolean; accent?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        padding: "5px 12px", borderRadius: 7, fontSize: 11, fontWeight: 700,
-        cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
-        border: `1px solid ${danger ? "rgba(248,113,113,0.3)" : accent ? `${accent}40` : "var(--g10)"}`,
-        background: danger ? "rgba(248,113,113,0.08)" : accent ? `${accent}14` : "var(--g04)",
-        color: danger ? "var(--red)" : accent ?? "var(--t2)",
-        transition: "all .12s",
-      }}
-      onMouseEnter={e => { if (!disabled) e.currentTarget.style.filter = "brightness(1.2)"; }}
-      onMouseLeave={e => { e.currentTarget.style.filter = "none"; }}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -1437,7 +1040,7 @@ function AccountCard({
           background: isSelected ? "#A78BFA" : "transparent",
           display: "flex", alignItems: "center", justifyContent: "center",
           cursor: "pointer", transition: "all .12s",
-          opacity: hovered || isSelected ? 1 : 0,
+          opacity: hovered || isSelected ? 1 : 0.5,
         }}
       >
         {isSelected && <CheckIcon size={11} color="#fff" />}
@@ -1572,8 +1175,10 @@ function AccountCard({
                 marginTop: 5, fontSize: 9, padding: "2px 9px", borderRadius: 5,
                 border: "1px solid var(--red)", background: "transparent",
                 color: "var(--red)", cursor: "pointer", fontWeight: 600,
-                opacity: hovered ? 1 : 0, transition: "opacity .12s",
+                opacity: hovered ? 1 : 0.5, transition: "opacity .12s",
               }}
+              onFocus={() => setHovered(true)}
+              onBlur={() => setHovered(false)}
             >
               {t("relogin_btn")}
             </button>
@@ -1584,8 +1189,10 @@ function AccountCard({
               marginTop: 5, fontSize: 9, padding: "2px 9px", borderRadius: 5,
               border: "1px solid var(--g06)", background: "transparent",
               color: "var(--t3)", cursor: "pointer", fontWeight: 600,
-              opacity: hovered ? 1 : 0, transition: "opacity .12s",
+              opacity: hovered ? 1 : 0.5, transition: "opacity .12s",
             }}
+            onFocus={() => setHovered(true)}
+            onBlur={() => setHovered(false)}
           >
             {t("re_validate_btn")}
           </button>
@@ -1600,11 +1207,13 @@ function AccountCard({
           style={{
             background: "none", border: "none", cursor: "pointer",
             color: "var(--t3)", padding: 5, borderRadius: 7,
-            opacity: hovered ? 1 : 0, transition: "all .12s",
+            opacity: hovered ? 1 : 0.5, transition: "all .12s",
             display: "flex", alignItems: "center", justifyContent: "center",
           }}
           onMouseEnter={e => { e.currentTarget.style.color = "#60A5FA"; e.currentTarget.style.background = "var(--g08)"; }}
           onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.background = "none"; }}
+          onFocus={() => setHovered(true)}
+          onBlur={() => setHovered(false)}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
@@ -1616,11 +1225,13 @@ function AccountCard({
           style={{
             background: "none", border: "none", cursor: "pointer",
             color: "var(--t3)", padding: 5, borderRadius: 7,
-            opacity: hovered ? 1 : 0.4, transition: "all .12s",
+            opacity: hovered ? 1 : 0.5, transition: "all .12s",
             display: "flex", alignItems: "center", justifyContent: "center",
           }}
           onMouseEnter={e => { e.currentTarget.style.color = "var(--amber)"; e.currentTarget.style.background = "var(--g08)"; }}
           onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.background = "none"; }}
+          onFocus={() => setHovered(true)}
+          onBlur={() => setHovered(false)}
         >
           <SettingsIcon size={14} />
         </button>
@@ -1631,11 +1242,13 @@ function AccountCard({
             background: "none", border: "none", cursor: "pointer",
             color: account.is_favorite ? "var(--amber)" : "var(--t3)",
             transition: "all .12s", padding: 5, borderRadius: 7,
-            opacity: hovered || account.is_favorite ? 1 : 0.4,
+            opacity: hovered || account.is_favorite ? 1 : 0.5,
             display: "flex", alignItems: "center", justifyContent: "center",
           }}
           onMouseEnter={e => { e.currentTarget.style.background = "var(--g08)"; }}
           onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
+          onFocus={() => setHovered(true)}
+          onBlur={() => setHovered(false)}
         >
           <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
         </button>
@@ -1645,11 +1258,13 @@ function AccountCard({
           style={{
             background: "none", border: "none", cursor: "pointer",
             color: "var(--red)", padding: 5, borderRadius: 7,
-            opacity: hovered ? 0.7 : 0, transition: "all .12s",
+            opacity: hovered ? 0.7 : 0.5, transition: "all .12s",
             display: "flex", alignItems: "center", justifyContent: "center",
           }}
           onMouseEnter={e => { e.currentTarget.style.opacity = "1"; e.currentTarget.style.background = "rgba(248,113,113,0.08)"; }}
-          onMouseLeave={e => { e.currentTarget.style.opacity = "0.7"; e.currentTarget.style.background = "none"; }}
+          onMouseLeave={e => { e.currentTarget.style.opacity = hovered ? "0.7" : "0.5"; e.currentTarget.style.background = "none"; }}
+          onFocus={e => { setHovered(true); e.currentTarget.style.opacity = "1"; }}
+          onBlur={e => { setHovered(false); e.currentTarget.style.opacity = "0.5"; }}
         >
           <TrashIcon size={13} color="var(--red)" />
         </button>
@@ -1708,21 +1323,8 @@ function AccountCard({
   );
 }
 
-/* â"€â"€ Stat Pill â"€â"€ */
-function AccountStatPill({ value, label, color }: { value: number; label: string; color: string }) {
-  return (
-    <div style={{
-      textAlign: "center", padding: "6px 16px", borderRadius: 10,
-      background: "var(--g02)", border: "1px solid var(--g05)",
-    }}>
-      <div style={{ fontSize: 16, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
-      <div style={{ fontSize: 8.5, color: "var(--t3)", marginTop: 3, fontWeight: 800, letterSpacing: "0.08em" }}>{label}</div>
-    </div>
-  );
-}
-
 /* â"€â"€ Modal wrapper â"€â"€ */
-function AccountModal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+export function AccountModal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   return (
     <div
       style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -1755,7 +1357,7 @@ function AccountModal({ title, children, onClose, wide }: { title: string; child
   );
 }
 
-function ModalBtn({ label, onClick, primary, danger, disabled }: {
+export function ModalBtn({ label, onClick, primary, danger, disabled }: {
   label: string; onClick: () => void; primary?: boolean; danger?: boolean; disabled?: boolean;
 }) {
   return (
@@ -1778,11 +1380,11 @@ function ModalBtn({ label, onClick, primary, danger, disabled }: {
   );
 }
 
-function ModalActions({ children }: { children: ReactNode }) {
+export function ModalActions({ children }: { children: ReactNode }) {
   return <div style={{ display: "flex", gap: 10, marginTop: 16 }}>{children}</div>;
 }
 
-function FieldLabel({ children }: { children: ReactNode }) {
+export function FieldLabel({ children }: { children: ReactNode }) {
   return (
     <div style={{ fontSize: 9.5, color: "var(--t3)", fontWeight: 800, letterSpacing: "0.1em", marginBottom: 8 }}>
       {children}
@@ -1790,7 +1392,7 @@ function FieldLabel({ children }: { children: ReactNode }) {
   );
 }
 
-function ErrorMsg({ msg }: { msg: string }) {
+export function ErrorMsg({ msg }: { msg: string }) {
   return (
     <div style={{
       fontSize: 11.5, color: "var(--red)", marginBottom: 10, padding: "8px 12px",
@@ -1801,7 +1403,7 @@ function ErrorMsg({ msg }: { msg: string }) {
 }
 
 /* â"€â"€ Utility section â"€â"€ */
-function UtilSection({ label, Icon, children }: { label: string; Icon: React.ComponentType<any>; children: ReactNode }) {
+export function UtilSection({ label, Icon, children }: { label: string; Icon: React.ComponentType<any>; children: ReactNode }) {
   return (
     <div style={{
       padding: "14px 16px", borderRadius: 12,
@@ -1816,7 +1418,7 @@ function UtilSection({ label, Icon, children }: { label: string; Icon: React.Com
   );
 }
 
-function UtilInput({ value, onChange, placeholder, type, disabled }: { value: string; onChange: (v: string) => void; placeholder: string; type?: string; disabled?: boolean }) {
+export function UtilInput({ value, onChange, placeholder, type, disabled }: { value: string; onChange: (v: string) => void; placeholder: string; type?: string; disabled?: boolean }) {
   return (
     <input
       type={type ?? "text"}
@@ -1835,7 +1437,7 @@ function UtilInput({ value, onChange, placeholder, type, disabled }: { value: st
   );
 }
 
-function UtilAction({ label, onClick, disabled, danger, fullWidth }: { label: string; onClick: () => void; disabled?: boolean; danger?: boolean; fullWidth?: boolean }) {
+export function UtilAction({ label, onClick, disabled, danger, fullWidth }: { label: string; onClick: () => void; disabled?: boolean; danger?: boolean; fullWidth?: boolean }) {
   return (
     <button
       onClick={onClick}
@@ -1856,40 +1458,8 @@ function UtilAction({ label, onClick, disabled, danger, fullWidth }: { label: st
   );
 }
 
-/* â"€â"€ Dropdown item â"€â"€ */
-function DropdownItem({ icon, label, sub, onClick }: { icon: ReactNode; label: string; sub: string; onClick: () => void }) {
-  const [hov, setHov] = useState(false);
-  return (
-    <div
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      onClick={onClick}
-      style={{
-        display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-        borderRadius: 9, background: hov ? "var(--g05)" : "transparent",
-        cursor: "pointer", transition: "background .1s",
-      }}
-    >
-      <span style={{
-        display: "flex", alignItems: "center", justifyContent: "center",
-        width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-        background: hov ? "var(--g10)" : "var(--g04)",
-        color: hov ? "var(--amber)" : "var(--t2)",
-        border: `1px solid ${hov ? "var(--g20)" : "var(--g06)"}`,
-        transition: "all .12s",
-      }}>
-        {icon}
-      </span>
-      <div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)" }}>{label}</div>
-        <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 1 }}>{sub}</div>
-      </div>
-    </div>
-  );
-}
-
 /* â"€â"€ Avatar â"€â"€ */
-function Avatar({ name, avatarUrl, size }: { name: string; avatarUrl: string; size: number }) {
+export function Avatar({ name, avatarUrl, size }: { name: string; avatarUrl: string; size: number }) {
   const [imgFailed, setImgFailed] = useState(false);
   const hue = name.split("").reduce((n, c) => n + c.charCodeAt(0), 0) % 360;
   if (avatarUrl && !imgFailed) {

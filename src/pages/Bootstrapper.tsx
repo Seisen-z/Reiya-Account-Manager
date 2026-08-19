@@ -7,7 +7,7 @@ import {
   SettingsIcon, FlagIcon, GamepadIcon, StarIcon, LinkIcon,
   DownloadIcon, PackageIcon, RefreshIcon, ActivityIcon,
   ShieldCheckIcon, ZapIcon, CheckIcon, XIcon,
-  SearchIcon, CpuIcon,
+  SearchIcon, CpuIcon, ClockIcon,
 } from "../components/Icons";
 
 interface FastFlagPreset {
@@ -66,13 +66,21 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
   const { t } = useLanguage();
   const {
     status, progress, installing, checking, error, successMsg,
-    detectedInstalls, detecting, preferredLauncher,
-    checkUpdate, startInstall, scanInstalls, updateLauncherPreference,
+    detectedInstalls, detecting, preferredLauncher, autoUpdate, deployVersions, loadingVersions,
+    installedVersions, loadingInstalledVersions,
+    checkUpdate, startInstall, scanInstalls, updateLauncherPreference, updateAutoUpdate,
+    loadDeployVersions, loadInstalledVersions, useInstalledVersion,
   } = useBootstrapper();
 
   const [registering, setRegistering] = useState(false);
   const [regError, setRegError] = useState("");
   const [regSuccess, setRegSuccess] = useState("");
+  const [selectedVersion, setSelectedVersion] = useState("");
+
+  useEffect(() => {
+    if (deployVersions.length === 0) loadDeployVersions();
+    if (installedVersions.length === 0) loadInstalledVersions();
+  }, []);
 
   const handleRegisterProtocol = async () => {
     setRegistering(true); setRegError(""); setRegSuccess("");
@@ -138,6 +146,19 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
                 <span style={{ fontSize: 11, color: "var(--t3)" }}>
                   FastFlags: <span style={{ color: flagsCount > 0 ? "#A78BFA" : "var(--t3)", fontWeight: 700 }}>{flagsCount} {t("active").toLowerCase()}</span>
                 </span>
+                <span
+                  onClick={() => updateAutoUpdate(!autoUpdate)}
+                  title={autoUpdate ? "Reiya checks for and installs Roblox updates automatically. Click to disable." : "Roblox updates are never checked or installed automatically. Click to enable."}
+                  style={{ fontSize: 11, color: "var(--t3)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+                >
+                  Auto-update:
+                  <span style={{ display: "flex", alignItems: "center", gap: 5, color: autoUpdate ? "var(--green)" : "var(--t3)", fontWeight: 700 }}>
+                    <div style={{ width: 24, height: 13, borderRadius: 99, background: autoUpdate ? "rgba(52,211,153,0.25)" : "var(--g06)", border: `1px solid ${autoUpdate ? "var(--green)" : "var(--g10)"}`, position: "relative", transition: "all .15s" }}>
+                      <div style={{ position: "absolute", top: 1, left: autoUpdate ? 12 : 1, width: 9, height: 9, borderRadius: "50%", background: autoUpdate ? "var(--green)" : "#8B8FA8", transition: "all .15s" }} />
+                    </div>
+                    {autoUpdate ? "ON" : "OFF"}
+                  </span>
+                </span>
               </div>
             </div>
           </div>
@@ -147,7 +168,7 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
             <button onClick={checkUpdate} disabled={checking || installing} className="glow-btn" style={ghostBtnStyle(checking || installing)}>
               <RefreshIcon size={12} />{checking ? t("checking") : t("check")}
             </button>
-            <button onClick={startInstall} disabled={installing || checking} className="glow-btn"
+            <button onClick={() => startInstall()} disabled={installing || checking} className="glow-btn"
               style={{
                 ...ghostBtnStyle(installing || checking),
                 ...(needsUpdate ? { background: "var(--accent)", color: "var(--accent-text)", border: "none", boxShadow: "0 4px 14px var(--g15)" } : {}),
@@ -207,6 +228,99 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
               return <LauncherCard key={opt.id} id={opt.id} name={opt.name} subtitle={opt.subtitle} desc={opt.desc} accentColor={opt.accentColor} isSelected={isSelected} available={available} onSelect={() => updateLauncherPreference(opt.id)} />;
             })}
           </div>
+
+          {/* Roblox version selector */}
+          <div style={{ marginTop: 16 }}>
+            <SectionHeader icon={<PackageIcon size={12} color="#60A5FA" />} title="ROBLOX VERSION" accent="#60A5FA" />
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <select
+                value={selectedVersion}
+                onChange={e => setSelectedVersion(e.target.value)}
+                className="field glass-input"
+                style={{ flex: 1, padding: "8px 11px", fontSize: 11.5, outline: "none" }}
+              >
+                <option value="">
+                  {loadingVersions ? "Loading versions…" : "Latest (recommended)"}
+                </option>
+                {status?.installed_version && (
+                  <option value={status.installed_version}>
+                    Currently installed — {status.installed_version}
+                  </option>
+                )}
+                {deployVersions.map(v => {
+                  const unavailable = v.version === "version-hidden";
+                  return (
+                    <option key={`${v.version}-${v.date}`} value={v.version} disabled={unavailable}>
+                      {unavailable ? `Unavailable — ${v.date}` : `${v.version}${v.date ? ` — ${v.date}` : ""}`}
+                    </option>
+                  );
+                })}
+              </select>
+              <button
+                onClick={() => startInstall(selectedVersion || undefined)}
+                disabled={installing || checking}
+                className="glow-btn"
+                style={{ ...ghostBtnStyle(installing || checking), color: "#60A5FA", border: "1px solid rgba(96,165,250,0.25)", background: "rgba(96,165,250,0.05)" }}
+              >
+                <DownloadIcon size={12} />{installing ? `${progress?.percent ?? 0}%` : "Install"}
+              </button>
+              <button onClick={loadDeployVersions} disabled={loadingVersions} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 6, border: "1px solid var(--g06)", background: "transparent", color: "var(--t3)", fontSize: 10, fontWeight: 700, cursor: loadingVersions ? "not-allowed" : "pointer" }}>
+                <RefreshIcon size={10} />
+              </button>
+            </div>
+            <div style={{ fontSize: 9.5, color: "var(--t3)", marginTop: 6, lineHeight: 1.4 }}>
+              Pick a specific Roblox build to install instead of always using the newest one. Leave on "Latest" for normal updates, or pick "Currently installed" to reinstall/repair the exact version you already have without jumping to the newest one.
+              {deployVersions.some(v => v.version === "version-hidden") && (
+                <> Older builds you never installed show as "Unavailable" — Roblox stopped publishing their version hashes publicly, so only versions you already have locally (or the latest build) can be installed right now.</>
+              )}
+            </div>
+            {preferredLauncher !== "reiya" && (
+              <div style={{ fontSize: 9.5, color: "var(--amber)", marginTop: 6, lineHeight: 1.4 }}>
+                Version pinning and Auto-update only take effect when "Reiya (Built-in)" is your launcher preference — with "{preferredLauncher}" selected, Reiya launches that app directly and can't control its updates.
+              </div>
+            )}
+          </div>
+
+          {/* Installed locally — builds already downloaded from past updates, switch instantly */}
+          {installedVersions.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <SectionHeader icon={<ClockIcon size={12} color="#34D399" />} title="INSTALLED LOCALLY" accent="#34D399" />
+              <div style={{ fontSize: 9.5, color: "var(--t3)", marginTop: 6, marginBottom: 10, lineHeight: 1.4 }}>
+                Builds Reiya has already downloaded on this PC from past updates. Switching is instant — no download.
+                {loadingInstalledVersions && " Refreshing…"}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {installedVersions.map(v => (
+                  <div key={v.version} style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                    padding: "8px 12px", borderRadius: 9,
+                    background: v.is_current ? "rgba(52,211,153,0.06)" : "var(--g01)",
+                    border: `1px solid ${v.is_current ? "rgba(52,211,153,0.3)" : "var(--g05)"}`,
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--t1)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {v.version}
+                      </div>
+                      {v.installed_at && (
+                        <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 1 }}>
+                          Downloaded {new Date(v.installed_at).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                    {v.is_current ? (
+                      <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9.5, fontWeight: 800, color: "var(--green)", flexShrink: 0 }}>
+                        <CheckIcon size={11} /> Current
+                      </span>
+                    ) : (
+                      <button onClick={() => useInstalledVersion(v.version)} style={{ flexShrink: 0, padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(52,211,153,0.25)", background: "rgba(52,211,153,0.08)", color: "var(--green)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                        Use this version
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right column */}
