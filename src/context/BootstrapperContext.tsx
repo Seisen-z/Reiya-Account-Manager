@@ -63,9 +63,15 @@ interface BootstrapperContextValue {
   loadingVersions: boolean;
   installedVersions: InstalledRobloxVersion[];
   loadingInstalledVersions: boolean;
+  channel: string;
+  setChannel: (ch: string) => void;
+  customVersionHash: string;
+  setCustomVersionHash: (hash: string) => void;
+  installMode: "latest" | "custom";
+  setInstallMode: (mode: "latest" | "custom") => void;
   refreshStatus: () => Promise<void>;
-  checkUpdate: () => Promise<void>;
-  startInstall: (versionHash?: string) => Promise<void>;
+  checkUpdate: (customChannel?: string) => Promise<void>;
+  startInstall: (versionHash?: string, customChannel?: string) => Promise<void>;
   scanInstalls: () => Promise<void>;
   updateLauncherPreference: (kind: string) => Promise<void>;
   updateAutoUpdate: (enabled: boolean) => Promise<void>;
@@ -100,6 +106,28 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [installedVersions, setInstalledVersions] = useState<InstalledRobloxVersion[]>([]);
   const [loadingInstalledVersions, setLoadingInstalledVersions] = useState(false);
+
+  const [channel, setChannelState] = useState<string>(() => localStorage.getItem("reiya_bootstrapper_channel") || "LIVE");
+  const [customVersionHash, setCustomVersionHashState] = useState<string>(() => localStorage.getItem("reiya_bootstrapper_version_hash") || "");
+  const [installMode, setInstallModeState] = useState<"latest" | "custom">(
+    () => (localStorage.getItem("reiya_bootstrapper_install_mode") as "latest" | "custom") || "latest"
+  );
+
+  const setChannel = (c: string) => {
+    setChannelState(c);
+    localStorage.setItem("reiya_bootstrapper_channel", c);
+  };
+
+  const setCustomVersionHash = (v: string) => {
+    setCustomVersionHashState(v);
+    localStorage.setItem("reiya_bootstrapper_version_hash", v);
+  };
+
+  const setInstallMode = (mode: "latest" | "custom") => {
+    setInstallModeState(mode);
+    localStorage.setItem("reiya_bootstrapper_install_mode", mode);
+  };
+
   const unlistenRef                     = useRef<(() => void) | null>(null);
 
   // Load initial status once on mount and register the persistent event listener
@@ -201,12 +229,13 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     } catch {}
   };
 
-  const checkUpdate = async () => {
+  const checkUpdate = async (customChannel?: string) => {
     setChecking(true);
     setError("");
     setSuccessMsg("");
     try {
-      const s = await invoke<BootstrapperStatus>("bootstrapper_check_update");
+      const ch = customChannel ?? channel;
+      const s = await invoke<BootstrapperStatus>("bootstrapper_check_update", { channel: ch || null });
       setStatus(s);
       if (!s.needs_update) setSuccessMsg("Roblox is already up to date!");
     } catch (e) {
@@ -216,7 +245,7 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const startInstall = async (versionHash?: string) => {
+  const startInstall = async (versionHash?: string, customChannel?: string) => {
     // Don't start if already running
     if (installing) return;
     setInstalling(true);
@@ -224,7 +253,9 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     setSuccessMsg("");
     setProgress(null);
     try {
-      await invoke("bootstrapper_install", { versionHash: versionHash ?? null });
+      const ch = customChannel ?? channel;
+      const v = versionHash !== undefined ? versionHash : (installMode === "custom" ? customVersionHash : undefined);
+      await invoke("bootstrapper_install", { versionHash: v || null, channel: ch || null });
     } catch (e) {
       setError(String(e));
       setInstalling(false);
@@ -303,6 +334,7 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
       status, progress, installing, checking, error, successMsg,
       detectedInstalls, detecting, preferredLauncher, autoUpdate, deployVersions, loadingVersions,
       installedVersions, loadingInstalledVersions,
+      channel, setChannel, customVersionHash, setCustomVersionHash, installMode, setInstallMode,
       refreshStatus, checkUpdate, startInstall, scanInstalls, updateLauncherPreference, updateAutoUpdate,
       loadDeployVersions, loadInstalledVersions, useInstalledVersion, clearMessages,
     }}>

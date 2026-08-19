@@ -3983,7 +3983,7 @@ async fn ensure_latest_and_launch(
     }
 
     let status = if auto_update {
-        match bootstrapper_check_update().await {
+        match bootstrapper_check_update(None).await {
             Ok(s) => s,
             Err(e) => {
                 let msg = format!("Update check failed: {}", e);
@@ -5177,19 +5177,31 @@ fn list_installed_roblox_versions() -> Vec<InstalledRobloxVersion> {
 /// network fetch, just re-points version.txt and the protocol handler at it.
 #[tauri::command]
 fn use_installed_roblox_version(version_hash: String) -> Result<(), String> {
-    let exe = version_dir(&version_hash).join("RobloxPlayerBeta.exe");
+    let v_clean = version_hash.trim();
+    let hash = if !v_clean.starts_with("version-") {
+        format!("version-{}", v_clean)
+    } else {
+        v_clean.to_string()
+    };
+    let exe = version_dir(&hash).join("RobloxPlayerBeta.exe");
     if !exe.exists() {
-        return Err(format!("Version {} is not installed locally.", version_hash));
+        return Err(format!("Version {} is not installed locally.", hash));
     }
-    write_installed_version(&version_hash);
+    write_installed_version(&hash);
     bootstrapper_register_protocol_internal(&exe.to_string_lossy())?;
     Ok(())
 }
 
 #[tauri::command]
-async fn bootstrapper_check_update() -> Result<BootstrapperStatus, String> {
+async fn bootstrapper_check_update(channel: Option<String>) -> Result<BootstrapperStatus, String> {
     let client = reqwest::Client::builder().user_agent("RobloxBootstrapper").build().map_err(|e| e.to_string())?;
-    let resp = client.get(VERSION_API).send().await.map_err(|e| e.to_string())?;
+    let ch = channel.as_deref().unwrap_or("LIVE").trim();
+    let url = if ch.is_empty() || ch.eq_ignore_ascii_case("LIVE") {
+        VERSION_API.to_string()
+    } else {
+        format!("https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer/channel/{}", ch)
+    };
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("Version API error: {}", resp.status()));
     }
@@ -5372,9 +5384,9 @@ fn repair_bootstrapper_folders(version_dir: &std::path::Path) -> Result<(), Stri
 }
 
 #[tauri::command]
-async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>) -> Result<(), String> {
+async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>, channel: Option<String>) -> Result<(), String> {
     eprintln!("[INFO bootstrapper_install] Starting Reiya bootstrapper installation...");
-    let res = bootstrapper_install_impl(app.clone(), version_hash).await;
+    let res = bootstrapper_install_impl(app.clone(), version_hash, channel).await;
     if let Err(ref e) = res {
         eprintln!("[ERROR bootstrapper_install] Installation failed: {}", e);
         let _ = app.emit("bootstrapper-progress", BootstrapperProgress {
@@ -5393,22 +5405,35 @@ async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>) -> R
     res
 }
 
-async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String>) -> Result<(), String> {
+async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String>, channel: Option<String>) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .user_agent("RobloxBootstrapper")
         .build()
         .map_err(|e| format!("Failed to create reqwest client: {}", e))?;
 
-    // 1. Resolve version hash: use the pinned version if provided, else fetch latest.
-    let version_hash = if let Some(v) = pinned_version.filter(|v| !v.is_empty()) {
+    let ch = channel.as_deref().unwrap_or("LIVE").trim();
+    let version_api_url = if ch.is_empty() || ch.eq_ignore_ascii_case("LIVE") {
+        VERSION_API.to_string()
+    } else {
+        format!("https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer/channel/{}", ch)
+    };
+
+    // 1. Resolve version hash: use the pinned version if provided, else fetch latest for channel.
+    let version_hash = if let Some(raw_v) = pinned_version.filter(|v| !v.trim().is_empty()) {
+        let v = raw_v.trim();
         if v == "version-hidden" {
             return Err("This build's version hash isn't published by Roblox anymore, so it can't be installed. Pick a different version or use Latest.".into());
         }
-        eprintln!("[INFO bootstrapper_install] Using pinned version hash: {}", v);
-        v
+        let normalized = if !v.starts_with("version-") {
+            format!("version-{}", v)
+        } else {
+            v.to_string()
+        };
+        eprintln!("[INFO bootstrapper_install] Using pinned version hash: {}", normalized);
+        normalized
     } else {
-        eprintln!("[INFO bootstrapper_install] Fetching latest client version from: {}", VERSION_API);
-        let resp = client.get(VERSION_API).send().await.map_err(|e| format!("Failed to connect to version API: {}", e))?;
+        eprintln!("[INFO bootstrapper_install] Fetching latest client version from: {}", version_api_url);
+        let resp = client.get(&version_api_url).send().await.map_err(|e| format!("Failed to connect to version API: {}", e))?;
         let json: serde_json::Value = resp.json().await.map_err(|e| format!("Failed to parse version JSON: {}", e))?;
         let v = json["clientVersionUpload"].as_str().unwrap_or("").to_string();
         if v.is_empty() {
@@ -5418,10 +5443,22 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
         v
     };
 
-    // 2. Fetch package manifest
-    let manifest_url = format!("{}/{}-rbxPkgManifest.txt", BOOTSTRAPPER_CDN, version_hash);
+    // 2. Fetch package manifest with channel fallback support
+    let manifest_url = if ch.is_empty() || ch.eq_ignore_ascii_case("LIVE") {
+        format!("{}/{}-rbxPkgManifest.txt", BOOTSTRAPPER_CDN, version_hash)
+    } else {
+        format!("{}/channel/{}/{}-rbxPkgManifest.txt", BOOTSTRAPPER_CDN, ch, version_hash)
+    };
     eprintln!("[INFO bootstrapper_install] Downloading package manifest from: {}", manifest_url);
-    let manifest_resp = client.get(&manifest_url).send().await.map_err(|e| format!("Failed to connect to manifest CDN: {}", e))?;
+    let mut manifest_resp = client.get(&manifest_url).send().await.map_err(|e| format!("Failed to connect to manifest CDN: {}", e))?;
+    if !manifest_resp.status().is_success() && !ch.is_empty() && !ch.eq_ignore_ascii_case("LIVE") {
+        let fallback_url = format!("{}/{}-rbxPkgManifest.txt", BOOTSTRAPPER_CDN, version_hash);
+        if let Ok(resp) = client.get(&fallback_url).send().await {
+            if resp.status().is_success() {
+                manifest_resp = resp;
+            }
+        }
+    }
     if !manifest_resp.status().is_success() {
         return Err(format!("Manifest download HTTP error: {}", manifest_resp.status()));
     }
@@ -5469,8 +5506,20 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
             error: None,
         });
 
-        let pkg_url = format!("{}/{}-{}", BOOTSTRAPPER_CDN, version_hash, pkg_name);
-        let pkg_resp = client.get(&pkg_url).send().await.map_err(|e| format!("Download connect error for package '{}': {}", pkg_name, e))?;
+        let pkg_url = if ch.is_empty() || ch.eq_ignore_ascii_case("LIVE") {
+            format!("{}/{}-{}", BOOTSTRAPPER_CDN, version_hash, pkg_name)
+        } else {
+            format!("{}/channel/{}/{}-{}", BOOTSTRAPPER_CDN, ch, version_hash, pkg_name)
+        };
+        let mut pkg_resp = client.get(&pkg_url).send().await.map_err(|e| format!("Download connect error for package '{}': {}", pkg_name, e))?;
+        if !pkg_resp.status().is_success() && !ch.is_empty() && !ch.eq_ignore_ascii_case("LIVE") {
+            let fallback_url = format!("{}/{}-{}", BOOTSTRAPPER_CDN, version_hash, pkg_name);
+            if let Ok(resp) = client.get(&fallback_url).send().await {
+                if resp.status().is_success() {
+                    pkg_resp = resp;
+                }
+            }
+        }
         if !pkg_resp.status().is_success() {
             eprintln!("[WARNING bootstrapper_install] Skipping package '{}' (HTTP status {})", pkg_name, pkg_resp.status());
             continue;
@@ -5543,8 +5592,23 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
         for launcher_name in ROBLOX_LAUNCHER_NAMES {
             let launcher_dest = install_dir.join(launcher_name);
             if launcher_dest.exists() { launcher_downloaded = true; break; }
-            let versioned_url = format!("{}/{}-{}", BOOTSTRAPPER_CDN, version_hash, launcher_name);
-            if let Ok(resp) = client.get(&versioned_url).send().await {
+            let versioned_url = if ch.is_empty() || ch.eq_ignore_ascii_case("LIVE") {
+                format!("{}/{}-{}", BOOTSTRAPPER_CDN, version_hash, launcher_name)
+            } else {
+                format!("{}/channel/{}/{}-{}", BOOTSTRAPPER_CDN, ch, version_hash, launcher_name)
+            };
+            let mut launcher_resp = client.get(&versioned_url).send().await;
+            if let Ok(ref resp) = launcher_resp {
+                if !resp.status().is_success() && !ch.is_empty() && !ch.eq_ignore_ascii_case("LIVE") {
+                    let fallback_url = format!("{}/{}-{}", BOOTSTRAPPER_CDN, version_hash, launcher_name);
+                    if let Ok(resp2) = client.get(&fallback_url).send().await {
+                        if resp2.status().is_success() {
+                            launcher_resp = Ok(resp2);
+                        }
+                    }
+                }
+            }
+            if let Ok(resp) = launcher_resp {
                 if resp.status().is_success() {
                     if let Ok(bytes) = resp.bytes().await {
                         let _ = fs::write(&launcher_dest, &bytes);

@@ -40,6 +40,17 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.9",
+    date: "2026-08-19",
+    title: "Hub Expandable Cards & Accounts Instant Caching",
+    changes: [
+      { kind: "new", text: "Hub catalog updated with 36 Roblox games and Framer Motion expandable cards." },
+      { kind: "new", text: "Select target game for Home launch directly from the Hub page cards." },
+      { kind: "improved", text: "Instant accounts caching on Accounts page with background silent refresh." },
+      { kind: "improved", text: "Sidebar settings modal for accounts with game thumbnail stack and favorite account auto-sorting." },
+    ],
+  },
+  {
     version: "1.1.8",
     date: "2026-08-19",
     title: "Roblox version control, redesigned Home & Accounts pages",

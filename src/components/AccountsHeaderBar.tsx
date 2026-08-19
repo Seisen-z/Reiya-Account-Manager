@@ -1,7 +1,6 @@
-import { Dispatch, FC, ReactNode, RefObject, SetStateAction, useState } from "react";
-import {
-  GlobeIcon, KeyIcon, ShieldCheckIcon, FileTextIcon, SettingsIcon, ChevronDownIcon,
-} from "./Icons";
+import { Dispatch, FC, RefObject, SetStateAction } from "react";
+import { AddAccountDisclosure } from "./AddAccountDisclosure";
+import { KeyIcon, UserIcon, CopyIcon, FileTextIcon } from "./Icons";
 
 /* ── Stat Pill ── */
 export const AccountStatPill: FC<{ value: number; label: string; color: string }> = ({ value, label, color }) => {
@@ -12,38 +11,6 @@ export const AccountStatPill: FC<{ value: number; label: string; color: string }
     }}>
       <div style={{ fontSize: 16, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
       <div style={{ fontSize: 8.5, color: "var(--t3)", marginTop: 3, fontWeight: 800, letterSpacing: "0.08em" }}>{label}</div>
-    </div>
-  );
-};
-
-/* ── Dropdown item ── */
-const DropdownItem: FC<{ icon: ReactNode; label: string; sub: string; onClick: () => void }> = ({ icon, label, sub, onClick }) => {
-  const [hov, setHov] = useState(false);
-  return (
-    <div
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      onClick={onClick}
-      style={{
-        display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-        borderRadius: 9, background: hov ? "var(--g05)" : "transparent",
-        cursor: "pointer", transition: "background .1s",
-      }}
-    >
-      <span style={{
-        display: "flex", alignItems: "center", justifyContent: "center",
-        width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-        background: hov ? "var(--g10)" : "var(--g04)",
-        color: hov ? "var(--amber)" : "var(--t2)",
-        border: `1px solid ${hov ? "var(--g20)" : "var(--g06)"}`,
-        transition: "all .12s",
-      }}>
-        {icon}
-      </span>
-      <div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--t1)" }}>{label}</div>
-        <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 1 }}>{sub}</div>
-      </div>
     </div>
   );
 };
@@ -64,12 +31,12 @@ export const AccountsHeaderBar: FC<{
   onUserPass: () => void;
   onOpenCookieMenu: () => void;
   onCookiesFile: () => void;
-  onCustomLogin: () => void;
+  onCustomLogin?: () => void;
 }> = ({
   t, totalCount, validCount, favCount, online, selectedCount,
   addMenu, setAddMenu, addMenuRef,
   onImportClick, onExportClick,
-  onManualLogin, onUserPass, onOpenCookieMenu, onCookiesFile, onCustomLogin,
+  onManualLogin, onUserPass, onOpenCookieMenu, onCookiesFile,
 }) => {
   return (
     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
@@ -132,43 +99,20 @@ export const AccountsHeaderBar: FC<{
           </button>
         </div>
 
-        {/* Add Account dropdown */}
-        <div ref={addMenuRef} style={{ position: "relative" }}>
-          <button
-            onClick={e => { e.stopPropagation(); setAddMenu(v => !v); }}
-            style={{
-              display: "flex", alignItems: "center", gap: 7,
-              padding: "9px 16px", borderRadius: 10, border: "none",
-              background: "var(--accent)",
-              color: "var(--accent-text)", fontSize: 12, fontWeight: 800, cursor: "pointer",
-              boxShadow: "0 4px 14px var(--g18)", transition: "filter .12s",
-            }}
-            onMouseEnter={e => e.currentTarget.style.filter = "brightness(1.1)"}
-            onMouseLeave={e => e.currentTarget.style.filter = "none"}
-          >
-            {t("add_account_btn_label")}
-            <ChevronDownIcon size={11} color="#0a0a0a" />
-          </button>
-
-          {addMenu && (
-            <div
-              onClick={e => e.stopPropagation()}
-              style={{
-                position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 999,
-                background: "var(--modal-bg)",
-                border: "1px solid var(--g08)", borderRadius: 14,
-                padding: 6, minWidth: 220,
-                boxShadow: "0 16px 40px rgba(0,0,0,0.7), 0 0 0 1px var(--g04)",
-              }}
-            >
-              <DropdownItem icon={<GlobeIcon size={14} />} label={t("manual_login_title")} sub={t("manual_login_sub")} onClick={onManualLogin} />
-              <DropdownItem icon={<KeyIcon size={14} />} label={t("user_pass_title")} sub={t("user_pass_sub")} onClick={onUserPass} />
-              <DropdownItem icon={<ShieldCheckIcon size={14} />} label={t("cookie_title")} sub={t("cookie_sub")} onClick={onOpenCookieMenu} />
-              <DropdownItem icon={<FileTextIcon size={14} />} label={t("cookies_file_title")} sub={t("cookies_file_sub")} onClick={onCookiesFile} />
-              <div style={{ height: 1, background: "var(--g06)", margin: "4px 8px" }} />
-              <DropdownItem icon={<SettingsIcon size={14} />} label={t("custom_login_title")} sub={t("custom_login_sub")} onClick={onCustomLogin} />
-            </div>
-          )}
+        {/* Add Account disclosure */}
+        <div ref={addMenuRef} style={{ position: "relative", zIndex: 999 }}>
+          <AddAccountDisclosure
+            open={addMenu}
+            onOpenChange={setAddMenu}
+            label={t("add_account")}
+            title={t("add_account")}
+            actions={[
+              { icon: <KeyIcon size={20} />, label: t("manual_login_title"), sub: t("manual_login_sub"), onClick: onManualLogin },
+              { icon: <UserIcon size={20} />, label: t("user_pass_combo"), sub: t("user_pass_sub"), onClick: onUserPass },
+              { icon: <CopyIcon size={20} />, label: t("clipboard_cookie"), sub: t("cookie_sub"), onClick: onOpenCookieMenu },
+              { icon: <FileTextIcon size={20} />, label: t("bulk_cookies"), sub: t("cookies_file_sub"), onClick: onCookiesFile },
+            ]}
+          />
         </div>
       </div>
     </div>

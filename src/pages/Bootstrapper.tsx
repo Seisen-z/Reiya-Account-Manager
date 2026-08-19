@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useBootstrapper } from "../context/BootstrapperContext";
 import { useLanguage } from "../context/LanguageContext";
@@ -66,8 +66,9 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
   const { t } = useLanguage();
   const {
     status, progress, installing, checking, error, successMsg,
-    detectedInstalls, detecting, preferredLauncher, autoUpdate, deployVersions, loadingVersions,
+    detectedInstalls, detecting, preferredLauncher, autoUpdate, deployVersions,
     installedVersions, loadingInstalledVersions,
+    channel, setChannel, customVersionHash, setCustomVersionHash, installMode, setInstallMode,
     checkUpdate, startInstall, scanInstalls, updateLauncherPreference, updateAutoUpdate,
     loadDeployVersions, loadInstalledVersions, useInstalledVersion,
   } = useBootstrapper();
@@ -75,7 +76,6 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
   const [registering, setRegistering] = useState(false);
   const [regError, setRegError] = useState("");
   const [regSuccess, setRegSuccess] = useState("");
-  const [selectedVersion, setSelectedVersion] = useState("");
 
   useEffect(() => {
     if (deployVersions.length === 0) loadDeployVersions();
@@ -165,7 +165,7 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
 
           {/* Right: action buttons + fastflags shortcut */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <button onClick={checkUpdate} disabled={checking || installing} className="glow-btn" style={ghostBtnStyle(checking || installing)}>
+            <button onClick={() => checkUpdate()} disabled={checking || installing} className="glow-btn" style={ghostBtnStyle(checking || installing)}>
               <RefreshIcon size={12} />{checking ? t("checking") : t("check")}
             </button>
             <button onClick={() => startInstall()} disabled={installing || checking} className="glow-btn"
@@ -229,54 +229,158 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
             })}
           </div>
 
-          {/* Roblox version selector */}
+          {/* Roblox Version Control */}
           <div style={{ marginTop: 16 }}>
-            <SectionHeader icon={<PackageIcon size={12} color="#60A5FA" />} title="ROBLOX VERSION" accent="#60A5FA" />
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <select
-                value={selectedVersion}
-                onChange={e => setSelectedVersion(e.target.value)}
-                className="field glass-input"
-                style={{ flex: 1, padding: "8px 11px", fontSize: 11.5, outline: "none" }}
-              >
-                <option value="">
-                  {loadingVersions ? "Loading versions…" : "Latest (recommended)"}
-                </option>
-                {status?.installed_version && (
-                  <option value={status.installed_version}>
-                    Currently installed — {status.installed_version}
-                  </option>
-                )}
-                {deployVersions.map(v => {
-                  const unavailable = v.version === "version-hidden";
-                  return (
-                    <option key={`${v.version}-${v.date}`} value={v.version} disabled={unavailable}>
-                      {unavailable ? `Unavailable — ${v.date}` : `${v.version}${v.date ? ` — ${v.date}` : ""}`}
-                    </option>
-                  );
-                })}
-              </select>
-              <button
-                onClick={() => startInstall(selectedVersion || undefined)}
-                disabled={installing || checking}
-                className="glow-btn"
-                style={{ ...ghostBtnStyle(installing || checking), color: "#60A5FA", border: "1px solid rgba(96,165,250,0.25)", background: "rgba(96,165,250,0.05)" }}
-              >
-                <DownloadIcon size={12} />{installing ? `${progress?.percent ?? 0}%` : "Install"}
-              </button>
-              <button onClick={loadDeployVersions} disabled={loadingVersions} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 6, border: "1px solid var(--g06)", background: "transparent", color: "var(--t3)", fontSize: 10, fontWeight: 700, cursor: loadingVersions ? "not-allowed" : "pointer" }}>
-                <RefreshIcon size={10} />
-              </button>
+            <SectionHeader icon={<PackageIcon size={12} color="#60A5FA" />} title="ROBLOX VERSION CONTROL" accent="#60A5FA" />
+            
+            <div style={{ padding: "16px", background: "var(--g01)", border: "1px solid var(--g05)", borderRadius: 12, marginTop: 10 }}>
+              {/* Choice selector: Install Latest vs Custom Version */}
+              <div style={{ display: "flex", gap: 6, marginBottom: 14, background: "var(--g03)", padding: 3, borderRadius: 8 }}>
+                <button
+                  onClick={() => {
+                    setInstallMode("latest");
+                    setCustomVersionHash("");
+                  }}
+                  style={{
+                    flex: 1, padding: "7px 12px", borderRadius: 6, border: "none",
+                    fontSize: 11, fontWeight: 800, cursor: "pointer", transition: "all .15s",
+                    background: installMode === "latest" ? "var(--g08)" : "transparent",
+                    color: installMode === "latest" ? "var(--t1)" : "var(--t3)",
+                    boxShadow: installMode === "latest" ? "0 2px 8px rgba(0,0,0,0.3)" : "none",
+                  }}
+                >
+                  Install Latest Version (Default)
+                </button>
+                <button
+                  onClick={() => setInstallMode("custom")}
+                  style={{
+                    flex: 1, padding: "7px 12px", borderRadius: 6, border: "none",
+                    fontSize: 11, fontWeight: 800, cursor: "pointer", transition: "all .15s",
+                    background: installMode === "custom" ? "var(--accent)" : "transparent",
+                    color: installMode === "custom" ? "#0a0a0a" : "var(--t3)",
+                    boxShadow: installMode === "custom" ? "0 2px 8px rgba(0,0,0,0.3)" : "none",
+                  }}
+                >
+                  Install Custom / Pinned Version
+                </button>
+              </div>
+
+              {/* Form fields: Channel and Version Hash (matching user screenshot) */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                
+                {/* Channel field */}
+                <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", alignItems: "center", gap: 12 }}>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: "var(--t2)" }}>Channel</label>
+                  <input
+                    type="text"
+                    value={channel}
+                    onChange={e => setChannel(e.target.value)}
+                    placeholder="LIVE"
+                    className="field glass-input"
+                    style={{ padding: "8px 12px", fontSize: 11.5, outline: "none", fontFamily: "monospace" }}
+                  />
+                </div>
+
+                {/* Version Hash field */}
+                <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", alignItems: "center", gap: 12 }}>
+                  <div style={{ display: "flex", flexDirection: "column" }}>
+                    <label style={{ fontSize: 11.5, fontWeight: 700, color: "var(--t2)" }}>Version Hash</label>
+                    <span style={{ fontSize: 9, color: "var(--t3)" }}>
+                      {installMode === "latest" ? "Optional" : "Required"}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      type="text"
+                      value={customVersionHash}
+                      onChange={e => {
+                        setCustomVersionHash(e.target.value);
+                        if (e.target.value.trim() && installMode !== "custom") {
+                          setInstallMode("custom");
+                        }
+                      }}
+                      placeholder={installMode === "latest" ? "Optional (Leave empty for latest build)" : "e.g. version-ce0bcd0fbd484804"}
+                      className="field glass-input"
+                      style={{ flex: 1, padding: "8px 12px", fontSize: 11.5, outline: "none", fontFamily: "monospace" }}
+                    />
+                    {/* Select helper dropdown */}
+                    <select
+                      value=""
+                      onChange={e => {
+                        if (e.target.value) {
+                          setCustomVersionHash(e.target.value);
+                          setInstallMode("custom");
+                        }
+                      }}
+                      className="field glass-input"
+                      style={{ width: 140, padding: "8px 8px", fontSize: 10.5, outline: "none" }}
+                      title="Select from deploy history or local builds"
+                    >
+                      <option value="">Quick Select…</option>
+                      {status?.installed_version && (
+                        <option value={status.installed_version}>Installed: {status.installed_version.substring(0, 15)}…</option>
+                      )}
+                      <optgroup label="Recent Deploy History">
+                        {deployVersions.map(v => (
+                          <option key={`${v.version}-${v.date}`} value={v.version} disabled={v.version === "version-hidden"}>
+                            {v.version.substring(0, 15)}… {v.date ? `(${v.date.split(" ")[0]})` : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Downloaded Locally">
+                        {installedVersions.map(v => (
+                          <option key={v.version} value={v.version}>
+                            {v.version.substring(0, 15)}…
+                          </option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Install & Overwrite action button + status */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 4, paddingTop: 10, borderTop: "1px solid var(--g04)" }}>
+                  <div style={{ fontSize: 9.5, color: "var(--t3)", lineHeight: 1.4, flex: 1 }}>
+                    {installMode === "latest"
+                      ? "Will fetch and install the newest Roblox client for channel " + (channel || "LIVE") + ". Overwrites existing install."
+                      : customVersionHash
+                        ? `Will download & force overwrite Roblox version ${customVersionHash} for channel ${channel || "LIVE"}.`
+                        : "Enter or select a version hash to download and force overwrite."}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    {/* If custom hash is already downloaded locally */}
+                    {customVersionHash && installedVersions.some(v => v.version === customVersionHash) && (
+                      <button
+                        onClick={() => useInstalledVersion(customVersionHash)}
+                        style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(52,211,153,0.3)", background: "rgba(52,211,153,0.08)", color: "var(--green)", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+                      >
+                        Switch Instantly
+                      </button>
+                    )}
+                    <button
+                      onClick={() => startInstall(installMode === "custom" ? customVersionHash : undefined, channel)}
+                      disabled={installing || checking || (installMode === "custom" && !customVersionHash.trim())}
+                      className="glow-btn"
+                      style={{
+                        padding: "7px 16px", borderRadius: 8, border: "none",
+                        background: "var(--accent)", color: "#0a0a0a",
+                        fontSize: 11.5, fontWeight: 800, cursor: (installing || checking || (installMode === "custom" && !customVersionHash.trim())) ? "not-allowed" : "pointer",
+                        opacity: (installing || checking || (installMode === "custom" && !customVersionHash.trim())) ? 0.5 : 1,
+                        display: "flex", alignItems: "center", gap: 6,
+                      }}
+                    >
+                      <DownloadIcon size={12} />
+                      {installing ? `Installing ${progress?.percent ?? 0}%` : "Install & Overwrite"}
+                    </button>
+                  </div>
+                </div>
+
+              </div>
             </div>
-            <div style={{ fontSize: 9.5, color: "var(--t3)", marginTop: 6, lineHeight: 1.4 }}>
-              Pick a specific Roblox build to install instead of always using the newest one. Leave on "Latest" for normal updates, or pick "Currently installed" to reinstall/repair the exact version you already have without jumping to the newest one.
-              {deployVersions.some(v => v.version === "version-hidden") && (
-                <> Older builds you never installed show as "Unavailable" — Roblox stopped publishing their version hashes publicly, so only versions you already have locally (or the latest build) can be installed right now.</>
-              )}
-            </div>
+
             {preferredLauncher !== "reiya" && (
-              <div style={{ fontSize: 9.5, color: "var(--amber)", marginTop: 6, lineHeight: 1.4 }}>
-                Version pinning and Auto-update only take effect when "Reiya (Built-in)" is your launcher preference — with "{preferredLauncher}" selected, Reiya launches that app directly and can't control its updates.
+              <div style={{ fontSize: 9.5, color: "var(--amber)", marginTop: 8, lineHeight: 1.4 }}>
+                Version pinning and channel settings only take effect when "Reiya (Built-in)" is your launcher preference — with "{preferredLauncher}" selected, Reiya launches that app directly.
               </div>
             )}
           </div>

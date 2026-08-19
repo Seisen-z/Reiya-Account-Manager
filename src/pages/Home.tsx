@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -22,8 +22,7 @@ import { PlayStatsModal } from "../components/PlayStatsModal";
 import { PrivateServerSetupModal } from "../components/PrivateServerSetupModal";
 import { RemoveGameConfirmModal } from "../components/RemoveGameConfirmModal";
 import { SetAccountGroupModal } from "../components/SetAccountGroupModal";
-import { EditAccountSettingsModal } from "../components/EditAccountSettingsModal";
-import { AccountUtilitiesMenuModal } from "../components/AccountUtilitiesMenuModal";
+import { AccountConfigSidebarModal } from "../components/AccountConfigSidebarModal";
 import { AccountDetailsDumpModal } from "../components/AccountDetailsDumpModal";
 import { SessionDetailsModal } from "../components/SessionDetailsModal";
 import { SavePasswordPromptModal } from "../components/SavePasswordPromptModal";
@@ -31,8 +30,8 @@ import { HomeHeaderBar } from "../components/HomeHeaderBar";
 import { SelectedAccountHero } from "../components/SelectedAccountHero";
 import { PinnedGamesSection } from "../components/PinnedGamesSection";
 import { RecentGamesSection } from "../components/RecentGamesSection";
-import { SessionActivitySection } from "../components/SessionActivitySection";
-import { TopGamesByPlaytimeSection } from "../components/TopGamesByPlaytimeSection";
+import SessionBento from "../components/ui/index";
+import Tooltip from "../components/ui/Tooltip";
 
 /* â"€â"€ Types â"€â"€ */
 export interface Account {
@@ -108,6 +107,27 @@ export interface BulkAddResult {
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+/* ── Cache for instant page transitions ── */
+interface HomeCache {
+  accounts: Account[];
+  sessions: Session[];
+  events: EventEntry[];
+  sessionHistory: SessionRecord[];
+  recentGames: RecentGame[];
+  thumbs: Record<string, string>;
+  initialized: boolean;
+}
+
+const homeCache: HomeCache = {
+  accounts: [],
+  sessions: [],
+  events: [],
+  sessionHistory: [],
+  recentGames: [],
+  thumbs: {},
+  initialized: false,
+};
+
 interface Toast {
   id: number;
   msg: string;
@@ -118,12 +138,13 @@ export default function Home() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useLanguage();
-  const [accounts,       setAccounts]       = useState<Account[]>([]);
-  const [sessions,       setSessions]       = useState<Session[]>([]);
-  const [events,         setEvents]         = useState<EventEntry[]>([]);
-  const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>([]);
-  const [recentGames,    setRecentGames]    = useState<RecentGame[]>([]);
-  const [thumbs,         setThumbs]         = useState<Record<string, string>>({});
+  const [accounts,       setAccounts]       = useState<Account[]>(() => homeCache.accounts);
+  const [sessions,       setSessions]       = useState<Session[]>(() => homeCache.sessions);
+  const [events,         setEvents]         = useState<EventEntry[]>(() => homeCache.events);
+  const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>(() => homeCache.sessionHistory);
+  const [recentGames,    setRecentGames]    = useState<RecentGame[]>(() => homeCache.recentGames);
+  const [thumbs,         setThumbs]         = useState<Record<string, string>>(() => homeCache.thumbs);
+  const [initialLoading, setInitialLoading] = useState<boolean>(() => !homeCache.initialized);
   const [, setThumbsLoading]  = useState(true);
 
   // Play stats modal state & computations
@@ -274,29 +295,8 @@ export default function Home() {
   const [privateServerInput, setPrivateServerInput] = useState("");
   const [deleteConfirmModal, setDeleteConfirmModal] = useState<{ placeId: string, name: string } | null>(null);
 
-  // Edit Account Modal State
-  const [editAccountModal, setEditAccountModal] = useState<Account | null>(null);
-  const [editDisplayName, setEditDisplayName] = useState("");
-  const [editNotes, setEditNotes] = useState("");
-  const [editTags, setEditTags] = useState("");
-  const [editDefaultPlaceId, setEditDefaultPlaceId] = useState("");
-  const [editCookie, setEditCookie] = useState("");
-  const [editCooldown, setEditCooldown] = useState(-1);
-  const [editIsFavorite, setEditIsFavorite] = useState(false);
-  const [editSafeLaunch, setEditSafeLaunch] = useState(false);
-  const [editAutoRejoin, setEditAutoRejoin] = useState(false);
-  const [editLoading, setEditLoading] = useState(false);
-  const [editError, setEditError] = useState("");
-
-  // Account Utilities Modal State
-  const [utilAccount, setUtilAccount] = useState<Account | null>(null);
-  const [utilNewDisplayName, setUtilNewDisplayName] = useState("");
-  const [utilCurrentPassword, setUtilCurrentPassword] = useState("");
-  const [utilNewPassword, setUtilNewPassword] = useState("");
-  const [utilTargetUser, setUtilTargetUser] = useState("");
-  const [utilStatus, setUtilStatus] = useState("");
-  const [utilIsError, setUtilIsError] = useState(false);
-  const [utilLoading, setUtilLoading] = useState(false);
+  // Account Configuration Sidebar Modal State
+  const [configSidebarAccount, setConfigSidebarAccount] = useState<Account | null>(null);
 
   // Dump Details Modal State
   const [dumpAccount, setDumpAccount] = useState<Account | null>(null);
@@ -380,6 +380,15 @@ export default function Home() {
       setEvents(evts);
       setSessionHistory(hist);
       setRecentGames(recents);
+
+      // Store in memory cache for instant page returns
+      homeCache.accounts = accs;
+      homeCache.sessions = sess;
+      homeCache.events = evts;
+      homeCache.sessionHistory = hist;
+      homeCache.recentGames = recents;
+      homeCache.initialized = true;
+      setInitialLoading(false);
 
       // Sync bootstrapper from global settings
       if (settingsData && settingsData.UseBootstrapperLaunch !== undefined) {
@@ -810,159 +819,6 @@ export default function Home() {
     setSavePasswordPrompt(null);
     showToast("Password saved.", "success");
   };
-
-  const handleSaveEditAccount = async () => {
-    if (!editAccountModal) return;
-    setEditLoading(true);
-    setEditError("");
-    try {
-      // 1. If cookie is updated, call add_account
-      if (editCookie.trim()) {
-        try {
-          await invoke("add_account", { cookie: editCookie.trim() });
-        } catch (err) {
-          setEditError("Failed to update cookie: " + err);
-          setEditLoading(false);
-          return;
-        }
-      }
-
-      // 2. If favorite state changed, call toggle_favorite
-      if (editIsFavorite !== editAccountModal.is_favorite) {
-        try {
-          await invoke("toggle_favorite", { userId: editAccountModal.user_id });
-        } catch (err) {
-          setEditError("Failed to toggle favorite: " + err);
-          setEditLoading(false);
-          return;
-        }
-      }
-
-      // 3. Save edit_account fields
-      const tagsList = editTags
-        .split(",")
-        .map(t => t.trim())
-        .filter(Boolean);
-
-      await invoke("edit_account", {
-        userId: editAccountModal.user_id,
-        displayName: editDisplayName.trim(),
-        notes: editNotes.trim(),
-        tags: tagsList,
-        defaultPlaceId: editDefaultPlaceId.trim(),
-        safeLaunchEnabled: editSafeLaunch,
-        autoRejoinEnabled: editAutoRejoin,
-        launchCooldownSeconds: Number(editCooldown)
-      });
-
-      // Reload accounts state
-      await refreshAccounts();
-      setEditAccountModal(null);
-    } catch (err) {
-      setEditError(String(err));
-    } finally {
-      setEditLoading(false);
-    }
-  };
-
-  const handleSetDisplayName = async () => {
-    if (!utilAccount || !utilNewDisplayName.trim()) return;
-    setUtilLoading(true);
-    setUtilStatus("Updating display name...");
-    setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("set_display_name", {
-        userId: utilAccount.user_id,
-        newName: utilNewDisplayName.trim(),
-      });
-      setUtilStatus(msg);
-      setAccounts(prev => prev.map(a => a.user_id === utilAccount.user_id ? { ...a, display_name: utilNewDisplayName.trim() } : a));
-    } catch (e) {
-      setUtilIsError(true);
-      setUtilStatus(String(e));
-    } finally {
-      setUtilLoading(false);
-    }
-  };
-
-  const handleChangePassword = async () => {
-    if (!utilAccount || !utilCurrentPassword || !utilNewPassword) return;
-    setUtilLoading(true);
-    setUtilStatus("Changing password...");
-    setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("change_password", {
-        userId: utilAccount.user_id,
-        currentPw: utilCurrentPassword,
-        newPw: utilNewPassword,
-      });
-      setUtilStatus(msg);
-      setUtilCurrentPassword("");
-      setUtilNewPassword("");
-    } catch (e) {
-      setUtilIsError(true);
-      setUtilStatus(String(e));
-    } finally {
-      setUtilLoading(false);
-    }
-  };
-
-  const handleSignOutAll = async () => {
-    if (!utilAccount) return;
-    if (!confirm("This will sign out all other sessions for this account. Continue?")) return;
-    setUtilLoading(true);
-    setUtilStatus("Signing out all sessions...");
-    setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("sign_out_all_sessions", {
-        userId: utilAccount.user_id,
-      });
-      setUtilStatus(msg);
-    } catch (e) {
-      setUtilIsError(true);
-      setUtilStatus(String(e));
-    } finally {
-      setUtilLoading(false);
-    }
-  };
-
-  const handleSendFriendRequest = async () => {
-    if (!utilAccount || !utilTargetUser.trim()) return;
-    setUtilLoading(true);
-    setUtilStatus(`Sending friend request to @${utilTargetUser}...`);
-    setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("send_friend_request", {
-        userId: utilAccount.user_id,
-        targetUsername: utilTargetUser.trim(),
-      });
-      setUtilStatus(msg);
-    } catch (e) {
-      setUtilIsError(true);
-      setUtilStatus(String(e));
-    } finally {
-      setUtilLoading(false);
-    }
-  };
-
-  const handleBlockUser = async () => {
-    if (!utilAccount || !utilTargetUser.trim()) return;
-    setUtilLoading(true);
-    setUtilStatus(`Blocking @${utilTargetUser}...`);
-    setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("block_user", {
-        userId: utilAccount.user_id,
-        targetUsername: utilTargetUser.trim(),
-      });
-      setUtilStatus(msg);
-    } catch (e) {
-      setUtilIsError(true);
-      setUtilStatus(String(e));
-    } finally {
-      setUtilLoading(false);
-    }
-  };
   const effectivePlaceId      = launchPlaceId.trim() || null;
   const effectiveGameName     = launchGame?.name ?? (launchPlaceId.trim() ? `Place ${launchPlaceId.trim()}` : null);
   const launchThumb           = launchPlaceId ? (thumbs[launchPlaceId] ?? null) : null;
@@ -1385,10 +1241,7 @@ export default function Home() {
     setAccessCode(val);
   };
 
-  // Which stacked center-column section renders first (for section-separator styling)
-  const isPinnedGamesFirst = pinnedGames.length > 0 && recentGames.filter(g => pinnedGames.includes(g.placeId)).length > 0;
-  const isRecentGamesFirst = !isPinnedGamesFirst && recentGames.length > 0;
-  const isChartFirst = !isPinnedGamesFirst && !isRecentGamesFirst;
+
 
   return (
   <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg)" }} onClick={() => { setAddMenu(false); setAccountMenu(null); }}>
@@ -1456,6 +1309,7 @@ export default function Home() {
     <div style={{ width: 216, borderRight: "1px solid var(--glass-line)", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--panel-bg)", flexShrink: 0 }}>
       <AccountSidebar
         accounts={accounts}
+        loading={initialLoading}
         accSearch={accSearch}
         setAccSearch={setAccSearch}
         accGroups={accGroups}
@@ -1541,53 +1395,49 @@ export default function Home() {
       {/* Scrollable: Recently Played + Session Chart */}
       <div className="scroll" style={{ flex: 1, padding: 18, display: "flex", flexDirection: "column", gap: 0 }}>
 
-      {/* Feature 9: Pinned Games section */}
-      <PinnedGamesSection
-        pinnedGames={pinnedGames}
-        recentGames={recentGames}
-        launchPlaceId={launchPlaceId}
-        thumbs={thumbs}
-        onTogglePin={togglePinGame}
-        onSelectGame={handleSelectRecentGame}
-        onGameContextMenu={handleGameContextMenu}
-        onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
-        onQuickLaunch={(placeId) => {
-          handleSelectRecentGame(placeId);
-          setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
-        }}
-        first={isPinnedGamesFirst}
-      />
+      {/* Side-by-Side: Pinned Games (Left) & Recently Played (Right) — Max 8 items each */}
+      <div style={{ display: "grid", gridTemplateColumns: (pinnedGames.length > 0 && recentGames.some(g => pinnedGames.includes(g.placeId))) ? "1fr 1fr" : "1fr", gap: 16 }}>
+        <PinnedGamesSection
+          pinnedGames={pinnedGames}
+          recentGames={recentGames}
+          launchPlaceId={launchPlaceId}
+          thumbs={thumbs}
+          onTogglePin={togglePinGame}
+          onSelectGame={handleSelectRecentGame}
+          onGameContextMenu={handleGameContextMenu}
+          onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
+          onQuickLaunch={(placeId) => {
+            handleSelectRecentGame(placeId);
+            setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
+          }}
+        />
 
-      {/* Recently Played */}
-      <RecentGamesSection
-        recentGames={recentGames}
-        launchPlaceId={launchPlaceId}
-        thumbs={thumbs}
-        pinnedGames={pinnedGames}
-        onTogglePin={togglePinGame}
-        onSelectGame={handleSelectRecentGame}
-        onGameContextMenu={handleGameContextMenu}
-        onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
-        onQuickLaunch={(placeId) => {
-          handleSelectRecentGame(placeId);
-          setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
-        }}
-        gameSearch={gameSearch}
-        setGameSearch={setGameSearch}
-        onSetPlaceIdFromSearch={(id) => {
-          setLaunchPlaceId(id);
-          localStorage.setItem("reiya_last_place_id", id);
-          setGameSearch("");
-          showToast(`Game set to Place ID: ${id}`, "success");
-        }}
-        first={isRecentGamesFirst}
-      />
+        <RecentGamesSection
+          recentGames={recentGames}
+          launchPlaceId={launchPlaceId}
+          thumbs={thumbs}
+          pinnedGames={pinnedGames}
+          onTogglePin={togglePinGame}
+          onSelectGame={handleSelectRecentGame}
+          onGameContextMenu={handleGameContextMenu}
+          onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
+          onQuickLaunch={(placeId) => {
+            handleSelectRecentGame(placeId);
+            setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
+          }}
+          gameSearch={gameSearch}
+          setGameSearch={setGameSearch}
+          onSetPlaceIdFromSearch={(id) => {
+            setLaunchPlaceId(id);
+            localStorage.setItem("reiya_last_place_id", id);
+            setGameSearch("");
+            showToast(`Game set to Place ID: ${id}`, "success");
+          }}
+        />
+      </div>
 
-      {/* Session Activity Chart */}
-      <SessionActivitySection weekStats={weekStats} graphData={graphData} first={isChartFirst} />
-
-      {/* Top Games by Playtime */}
-      <TopGamesByPlaytimeSection topGames={topGames} first={false} />
+      {/* Bento Grid: Session Activity & Top Games */}
+      <SessionBento weekStats={weekStats} graphData={graphData} topGames={topGames} />
 
       </div>{/* end center scroll */}
     </div>{/* end center column */}
@@ -1690,41 +1540,66 @@ export default function Home() {
             }}
           />
           <DropdownItem
-            icon={<IconSvg><path d="M4.5 16.5c-1.5 1.25-2.5 3.5-2.5 3.5s2.25-1 3.5-2.5L13 10 6 3 4.5 16.5zM12 9l3 3M19 2s.75 3-2.5 6.25L13 12l-1-1 3.75-3.5C19 4 19 2 19 2z" /></IconSvg>}
-            label={t("edit_account_menu")}
-            sub={t("edit_account_sub")}
+            icon={
+              <IconSvg>
+                <path d="M4.5 16.5c-1.5 1.25-2.5 3.5-2.5 3.5s2.25-1 3.5-2.5L13 10 6 3 4.5 16.5zM12 9l3 3M19 2s.75 3-2.5 6.25L13 12l-1-1 3.75-3.5C19 4 19 2 19 2z" />
+              </IconSvg>
+            }
+            label="Account Settings & Utilities"
+            sub="Configure profile, games, notes & security"
             onClick={() => {
               const acc = accountMenu.account;
-              setEditAccountModal(acc);
-              setEditDisplayName(acc.display_name || "");
-              setEditNotes(acc.notes || "");
-              setEditTags((acc.tags || []).join(", "));
-              setEditDefaultPlaceId(acc.default_place_id || "");
-              setEditCookie("");
-              setEditCooldown(acc.launch_cooldown_seconds ?? -1);
-              setEditIsFavorite(acc.is_favorite || false);
-              setEditSafeLaunch(acc.safe_launch_enabled || false);
-              setEditAutoRejoin(acc.auto_rejoin_enabled || false);
-              setEditError("");
+              setConfigSidebarAccount(acc);
               setAccountMenu(null);
             }}
           />
           <DropdownItem
-            icon={<IconSvg><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></IconSvg>}
-            label={t("account_utilities_menu")}
-            sub={t("account_utilities_sub")}
-            onClick={() => {
+            icon={<PinIcon size={14} fill={accountMenu.account.is_favorite ? "#FBBF24" : "none"} color={accountMenu.account.is_favorite ? "#FBBF24" : "currentColor"} />}
+            label={accountMenu.account.is_favorite ? t("unfavorite_account_menu") : t("favorite_account_menu")}
+            sub={t("toggle_quick_pinning_sub")}
+            onClick={async () => {
               const acc = accountMenu.account;
-              setUtilAccount(acc);
-              setUtilNewDisplayName(acc.display_name || "");
-              setUtilCurrentPassword("");
-              setUtilNewPassword("");
-              setUtilTargetUser("");
-              setUtilStatus("");
-              setUtilIsError(false);
               setAccountMenu(null);
+              try {
+                const updated = await invoke<Account>("toggle_favorite", { userId: acc.user_id });
+                setAccounts(prev => prev.map(a => a.user_id === acc.user_id ? updated : a));
+              } catch (err) {
+                showToast("Failed to toggle favorite: " + err, "error");
+              }
             }}
           />
+          <div style={{ height: 1, background: "var(--g08)", margin: "2px 6px" }} />
+          <DropdownItem
+            icon={<IconSvg><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" /></IconSvg>}
+            label={t("copy_username_menu")}
+            sub={t("copy_username_sub")}
+            onClick={async () => {
+              const acc = accountMenu.account;
+              setAccountMenu(null);
+              await navigator.clipboard.writeText(acc.username);
+            }}
+          />
+          <DropdownItem
+            icon={<IconSvg><line x1="4" y1="9" x2="20" y2="9" /><line x1="4" y1="15" x2="20" y2="15" /><line x1="10" y1="3" x2="8" y2="21" /><line x1="16" y1="3" x2="14" y2="21" /></IconSvg>}
+            label={t("copy_user_id_menu")}
+            sub={t("copy_user_id_sub")}
+            onClick={async () => {
+              const acc = accountMenu.account;
+              setAccountMenu(null);
+              await navigator.clipboard.writeText(String(acc.user_id));
+            }}
+          />
+          <DropdownItem
+            icon={<IconSvg><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" /></IconSvg>}
+            label={t("re_login_menu")}
+            sub={t("re_auth_cookie_sub")}
+            onClick={async () => {
+              const acc = accountMenu.account;
+              setAccountMenu(null);
+              await handleCheckCookie(acc.user_id);
+            }}
+          />
+          <div style={{ height: 1, background: "var(--g08)", margin: "2px 6px" }} />
           <DropdownItem
             icon={<IconSvg><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></IconSvg>}
             label={t("remove_account_menu")}
@@ -1746,386 +1621,30 @@ export default function Home() {
               }
             }}
           />
-          <div style={{ height: 1, background: "var(--g08)", margin: "2px 6px" }} />
-          <DropdownItem
-            icon={<PinIcon size={14} fill={accountMenu.account.is_favorite ? "#FBBF24" : "none"} color={accountMenu.account.is_favorite ? "#FBBF24" : "currentColor"} />}
-            label={accountMenu.account.is_favorite ? t("unfavorite_account_menu") : t("favorite_account_menu")}
-            sub={t("toggle_quick_pinning_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                const updated = await invoke<Account>("toggle_favorite", { userId: acc.user_id });
-                setAccounts(prev => prev.map(a => a.user_id === acc.user_id ? updated : a));
-              } catch (err) {
-                showToast("Failed to toggle favorite: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={
-              <IconSvg>
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill={accountMenu.account.safe_launch_enabled ? "var(--g15)" : "none"} />
-              </IconSvg>
-            }
-            label={t("toggle_safe_launch_menu")}
-            sub={`${t("currently_prefix")}: ${accountMenu.account.safe_launch_enabled ? t("enabled") : t("disabled")}`}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                await invoke("edit_account", {
-                  userId: acc.user_id,
-                  displayName: acc.display_name,
-                  notes: acc.notes,
-                  tags: acc.tags,
-                  defaultPlaceId: acc.default_place_id,
-                  safeLaunchEnabled: !acc.safe_launch_enabled,
-                  autoRejoinEnabled: acc.auto_rejoin_enabled,
-                  launchCooldownSeconds: acc.launch_cooldown_seconds,
-                });
-                await refreshAccounts();
-              } catch (err) {
-                showToast("Failed to toggle safe launch: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={
-              <IconSvg>
-                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
-              </IconSvg>
-            }
-            label={t("toggle_auto_rejoin_menu")}
-            sub={`${t("currently_prefix")}: ${accountMenu.account.auto_rejoin_enabled ? t("enabled") : t("disabled")}`}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                await invoke("edit_account", {
-                  userId: acc.user_id,
-                  displayName: acc.display_name,
-                  notes: acc.notes,
-                  tags: acc.tags,
-                  defaultPlaceId: acc.default_place_id,
-                  safeLaunchEnabled: acc.safe_launch_enabled,
-                  autoRejoinEnabled: !acc.auto_rejoin_enabled,
-                  launchCooldownSeconds: acc.launch_cooldown_seconds,
-                });
-                await refreshAccounts();
-              } catch (err) {
-                showToast("Failed to toggle auto rejoin: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={
-              <IconSvg>
-                <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" />
-              </IconSvg>
-            }
-            label={t("set_as_default_game_menu")}
-            sub={launchPlaceId ? t("set_default_sub") : t("clear_default_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                await invoke("edit_account", {
-                  userId: acc.user_id,
-                  displayName: acc.display_name,
-                  notes: acc.notes,
-                  tags: acc.tags,
-                  defaultPlaceId: launchPlaceId,
-                  safeLaunchEnabled: acc.safe_launch_enabled,
-                  autoRejoinEnabled: acc.auto_rejoin_enabled,
-                  launchCooldownSeconds: acc.launch_cooldown_seconds,
-                });
-                await refreshAccounts();
-                showToast(`Default place ID for @${acc.username} updated to ${launchPlaceId || "none"}.`, "success");
-              } catch (err) {
-                showToast("Failed to update default place ID: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></IconSvg>}
-            label={t("edit_tags_menu")}
-            sub={t("focus_tags_sub")}
-            onClick={() => {
-              const acc = accountMenu.account;
-              setEditAccountModal(acc);
-              setEditDisplayName(acc.display_name || "");
-              setEditNotes(acc.notes || "");
-              setEditTags((acc.tags || []).join(", "));
-              setEditDefaultPlaceId(acc.default_place_id || "");
-              setEditCookie("");
-              setEditCooldown(acc.launch_cooldown_seconds ?? -1);
-              setEditIsFavorite(acc.is_favorite || false);
-              setEditSafeLaunch(acc.safe_launch_enabled || false);
-              setEditAutoRejoin(acc.auto_rejoin_enabled || false);
-              setEditError("");
-              setAccountMenu(null);
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" /></IconSvg>}
-            label={t("edit_notes_menu")}
-            sub={t("focus_notes_sub")}
-            onClick={() => {
-              const acc = accountMenu.account;
-              setEditAccountModal(acc);
-              setEditDisplayName(acc.display_name || "");
-              setEditNotes(acc.notes || "");
-              setEditTags((acc.tags || []).join(", "));
-              setEditDefaultPlaceId(acc.default_place_id || "");
-              setEditCookie("");
-              setEditCooldown(acc.launch_cooldown_seconds ?? -1);
-              setEditIsFavorite(acc.is_favorite || false);
-              setEditSafeLaunch(acc.safe_launch_enabled || false);
-              setEditAutoRejoin(acc.auto_rejoin_enabled || false);
-              setEditError("");
-              setAccountMenu(null);
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></IconSvg>}
-            label={t("set_group_menu")}
-            sub={accountMenu.account.group ? `${t("currently_group_prefix")}: ${accountMenu.account.group}` : t("no_group_assigned")}
-            onClick={() => {
-              const acc = accountMenu.account;
-              setGroupModal({ account: acc });
-              setGroupInput(acc.group || "");
-              setAccountMenu(null);
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" /></IconSvg>}
-            label={t("export_config_menu")}
-            sub={t("copy_config_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                const cfg = {
-                  Username: acc.username,
-                  UserId: acc.user_id,
-                  Tags: acc.tags || [],
-                  Notes: acc.notes || "",
-                  DefaultPlaceId: acc.default_place_id || "",
-                  DefaultGameName: acc.default_game_name || "",
-                  IsFavorite: acc.is_favorite,
-                  SafeLaunchEnabled: acc.safe_launch_enabled,
-                  AutoRejoinEnabled: acc.auto_rejoin_enabled,
-                  LaunchCooldownSeconds: acc.launch_cooldown_seconds
-                };
-                await navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
-                showToast(t("config_copied"), "success");
-              } catch (err) {
-                showToast("Export failed: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></IconSvg>}
-            label={t("import_config_menu")}
-            sub={t("load_config_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                const clipText = await readText();
-                if (!clipText) {
-                  showToast(t("clipboard_empty"), "error");
-                  return;
-                }
-                const parsed = JSON.parse(clipText);
-                if (typeof parsed !== "object" || parsed === null) {
-                  showToast(t("invalid_json_format"), "error");
-                  return;
-                }
-                const displayName = parsed.DisplayName || parsed.displayName || acc.display_name;
-                const notes = parsed.Notes !== undefined ? String(parsed.Notes) : parsed.notes !== undefined ? String(parsed.notes) : acc.notes;
-                const tagsList = Array.isArray(parsed.Tags) ? parsed.Tags.map(String) : Array.isArray(parsed.tags) ? parsed.tags.map(String) : acc.tags;
-                const defaultPlaceId = parsed.DefaultPlaceId !== undefined ? String(parsed.DefaultPlaceId) : parsed.defaultPlaceId !== undefined ? String(parsed.defaultPlaceId) : acc.default_place_id;
-                const safeLaunchEnabled = parsed.SafeLaunchEnabled !== undefined ? Boolean(parsed.SafeLaunchEnabled) : parsed.safeLaunchEnabled !== undefined ? Boolean(parsed.safeLaunchEnabled) : acc.safe_launch_enabled;
-                const autoRejoinEnabled = parsed.AutoRejoinEnabled !== undefined ? Boolean(parsed.AutoRejoinEnabled) : parsed.autoRejoinEnabled !== undefined ? Boolean(parsed.autoRejoinEnabled) : acc.auto_rejoin_enabled;
-                const launchCooldownSeconds = parsed.LaunchCooldownSeconds !== undefined ? Number(parsed.LaunchCooldownSeconds) : parsed.launchCooldownSeconds !== undefined ? Number(parsed.launchCooldownSeconds) : acc.launch_cooldown_seconds;
-
-                await invoke("edit_account", {
-                  userId: acc.user_id,
-                  displayName: displayName,
-                  notes: notes,
-                  tags: tagsList,
-                  defaultPlaceId: defaultPlaceId,
-                  safeLaunchEnabled: safeLaunchEnabled,
-                  autoRejoinEnabled: autoRejoinEnabled,
-                  launchCooldownSeconds: launchCooldownSeconds
-                });
-                await refreshAccounts();
-                showToast(t("config_imported"), "success");
-              } catch (err) {
-                showToast("Import failed: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" /></IconSvg>}
-            label={t("re_login_menu")}
-            sub={t("re_auth_cookie_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              await handleCheckCookie(acc.user_id);
-            }}
-          />
-          <div style={{ height: 1, background: "var(--g08)", margin: "2px 6px" }} />
-          <DropdownItem
-            icon={<IconSvg><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" /></IconSvg>}
-            label={t("copy_cookie_menu")}
-            sub={t("security_warning_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              if (confirm(t("copy_cookie_warning"))) {
-                try {
-                  const cookie = await invoke<string>("get_account_cookie", { userId: acc.user_id });
-                  await navigator.clipboard.writeText(cookie);
-                  showToast(t("cookie_copied"), "success");
-                } catch (err) {
-                  showToast("Failed to decrypt/copy cookie: " + err, "error");
-                }
-              }
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 7a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" /></IconSvg>}
-            label={t("copy_username_menu")}
-            sub={t("copy_username_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              await navigator.clipboard.writeText(acc.username);
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><line x1="4" y1="9" x2="20" y2="9" /><line x1="4" y1="15" x2="20" y2="15" /><line x1="10" y1="3" x2="8" y2="21" /><line x1="16" y1="3" x2="14" y2="21" /></IconSvg>}
-            label={t("copy_user_id_menu")}
-            sub={t("copy_user_id_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              await navigator.clipboard.writeText(String(acc.user_id));
-            }}
-          />
-          {accountMenu.account.password && (
-            <DropdownItem
-              icon={<IconSvg><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></IconSvg>}
-              label={t("copy_password_menu")}
-              sub={t("copy_password_sub")}
-              onClick={async () => {
-                const acc = accountMenu.account;
-                setAccountMenu(null);
-                await navigator.clipboard.writeText(acc.password!);
-              }}
-            />
-          )}
-          <DropdownItem
-            icon={<IconSvg><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v2z" /><line x1="12" y1="5" x2="12" y2="19" /></IconSvg>}
-            label={t("get_auth_ticket_menu")}
-            sub={t("generate_ticket_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                const ticket = await invoke<string>("get_auth_ticket_command", { userId: acc.user_id });
-                await navigator.clipboard.writeText(ticket);
-                showToast(t("auth_ticket_copied"), "success");
-              } catch (err) {
-                showToast("Failed to get authentication ticket: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></IconSvg>}
-            label={t("copy_rbx_link_menu")}
-            sub={t("construct_uri_sub")}
-            onClick={async () => {
-              const acc = accountMenu.account;
-              setAccountMenu(null);
-              try {
-                const ticket = await invoke<string>("get_auth_ticket_command", { userId: acc.user_id });
-                const timestamp = Date.now().toString();
-                const browserTrackerId = Math.floor(Math.random() * 900000000 + 100000000).toString();
-                const pId = launchPlaceId.trim() || "7882829745";
-                const placeLauncherUrl = `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame&placeId=${pId}&isPlayTogetherGame=false`;
-                const encodedUrl = encodeURIComponent(placeLauncherUrl);
-                const launchLink = `roblox-player:1+launchmode:play+gameinfo:${ticket}+launchtime:${timestamp}+platfrom:Windows+placelauncherurl:${encodedUrl}+browserTrackerId:${browserTrackerId}`;
-                await navigator.clipboard.writeText(launchLink);
-                showToast(t("rbx_link_copied"), "success");
-              } catch (err) {
-                showToast("Failed to generate launch link: " + err, "error");
-              }
-            }}
-          />
-          <DropdownItem
-            icon={<IconSvg><circle cx="12" cy="12" r="3" /><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /></IconSvg>}
-            label={t("dump_details_menu")}
-            sub={t("display_raw_json_sub")}
-            onClick={() => {
-              setDumpAccount(accountMenu.account);
-              setAccountMenu(null);
-            }}
-          />
         </div>
         );
       })()}
 
-      <EditAccountSettingsModal
-        account={editAccountModal}
-        editDisplayName={editDisplayName}
-        setEditDisplayName={setEditDisplayName}
-        editNotes={editNotes}
-        setEditNotes={setEditNotes}
-        editTags={editTags}
-        setEditTags={setEditTags}
-        editDefaultPlaceId={editDefaultPlaceId}
-        setEditDefaultPlaceId={setEditDefaultPlaceId}
-        editCooldown={editCooldown}
-        setEditCooldown={setEditCooldown}
-        editCookie={editCookie}
-        setEditCookie={setEditCookie}
-        editIsFavorite={editIsFavorite}
-        setEditIsFavorite={setEditIsFavorite}
-        editSafeLaunch={editSafeLaunch}
-        setEditSafeLaunch={setEditSafeLaunch}
-        editAutoRejoin={editAutoRejoin}
-        setEditAutoRejoin={setEditAutoRejoin}
-        editLoading={editLoading}
-        editError={editError}
-        onClose={() => { if (!editLoading) { setEditAccountModal(null); setEditError(""); } }}
-        onSave={handleSaveEditAccount}
+      <AccountConfigSidebarModal
+        account={configSidebarAccount}
+        onClose={() => setConfigSidebarAccount(null)}
+        onRefresh={refreshAccounts}
+        onRemoveAccount={async (userId, username) => {
+          if (confirm(`${t("remove_account_confirm")}${username}?`)) {
+            try {
+              await invoke("remove_account", { userId });
+              setAccounts(prev => prev.filter(a => a.user_id !== userId));
+              if (selAccount === userId) {
+                setSelAccount(null);
+                localStorage.removeItem("reiya_last_account");
+              }
+            } catch (err) {
+              showToast("Failed to remove account: " + err, "error");
+            }
+          }
+        }}
       />
 
-      <AccountUtilitiesMenuModal
-        account={utilAccount}
-        utilNewDisplayName={utilNewDisplayName}
-        setUtilNewDisplayName={setUtilNewDisplayName}
-        utilCurrentPassword={utilCurrentPassword}
-        setUtilCurrentPassword={setUtilCurrentPassword}
-        utilNewPassword={utilNewPassword}
-        setUtilNewPassword={setUtilNewPassword}
-        utilTargetUser={utilTargetUser}
-        setUtilTargetUser={setUtilTargetUser}
-        utilStatus={utilStatus}
-        utilIsError={utilIsError}
-        utilLoading={utilLoading}
-        onClose={() => { if (!utilLoading) { setUtilAccount(null); setUtilStatus(""); } }}
-        onSetDisplayName={handleSetDisplayName}
-        onChangePassword={handleChangePassword}
-        onSignOutAll={handleSignOutAll}
-        onSendFriendRequest={handleSendFriendRequest}
-        onBlockUser={handleBlockUser}
-      />
 
       <AccountDetailsDumpModal
         account={dumpAccount}
@@ -2165,53 +1684,65 @@ export function GameCard({ g, isSelected, hasPrivateServer, thumb, onSelect, onC
 }) {
   const [hov, setHov] = useState(false);
   return (
-    <div
-      onClick={onSelect}
-      onContextMenu={onContextMenu}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      title={`${g.name}${hasPrivateServer ? "\n🔒 Private Server" : ""}\nDouble-click to quick launch`}
-      onDoubleClick={onQuickLaunch}
-      style={{ position: "relative", height: 70, borderRadius: 9, overflow: "hidden", cursor: "pointer", border: `1.5px solid ${isSelected ? "#FFFFFF" : hov ? "rgba(255,255,255,0.14)" : "var(--g05)"}`, boxShadow: isSelected ? "0 4px 14px var(--g10)" : "none", transition: "all .15s", transform: isSelected ? "translateY(-2px)" : "none" }}
-    >
-      {g.iconUrl || thumb ? (
-        <img src={g.iconUrl || thumb} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      ) : (
-        <div style={{ width: "100%", height: "100%", background: "var(--surface-3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <GamepadIcon size={18} color="var(--g20)" />
-        </div>
-      )}
-      {/* Delete button — zIndex:10 so it stays above hover overlay */}
-      <div onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        style={{ position: "absolute", top: 4, left: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g10)", zIndex: 10 }}>
-        <XIcon size={8} color="var(--red)" />
-      </div>
-      {hasPrivateServer && (
-        <div style={{ position: "absolute", top: 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g12)", zIndex: 10 }}>
-          <LockIcon size={8} color="#FFFFFF" />
-        </div>
-      )}
-      {/* Pin button — zIndex:10 so it stays above hover overlay (zIndex:3) */}
-      {onTogglePin && (
-        <div onClick={e => { e.stopPropagation(); onTogglePin(); }}
-          title={isPinned ? "Unpin" : "Pin game"}
-          style={{ position: "absolute", top: hasPrivateServer ? 24 : 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: isPinned ? "rgba(251,191,36,0.9)" : "rgba(0,0,0,0.55)", display: hov || isPinned ? "flex" : "none", alignItems: "center", justifyContent: "center", border: `1px solid ${isPinned ? "rgba(251,191,36,0.6)" : "var(--g12)"}`, zIndex: 10, cursor: "pointer" }}>
-          <span style={{ fontSize: 8, lineHeight: 1 }}>📌</span>
-        </div>
-      )}
-      {/* Quick-launch overlay on hover */}
-      {hov && (
-        <div onClick={e => { e.stopPropagation(); onQuickLaunch(); }}
-          style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3, transition: "opacity .12s" }}>
-          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(255,255,255,0.92)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <PlayIcon size={11} color="#07080a" />
+    <Tooltip content={`${g.name} · Double-click to launch`} position="top" style={{ width: "100%", display: "block" }}>
+      <div
+        onClick={onSelect}
+        onContextMenu={onContextMenu}
+        onMouseEnter={() => setHov(true)}
+        onMouseLeave={() => setHov(false)}
+        onDoubleClick={onQuickLaunch}
+        style={{ position: "relative", height: 70, borderRadius: 9, overflow: "hidden", cursor: "pointer", border: `1.5px solid ${isSelected ? "#FFFFFF" : hov ? "rgba(255,255,255,0.14)" : "var(--g05)"}`, boxShadow: isSelected ? "0 4px 14px var(--g10)" : "none", transition: "all .15s", transform: isSelected ? "translateY(-2px)" : "none" }}
+      >
+        {g.iconUrl || thumb ? (
+          <img src={g.iconUrl || thumb} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        ) : (
+          <div style={{ width: "100%", height: "100%", background: "var(--surface-3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <GamepadIcon size={18} color="var(--g20)" />
           </div>
+        )}
+        {/* Delete button — zIndex:10 so it stays above hover overlay */}
+        <Tooltip content="Delete game from history" position="top">
+          <div onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            style={{ position: "absolute", top: 4, left: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g10)", zIndex: 10, cursor: "pointer" }}>
+            <XIcon size={8} color="var(--red)" />
+          </div>
+        </Tooltip>
+        {hasPrivateServer && (
+          <Tooltip content="Private server configured" position="top">
+            <div style={{ position: "absolute", top: 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g12)", zIndex: 10, cursor: "pointer" }}>
+              <LockIcon size={8} color="#FFFFFF" />
+            </div>
+          </Tooltip>
+        )}
+        {/* Pin button — zIndex:10 so it stays above hover overlay (zIndex:3) */}
+        {onTogglePin && (
+          <Tooltip content={isPinned ? "Unpin game" : "Pin game"} position="top">
+            <div onClick={e => { e.stopPropagation(); onTogglePin(); }}
+              style={{ position: "absolute", top: hasPrivateServer ? 24 : 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: isPinned ? "rgba(251,191,36,0.9)" : "rgba(0,0,0,0.55)", display: hov || isPinned ? "flex" : "none", alignItems: "center", justifyContent: "center", border: `1px solid ${isPinned ? "rgba(251,191,36,0.6)" : "var(--g12)"}`, zIndex: 10, cursor: "pointer" }}>
+              <PinIcon size={8} color={isPinned ? "#000" : "#fff"} />
+            </div>
+          </Tooltip>
+        )}
+        {/* Quick-launch overlay on hover */}
+        {hov && (
+          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3, transition: "opacity .12s" }}>
+            <Tooltip content="Quick launch game" position="top">
+              <div
+                onClick={e => { e.stopPropagation(); onQuickLaunch(); }}
+                style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(255,255,255,0.92)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "transform .12s ease", boxShadow: "0 2px 8px rgba(0,0,0,0.5)" }}
+                onMouseEnter={e => e.currentTarget.style.transform = "scale(1.15)"}
+                onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+              >
+                <PlayIcon size={11} color="#07080a" />
+              </div>
+            </Tooltip>
+          </div>
+        )}
+        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,.9))", padding: "12px 5px 4px" }}>
+          <div style={{ fontSize: 8.5, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</div>
         </div>
-      )}
-      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,.9))", padding: "12px 5px 4px" }}>
-        <div style={{ fontSize: 8.5, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</div>
       </div>
-    </div>
+    </Tooltip>
   );
 }
 

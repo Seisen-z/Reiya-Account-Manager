@@ -7,14 +7,14 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   SettingsIcon,
   StarIcon, TrashIcon, XIcon, CheckIcon,
-  GamepadIcon, ZapIcon,
+  ZapIcon,
 } from "../components/Icons";
 import { QuickLaunchModal } from "../components/QuickLaunchModal";
 import { AccSingleCookieModal } from "../components/AccSingleCookieModal";
 import { AccBulkCookieModal } from "../components/AccBulkCookieModal";
 import { AccComboImportModal } from "../components/AccComboImportModal";
 import { ComboResultsModal } from "../components/ComboResultsModal";
-import { AccUtilitiesModal } from "../components/AccUtilitiesModal";
+import { AccountConfigSidebarModal } from "../components/AccountConfigSidebarModal";
 import { ExportAccountsModal } from "../components/ExportAccountsModal";
 import { ImportAccountsModal } from "../components/ImportAccountsModal";
 import { MoveToGroupModal } from "../components/MoveToGroupModal";
@@ -71,15 +71,36 @@ interface Session {
 type FilterTab = "all" | "favorites" | "valid";
 type SortBy = "last_launched" | "name_asc" | "name_desc" | "status" | "added" | "custom";
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+const accountsCache = {
+  accounts: [] as Account[],
+  loaded: false,
+};
+
+/* ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 export default function Accounts() {
   const { t } = useLanguage();
   const toast = useToast();
-  const [accounts,    setAccounts]    = useState<Account[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>(() => {
+    if (accountsCache.loaded && accountsCache.accounts.length > 0) {
+      return accountsCache.accounts;
+    }
+    try {
+      const stored = localStorage.getItem("reiya_accounts_cache");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          accountsCache.accounts = parsed;
+          accountsCache.loaded = true;
+          return parsed;
+        }
+      }
+    } catch {}
+    return [];
+  });
   const [filter,      setFilter]      = useState<FilterTab>("all");
   const [search,      setSearch]      = useState("");
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
-  const [loading,     setLoading]     = useState(true);
+  const [loading,     setLoading]     = useState<boolean>(() => accounts.length === 0);
   const [launching,   setLaunching]   = useState<number | null>(null);
   const [sortBy,      setSortBy]      = useState<SortBy>("last_launched");
   const [copiedId,    setCopiedId]    = useState<number | null>(null);
@@ -89,6 +110,9 @@ export default function Accounts() {
   // Quick place ID launch
   const [quickLaunchAccount, setQuickLaunchAccount] = useState<Account | null>(null);
   const [quickPlaceId,       setQuickPlaceId]       = useState("");
+
+  // Account Detail Modal state
+  const [detailAccount, setDetailAccount] = useState<Account | null>(null);
 
   // Inline notes editing
   const [editingNotesId,   setEditingNotesId]   = useState<number | null>(null);
@@ -166,25 +190,27 @@ export default function Accounts() {
   };
 
   const [selectedUtilAccount, setSelectedUtilAccount] = useState<Account | null>(null);
-  const [utilNewDisplayName, setUtilNewDisplayName] = useState("");
-  const [utilCurrentPassword, setUtilCurrentPassword] = useState("");
-  const [utilNewPassword, setUtilNewPassword] = useState("");
-  const [utilTargetUser, setUtilTargetUser] = useState("");
-  const [utilStatus, setUtilStatus] = useState("");
-  const [utilIsError, setUtilIsError] = useState(false);
-  const [utilLoading, setUtilLoading] = useState(false);
 
   const loadAccounts = useCallback(async () => {
     try {
       const data = await invoke<Account[]>("get_accounts");
       setAccounts(data);
+      accountsCache.accounts = data;
+      accountsCache.loaded = true;
+      try { localStorage.setItem("reiya_accounts_cache", JSON.stringify(data)); } catch {}
+
       // Auto re-validate Unknown cookies silently on startup
       const unknowns = data.filter(a => a.cookie_status === "Unknown" || !a.cookie_status);
       if (unknowns.length > 0) {
         unknowns.forEach(async (acc) => {
           try {
             const updated = await invoke<Account>("validate_cookie", { userId: acc.user_id });
-            setAccounts(prev => prev.map(a => a.user_id === acc.user_id ? updated : a));
+            setAccounts(prev => {
+              const next = prev.map(a => a.user_id === acc.user_id ? updated : a);
+              accountsCache.accounts = next;
+              try { localStorage.setItem("reiya_accounts_cache", JSON.stringify(next)); } catch {}
+              return next;
+            });
           } catch { /* silent */ }
         });
       }
@@ -292,6 +318,10 @@ export default function Accounts() {
       return matchSearch && matchFilter && matchGroup;
     })
     .sort((a, b) => {
+      // Favorite / Pinned accounts always sort to the top first
+      if (a.is_favorite !== b.is_favorite) {
+        return a.is_favorite ? -1 : 1;
+      }
       if (sortBy === "custom") {
         const ai = customOrder.indexOf(a.user_id);
         const bi = customOrder.indexOf(b.user_id);
@@ -614,58 +644,6 @@ export default function Accounts() {
     }
   };
 
-  const handleSetDisplayName = async () => {
-    if (!selectedUtilAccount || !utilNewDisplayName.trim()) return;
-    setUtilLoading(true); setUtilStatus("Updating display name..."); setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("set_display_name", { userId: selectedUtilAccount.user_id, newName: utilNewDisplayName.trim() });
-      setUtilStatus(msg);
-      setAccounts(prev => prev.map(a => a.user_id === selectedUtilAccount.user_id ? { ...a, display_name: utilNewDisplayName.trim() } : a));
-    } catch (e) { setUtilIsError(true); setUtilStatus(String(e)); }
-    finally { setUtilLoading(false); }
-  };
-
-  const handleChangePassword = async () => {
-    if (!selectedUtilAccount || !utilCurrentPassword || !utilNewPassword) return;
-    setUtilLoading(true); setUtilStatus("Changing password..."); setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("change_password", { userId: selectedUtilAccount.user_id, currentPw: utilCurrentPassword, newPw: utilNewPassword });
-      setUtilStatus(msg); setUtilCurrentPassword(""); setUtilNewPassword("");
-    } catch (e) { setUtilIsError(true); setUtilStatus(String(e)); }
-    finally { setUtilLoading(false); }
-  };
-
-  const handleSignOutAll = async () => {
-    if (!selectedUtilAccount) return;
-    if (!confirm("This will sign out all other sessions for this account. Continue?")) return;
-    setUtilLoading(true); setUtilStatus("Signing out all sessions..."); setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("sign_out_all_sessions", { userId: selectedUtilAccount.user_id });
-      setUtilStatus(msg);
-    } catch (e) { setUtilIsError(true); setUtilStatus(String(e)); }
-    finally { setUtilLoading(false); }
-  };
-
-  const handleSendFriendRequest = async () => {
-    if (!selectedUtilAccount || !utilTargetUser.trim()) return;
-    setUtilLoading(true); setUtilStatus(`Sending friend request to @${utilTargetUser}...`); setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("send_friend_request", { userId: selectedUtilAccount.user_id, targetUsername: utilTargetUser.trim() });
-      setUtilStatus(msg);
-    } catch (e) { setUtilIsError(true); setUtilStatus(String(e)); }
-    finally { setUtilLoading(false); }
-  };
-
-  const handleBlockUser = async () => {
-    if (!selectedUtilAccount || !utilTargetUser.trim()) return;
-    setUtilLoading(true); setUtilStatus(`Blocking @${utilTargetUser}...`); setUtilIsError(false);
-    try {
-      const msg = await invoke<string>("block_user", { userId: selectedUtilAccount.user_id, targetUsername: utilTargetUser.trim() });
-      setUtilStatus(msg);
-    } catch (e) { setUtilIsError(true); setUtilStatus(String(e)); }
-    finally { setUtilLoading(false); }
-  };
-
   // ── Bulk actions ──────────────────────────────────────────────────
   const toggleSelect = (userId: number) => {
     setSelected(prev => {
@@ -756,11 +734,13 @@ export default function Accounts() {
 
       {/* ── HEADER ── */}
       <div style={{
-        padding: "16px 24px",
-        borderBottom: "1px solid var(--g04)",
+        padding: "20px 24px 0",
+        borderBottom: "1px solid var(--glass-line)",
         background: "var(--g01)",
         backdropFilter: "blur(12px)",
         flexShrink: 0,
+        position: "relative",
+        zIndex: 50,
       }}>
         <AccountsHeaderBar
           t={t}
@@ -810,25 +790,25 @@ export default function Accounts() {
         onClearSelection={clearSelection}
       />
 
-      {/* ── ACCOUNT LIST ── */}
+      {/* ── ACCOUNT LIST GRID ── */}
       <div
         className="scroll"
         style={{
-          flex: 1, overflowY: "auto", padding: "16px 20px",
-          display: "grid", gridTemplateColumns: "1fr",
-          gap: 10, alignContent: "start",
+          flex: 1, overflowY: "auto", padding: "20px 24px",
+          display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
+          gap: 16, alignContent: "start",
           background: "radial-gradient(circle at top right, var(--g02) 0%, transparent 60%)",
         }}
       >
         {loading ? (
-          <div style={{ textAlign: "center", padding: "50px 20px", color: "var(--t3)", fontSize: 12 }}>
+          <div style={{ textAlign: "center", padding: "50px 20px", color: "var(--t3)", fontSize: 12, gridColumn: "1 / -1" }}>
             {t("loading_accounts")}
           </div>
         ) : visible.length === 0 ? (
           <div style={{
             textAlign: "center", padding: "60px 20px",
             color: "var(--t3)", fontSize: 12.5,
-            border: "1px dashed var(--g06)", borderRadius: 16,
+            border: "1px dashed var(--g06)", borderRadius: 16, gridColumn: "1 / -1",
           }}>
             {accounts.length === 0
               ? t("no_accounts_yet")
@@ -864,18 +844,30 @@ export default function Accounts() {
               onDragStart={(e) => handleDragStart(e, account.user_id)}
               onDragOver={handleDragOver}
               onDrop={(e) => handleDrop(e, account.user_id)}
-              onOpenUtilities={() => {
-                setSelectedUtilAccount(account);
-                setUtilNewDisplayName(account.display_name || "");
-                setUtilCurrentPassword(""); setUtilNewPassword("");
-                setUtilTargetUser(""); setUtilStatus(""); setUtilIsError(false);
-              }}
+              onOpenDetails={() => setDetailAccount(account)}
+              onOpenUtilities={() => setSelectedUtilAccount(account)}
             />
           ))
         )}
       </div>
 
-      {/* â"€â"€ MODALS â"€â"€ */}
+      {/* ── MODALS ── */}
+
+      <AccountDetailModal
+        account={detailAccount}
+        onClose={() => setDetailAccount(null)}
+        onLaunch={() => { if (detailAccount) handleLaunch(detailAccount.user_id); }}
+        onValidate={() => { if (detailAccount) handleValidate(detailAccount.user_id); }}
+        onRelogin={() => { if (detailAccount) handleRelogin(detailAccount.username); }}
+        onOpenUtilities={() => {
+          if (!detailAccount) return;
+          setSelectedUtilAccount(detailAccount);
+        }}
+        onCopyUsername={() => { if (detailAccount) handleCopyUsername(detailAccount.user_id, detailAccount.username); }}
+        onCopyUserId={() => { if (detailAccount) handleCopyUserId(detailAccount.user_id); }}
+        onTagClick={(tag) => setSearch(tag)}
+        onSaveNotes={(notes) => { if (detailAccount) handleSaveNotes(detailAccount.user_id, notes); }}
+      />
 
       <QuickLaunchModal
         account={quickLaunchAccount}
@@ -921,25 +913,19 @@ export default function Accounts() {
         onClose={() => setComboResults([])}
       />
 
-      <AccUtilitiesModal
+      <AccountConfigSidebarModal
         account={selectedUtilAccount}
-        utilNewDisplayName={utilNewDisplayName}
-        setUtilNewDisplayName={setUtilNewDisplayName}
-        utilCurrentPassword={utilCurrentPassword}
-        setUtilCurrentPassword={setUtilCurrentPassword}
-        utilNewPassword={utilNewPassword}
-        setUtilNewPassword={setUtilNewPassword}
-        utilTargetUser={utilTargetUser}
-        setUtilTargetUser={setUtilTargetUser}
-        utilStatus={utilStatus}
-        utilIsError={utilIsError}
-        utilLoading={utilLoading}
-        onClose={() => { if (!utilLoading) { setSelectedUtilAccount(null); setUtilStatus(""); } }}
-        onSetDisplayName={handleSetDisplayName}
-        onChangePassword={handleChangePassword}
-        onSendFriendRequest={handleSendFriendRequest}
-        onBlockUser={handleBlockUser}
-        onSignOutAll={handleSignOutAll}
+        onClose={() => setSelectedUtilAccount(null)}
+        onRefresh={loadAccounts}
+        onRemoveAccount={async (userId) => {
+          try {
+            await invoke("remove_account", { userId });
+            setAccounts(prev => prev.filter(a => a.user_id !== userId));
+            setSelectedUtilAccount(null);
+          } catch (e) {
+            toast.error(String(e));
+          }
+        }}
       />
 
       <ExportAccountsModal
@@ -976,40 +962,315 @@ export default function Accounts() {
   );
 }
 
-/* ── Account Card ── */
+/* ── Account Detail Modal ── */
+export function AccountDetailModal({
+  account, onClose, onLaunch, onValidate, onRelogin, onOpenUtilities,
+  onCopyUsername, onCopyUserId, onTagClick, onSaveNotes,
+}: {
+  account: Account | null;
+  onClose: () => void;
+  onLaunch: () => void;
+  onValidate: () => void;
+  onRelogin: () => void;
+  onOpenUtilities: () => void;
+  onCopyUsername: () => void;
+  onCopyUserId: () => void;
+  onTagClick: (tag: string) => void;
+  onSaveNotes: (notes: string) => void;
+}) {
+  const [editingNotes, setEditingNotes] = useState("");
+  const [isEditing, setIsEditing] = useState(false);
+
+  useEffect(() => {
+    if (account) {
+      setEditingNotes(account.notes || "");
+      setIsEditing(false);
+    }
+  }, [account]);
+
+  if (!account) return null;
+
+  const isValid = account.cookie_status === "Valid";
+  const statusColor = isValid ? "var(--green)" : "var(--red)";
+
+  const history: Array<{ placeId: string; name: string }> = (() => {
+    try { return JSON.parse(localStorage.getItem(`reiya_acc_games_${account.user_id}`) ?? "[]"); }
+    catch { return []; }
+  })();
+
+  return (
+    <AccountModal title="Account Information & Games" onClose={onClose} wide>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* Header Profile Hero */}
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 16, padding: "16px 20px",
+            background: "var(--g02)", borderRadius: 16, border: "1px solid var(--g06)",
+          }}
+        >
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={64} />
+            <span
+              style={{
+                position: "absolute", bottom: 0, right: 0,
+                width: 12, height: 12, borderRadius: "50%",
+                background: statusColor, border: "2px solid #07080a",
+              }}
+            />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 16, fontWeight: 900, color: "var(--t1)" }}>{account.display_name || account.username}</span>
+              <span
+                style={{
+                  fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 6,
+                  background: statusColor + "18", color: statusColor, border: `1px solid ${statusColor}35`,
+                }}
+              >
+                {account.cookie_status.toUpperCase()}
+              </span>
+              {account.group && (
+                <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 6, background: "var(--g05)", color: "var(--t2)" }}>
+                  {account.group}
+                </span>
+              )}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4, fontSize: 11, color: "var(--t3)" }}>
+              <span onClick={onCopyUsername} style={{ cursor: "pointer" }} title="Click to copy">@{account.username}</span>
+              <span>·</span>
+              <span onClick={onCopyUserId} style={{ cursor: "pointer" }} title="Click to copy">User ID: {account.user_id}</span>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={onLaunch}
+              disabled={!isValid}
+              className="btn"
+              style={{ background: "var(--accent)", color: "#000", fontWeight: 800, fontSize: 11, padding: "8px 14px", borderRadius: 8 }}
+            >
+              🚀 Launch
+            </button>
+            <button
+              onClick={onOpenUtilities}
+              className="btn btn-ghost"
+              style={{ fontSize: 11, padding: "8px 12px", borderRadius: 8 }}
+            >
+              ⚙️ Utilities
+            </button>
+          </div>
+        </div>
+
+        {/* Info Grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {/* Account Details Box */}
+          <div style={{ padding: 14, background: "var(--g03)", borderRadius: 12, border: "1px solid var(--g05)", display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 10, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em" }}>ACCOUNT DETAILS</span>
+            <div style={{ fontSize: 11, display: "flex", justifyContent: "space-between", color: "var(--t2)" }}>
+              <span style={{ color: "var(--t3)" }}>Last Launched:</span>
+              <span>{account.last_launched_at ? new Date(account.last_launched_at).toLocaleString() : "Never"}</span>
+            </div>
+            <div style={{ fontSize: 11, display: "flex", justifyContent: "space-between", color: "var(--t2)" }}>
+              <span style={{ color: "var(--t3)" }}>Added Date:</span>
+              <span>{new Date(account.added_at).toLocaleDateString()}</span>
+            </div>
+            <div style={{ fontSize: 11, display: "flex", justifyContent: "space-between", color: "var(--t2)" }}>
+              <span style={{ color: "var(--t3)" }}>Cookie Status:</span>
+              <span style={{ color: statusColor, fontWeight: 700 }}>{account.cookie_status}</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              {!isValid && (
+                <button onClick={onRelogin} className="btn" style={{ flex: 1, background: "rgba(248,113,113,0.15)", color: "var(--red)", fontSize: 10, padding: "4px 8px" }}>
+                  Relogin Account
+                </button>
+              )}
+              <button onClick={onValidate} className="btn btn-ghost" style={{ flex: 1, fontSize: 10, padding: "4px 8px" }}>
+                Re-validate Cookie
+              </button>
+            </div>
+          </div>
+
+          {/* Games Info Box */}
+          <div style={{ padding: 14, background: "var(--g03)", borderRadius: 12, border: "1px solid var(--g05)", display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: 10, fontWeight: 900, color: "#A78BFA", letterSpacing: "0.08em" }}>GAMES & DEFAULTS</span>
+            <div style={{ fontSize: 11, display: "flex", justifyContent: "space-between", color: "var(--t2)" }}>
+              <span style={{ color: "var(--t3)" }}>Default Game:</span>
+              <span style={{ fontWeight: 700, color: "#DDD6FE" }}>{account.default_game_name || (account.default_place_id ? `Place ${account.default_place_id}` : "None")}</span>
+            </div>
+            <div style={{ fontSize: 11, display: "flex", justifyContent: "space-between", color: "var(--t2)" }}>
+              <span style={{ color: "var(--t3)" }}>Last Played Game:</span>
+              <span>{account.last_played_game || "None"}</span>
+            </div>
+            {history.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                <span style={{ fontSize: 9.5, color: "var(--t3)", fontWeight: 700 }}>Recent Games History ({history.length}):</span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                  {history.map((g, i) => (
+                    <span key={i} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.25)" }}>
+                      🎮 {g.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Notes & Tags Section */}
+        <div style={{ padding: 14, background: "var(--g03)", borderRadius: 12, border: "1px solid var(--g05)", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 10, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em" }}>NOTES & TAGS</span>
+            {!isEditing ? (
+              <button onClick={() => setIsEditing(true)} style={{ background: "none", border: "none", color: "#60A5FA", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                Edit Notes
+              </button>
+            ) : (
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => { onSaveNotes(editingNotes); setIsEditing(false); }} style={{ background: "none", border: "none", color: "var(--green)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                  Save
+                </button>
+                <button onClick={() => setIsEditing(false)} style={{ background: "none", border: "none", color: "var(--t3)", fontSize: 10, cursor: "pointer" }}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+
+          {account.tags && account.tags.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 }}>
+              {account.tags.map(t => (
+                <span key={t} onClick={() => { onTagClick(t); onClose(); }} style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: "rgba(96,165,250,0.1)", color: "#60A5FA", border: "1px solid rgba(96,165,250,0.2)", cursor: "pointer" }}>
+                  #{t}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {isEditing ? (
+            <textarea
+              value={editingNotes}
+              onChange={e => setEditingNotes(e.target.value)}
+              rows={3}
+              placeholder="Add notes for this account..."
+              style={{ width: "100%", fontSize: 11, padding: 8, borderRadius: 6, background: "var(--g02)", border: "1px solid var(--g08)", color: "var(--t1)", outline: "none", resize: "vertical" }}
+            />
+          ) : (
+            <div style={{ fontSize: 11, color: account.notes ? "var(--t2)" : "var(--t3)", fontStyle: account.notes ? "normal" : "italic", lineHeight: 1.4 }}>
+              {account.notes || "No notes added for this account yet."}
+            </div>
+          )}
+        </div>
+      </div>
+    </AccountModal>
+  );
+}
+
+/* ── Game Thumbnail Badge for Favorite Games ── */
+export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: string; size?: number; onLaunch?: (placeId: string) => void }) {
+  const [thumbUrl, setThumbUrl] = useState<string>("");
+
+  useEffect(() => {
+    let active = true;
+    if (!placeId) return;
+
+    // 1. First try Tauri backend command fetch_place_thumbnails
+    invoke<Record<string, string>>("fetch_place_thumbnails", { placeIds: [placeId] })
+      .then(map => {
+        if (active && map && map[placeId]) {
+          setThumbUrl(map[placeId]);
+          return;
+        }
+        // 2. Fetch directly from Roblox Places API endpoint
+        fetch(`https://thumbnails.roblox.com/v1/places/gameicons?placeIds=${placeId}&size=150x150&format=Png&isCircular=false`)
+          .then(res => res.json())
+          .then(json => {
+            const img = json?.data?.[0]?.imageUrl;
+            if (active && img) setThumbUrl(img);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {
+        fetch(`https://thumbnails.roblox.com/v1/places/gameicons?placeIds=${placeId}&size=150x150&format=Png&isCircular=false`)
+          .then(res => res.json())
+          .then(json => {
+            const img = json?.data?.[0]?.imageUrl;
+            if (active && img) setThumbUrl(img);
+          })
+          .catch(() => {});
+      });
+
+    return () => { active = false; };
+  }, [placeId]);
+
+  return (
+    <div
+      onClick={e => {
+        if (onLaunch) { e.stopPropagation(); onLaunch(placeId); }
+      }}
+      title={`Favorite Game: Place ${placeId} (Click to launch)`}
+      style={{
+        width: size, height: size, borderRadius: 7, overflow: "hidden",
+        border: "1.5px solid var(--g07)", background: "var(--g04)",
+        cursor: "pointer", flexShrink: 0, transition: "all .15s ease",
+        boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+      onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.15)"; e.currentTarget.style.borderColor = "#A78BFA"; }}
+      onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.borderColor = "var(--g07)"; }}
+    >
+      {thumbUrl ? (
+        <img
+          src={thumbUrl}
+          alt={`Place ${placeId}`}
+          onError={e => {
+            const target = e.currentTarget;
+            if (!target.dataset.triedFallback) {
+              target.dataset.triedFallback = "true";
+              target.src = `https://www.roblox.com/asset-thumbnail/image?assetId=${placeId}&width=150&height=150&format=png`;
+            }
+          }}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      ) : (
+        <span style={{ fontSize: size * 0.4 }}>🎮</span>
+      )}
+    </div>
+  );
+}
+
+/* ── Account Card (Team 4 Inspired Layout) ── */
 function AccountCard({
   account, isLaunching, isSelected, isCopied, isCopiedUid,
-  isEditingNotes, editingNotesText, isDraggable,
-  onToggleSelect, onToggleFav, onRemove, onLaunch, onValidate, onRelogin, onOpenUtilities,
-  onCopyUsername, onCopyUserId, onReplayGame, onQuickLaunch, onTagClick,
-  onStartEditNotes, onNotesChange, onSaveNotes, onCancelEditNotes,
-  onDragStart, onDragOver, onDrop,
+  isDraggable,
+  onToggleSelect, onToggleFav, onRemove, onLaunch, onOpenUtilities,
+  onCopyUsername, onCopyUserId, onTagClick,
+  onDragStart, onDragOver, onDrop, onOpenDetails,
 }: {
   account: Account; isLaunching: boolean; isSelected: boolean;
   isCopied: boolean; isCopiedUid: boolean;
-  isEditingNotes: boolean; editingNotesText: string; isDraggable: boolean;
+  isEditingNotes?: boolean; editingNotesText?: string; isDraggable: boolean;
   onToggleSelect: () => void;
   onToggleFav: () => void; onRemove: () => void;
-  onLaunch: () => void; onValidate: () => void; onRelogin: () => void; onOpenUtilities: () => void;
+  onLaunch: () => void; onValidate?: () => void; onRelogin?: () => void; onOpenUtilities: () => void;
   onCopyUsername: () => void; onCopyUserId: () => void;
-  onReplayGame?: () => void; onQuickLaunch: () => void;
+  onReplayGame?: () => void; onQuickLaunch?: () => void;
   onTagClick: (tag: string) => void;
-  onStartEditNotes: () => void; onNotesChange: (t: string) => void;
-  onSaveNotes: () => void; onCancelEditNotes: () => void;
+  onStartEditNotes?: () => void; onNotesChange?: (t: string) => void;
+  onSaveNotes?: () => void; onCancelEditNotes?: () => void;
   onDragStart: (e: DragEvent<HTMLDivElement>) => void;
   onDragOver: (e: DragEvent<HTMLDivElement>) => void;
   onDrop: (e: DragEvent<HTMLDivElement>) => void;
+  onOpenDetails: () => void;
 }) {
-  const { t } = useLanguage();
   const [hovered, setHovered] = useState(false);
   const isValid = account.cookie_status === "Valid";
   const isUnknown = account.cookie_status === "Unknown";
   const statusColor = isValid ? "var(--green)" : isUnknown ? "var(--amber)" : "var(--red)";
   const statusLabel = isValid ? "Valid" : isUnknown ? "Unknown" : "Expired";
 
-  const lastLaunchedDisplay = account.last_launched_at
-    ? new Date(account.last_launched_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
-    : t("never");
+  const savedGameName = account.default_game_name || (account.default_place_id ? `Place ${account.default_place_id}` : account.last_played_game);
+
+  const favGamesStr = localStorage.getItem("reiya_fav_games_" + account.user_id) || "";
+  const favGameIds = favGamesStr.split(",").map(s => s.trim()).filter(Boolean);
 
   return (
     <div
@@ -1020,304 +1281,257 @@ function AccountCard({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: "flex", alignItems: "center", gap: 14,
-        padding: "14px 18px",
-        background: isSelected ? "rgba(167,139,250,0.06)" : "var(--g01)",
-        border: `1px solid ${isSelected ? "rgba(167,139,250,0.25)" : hovered ? "var(--g07)" : "var(--g04)"}`,
-        borderRadius: 16, transition: "all .15s", cursor: isDraggable ? "grab" : "default",
+        position: "relative",
+        display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center",
+        padding: "20px 16px 16px",
+        background: isSelected ? "rgba(167,139,250,0.08)" : "var(--g02)",
+        border: `1px solid ${isSelected ? "rgba(167,139,250,0.35)" : hovered ? "var(--g08)" : "var(--g04)"}`,
+        borderRadius: 22, transition: "all .25s cubic-bezier(0.16, 1, 0.3, 1)",
+        cursor: isDraggable ? "grab" : "default",
+        transform: hovered ? "translateY(-3px)" : "none",
+        boxShadow: hovered ? "0 12px 28px rgba(0,0,0,0.35)" : "none",
       }}
     >
-      {/* Drag handle hint */}
-      {isDraggable && (
-        <div style={{ color: "var(--t3)", fontSize: 14, lineHeight: 1, flexShrink: 0, opacity: hovered ? 0.7 : 0.2, transition: "opacity .12s", userSelect: "none" }}>⠿</div>
-      )}
-      {/* Checkbox */}
-      <div
-        onClick={onToggleSelect}
-        style={{
-          width: 18, height: 18, borderRadius: 5, flexShrink: 0,
-          border: `2px solid ${isSelected ? "#A78BFA" : "var(--g12)"}`,
-          background: isSelected ? "#A78BFA" : "transparent",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", transition: "all .12s",
-          opacity: hovered || isSelected ? 1 : 0.5,
-        }}
-      >
-        {isSelected && <CheckIcon size={11} color="#fff" />}
+      {/* Top Header Actions overlay */}
+      <div style={{ position: "absolute", top: 12, left: 12, right: 12, display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 2 }}>
+        {/* Checkbox */}
+        <div
+          onClick={onToggleSelect}
+          style={{
+            width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+            border: `2px solid ${isSelected ? "#A78BFA" : "var(--g12)"}`,
+            background: isSelected ? "#A78BFA" : "transparent",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", transition: "all .12s",
+            opacity: hovered || isSelected ? 1 : 0.4,
+          }}
+        >
+          {isSelected && <CheckIcon size={11} color="#fff" />}
+        </div>
+
+        {/* Top-right Icon buttons */}
+        <div style={{ display: "flex", gap: 3, opacity: hovered || account.is_favorite ? 1 : 0.4, transition: "opacity .12s" }}>
+          <button
+            onClick={onToggleFav}
+            title="Favorite"
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 3, color: account.is_favorite ? "var(--amber)" : "var(--t3)" }}
+          >
+            <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
+          </button>
+          <button
+            onClick={onRemove}
+            title="Remove"
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 3, color: "var(--red)" }}
+          >
+            <TrashIcon size={13} color="var(--red)" />
+          </button>
+        </div>
       </div>
 
-      {/* Avatar */}
-      <div style={{ position: "relative", flexShrink: 0 }}>
-        <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={48} />
-        <span
-          title={`Cookie: ${statusLabel}`}
+      {/* Right-side Vertical Favorite Games Stack (Max 4 games) */}
+      {favGameIds.length > 0 && (
+        <div
           style={{
-            position: "absolute", bottom: 1, right: 1,
-            width: 10, height: 10, borderRadius: "50%",
+            position: "absolute",
+            top: 48,
+            right: 12,
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            alignItems: "center",
+            zIndex: 3,
+          }}
+        >
+          {favGameIds.slice(0, 4).map(pid => (
+            <GameThumbnailBadge
+              key={pid}
+              placeId={pid}
+              size={26}
+              onLaunch={(pId) => {
+                invoke("launch_account", {
+                  userId: account.user_id,
+                  placeId: pId,
+                  jobId: null, accessCode: null, gameName: null,
+                  useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
+                });
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Team 4 Style Circular Avatar with Ring Effect */}
+      <div
+        onClick={onOpenDetails}
+        title="Click to view account details & games"
+        style={{
+          position: "relative",
+          width: 96, height: 96,
+          margin: "10px auto 14px",
+          cursor: "pointer",
+        }}
+      >
+        <div
+          style={{
+            width: "100%", height: "100%", borderRadius: "50%",
+            padding: 3,
+            background: isSelected
+              ? "linear-gradient(135deg, #A78BFA, #60A5FA)"
+              : hovered
+                ? "linear-gradient(135deg, rgba(255,255,255,0.25), var(--g08))"
+                : "var(--g06)",
+            transition: "all 0.3s ease",
+            transform: hovered ? "scale(1.05)" : "scale(1)",
+            overflow: "hidden",
+          }}
+        >
+          <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={90} />
+        </div>
+        {/* Cookie Health Status Dot */}
+        <span
+          title={`Status: ${statusLabel}`}
+          style={{
+            position: "absolute", bottom: 2, right: 2,
+            width: 14, height: 14, borderRadius: "50%",
             background: statusColor,
-            border: "2px solid #07080a",
-            boxShadow: isValid ? "0 0 5px var(--green)" : "none",
-            cursor: "default",
+            border: "2.5px solid #0B0D11",
+            boxShadow: isValid ? "0 0 8px var(--green)" : "none",
           }}
         />
       </div>
 
-      {/* Info */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 2 }}>
-          <span style={{ fontSize: 13, fontWeight: 800, color: "var(--t1)" }}>{account.display_name}</span>
-          {account.is_favorite && <StarIcon size={11} fill="var(--amber)" color="var(--amber)" />}
-        </div>
-        {/* Username + User ID row */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: account.tags?.length || account.notes ? 4 : 3 }}>
-          <span
-            onClick={onCopyUsername}
-            title={isCopied ? "Copied!" : "Click to copy @username"}
-            style={{
-              fontSize: 11, color: isCopied ? "var(--green)" : "var(--t2)",
-              cursor: "pointer", transition: "color .15s", userSelect: "none",
-            }}
-          >
-            {isCopied ? "✓ Copied!" : `@${account.username}`}
+      {/* Account Info Center */}
+      <div style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, marginBottom: 12 }}>
+        <span
+          onClick={onOpenDetails}
+          title="View account info & games"
+          style={{ fontSize: 14, fontWeight: 800, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "90%", cursor: "pointer" }}
+        >
+          {account.display_name || account.username}
+        </span>
+
+        {/* Username & User ID */}
+        <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--t3)", marginBottom: 4 }}>
+          <span onClick={onCopyUsername} title={isCopied ? "Copied!" : "Copy @username"} style={{ cursor: "pointer", color: isCopied ? "var(--green)" : "var(--t2)" }}>
+            {isCopied ? "✓ Copied" : `@${account.username}`}
           </span>
-          <span style={{ color: "var(--t3)", fontSize: 11 }}>·</span>
-          <span
-            onClick={onCopyUserId}
-            title={isCopiedUid ? "Copied!" : "Click to copy User ID"}
-            style={{
-              fontSize: 11, color: isCopiedUid ? "var(--green)" : "var(--t3)",
-              cursor: "pointer", transition: "color .15s", userSelect: "none",
-            }}
-          >
-            {isCopiedUid ? "✓ ID Copied!" : `ID: ${account.user_id}`}
+          <span>·</span>
+          <span onClick={onCopyUserId} title={isCopiedUid ? "Copied!" : "Copy User ID"} style={{ cursor: "pointer", color: isCopiedUid ? "var(--green)" : "var(--t3)" }}>
+            {isCopiedUid ? "✓ ID Copied" : `ID: ${account.user_id}`}
           </span>
         </div>
-        {/* Tags — clickable to filter */}
+
+        {/* Status & Group Tags */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: "center", marginBottom: 4 }}>
+          <span
+            style={{
+              fontSize: 8.5, fontWeight: 900, padding: "2px 7px", borderRadius: 5,
+              background: statusColor + "15", color: statusColor, border: `1px solid ${statusColor}30`,
+              letterSpacing: "0.04em",
+            }}
+          >
+            {statusLabel.toUpperCase()}
+          </span>
+          {account.group && (
+            <span style={{ fontSize: 8.5, fontWeight: 800, padding: "2px 7px", borderRadius: 5, background: "var(--g05)", color: "var(--t2)", border: "1px solid var(--g07)" }}>
+              {account.group}
+            </span>
+          )}
+        </div>
+
+        {/* Saved Game Tag */}
+        {savedGameName && (
+          <div
+            onClick={onOpenDetails}
+            title={`Saved/Last game: ${savedGameName} (Click for details)`}
+            style={{
+              fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 5,
+              background: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.25)",
+              cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "90%",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}
+          >
+            🎮 {savedGameName}
+          </div>
+        )}
+
+        {/* Tags */}
         {account.tags && account.tags.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 3 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, justifyContent: "center", marginTop: 2 }}>
             {account.tags.map(tag => (
               <span
                 key={tag}
                 onClick={() => onTagClick(tag)}
-                title={`Filter by tag: ${tag}`}
                 style={{
-                  fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 4,
-                  background: "rgba(96,165,250,0.1)", color: "#60A5FA",
-                  border: "1px solid rgba(96,165,250,0.2)",
-                  cursor: "pointer", transition: "background .12s",
+                  fontSize: 8.5, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
+                  background: "rgba(96,165,250,0.1)", color: "#60A5FA", border: "1px solid rgba(96,165,250,0.2)",
+                  cursor: "pointer",
                 }}
-                onMouseEnter={e => { e.currentTarget.style.background = "rgba(96,165,250,0.22)"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "rgba(96,165,250,0.1)"; }}
-              >{tag}</span>
+              >
+                #{tag}
+              </span>
             ))}
           </div>
         )}
-        {/* Notes — inline editable on double-click */}
-        {isEditingNotes ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <input
-              autoFocus
-              value={editingNotesText}
-              onChange={e => onNotesChange(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") onSaveNotes(); if (e.key === "Escape") onCancelEditNotes(); }}
-              placeholder="Add a note..."
-              style={{
-                flex: 1, fontSize: 10, padding: "2px 7px", borderRadius: 5,
-                background: "var(--g03)", border: "1px solid var(--g10)",
-                color: "var(--t1)", outline: "none", minWidth: 0,
-              }}
-            />
-            <span onClick={onSaveNotes} style={{ fontSize: 9, color: "var(--green)", cursor: "pointer", fontWeight: 700 }}>✓</span>
-            <span onClick={onCancelEditNotes} style={{ fontSize: 9, color: "var(--t3)", cursor: "pointer" }}>✕</span>
-          </div>
-        ) : (
+
+        {/* Notes preview */}
+        {account.notes && (
           <div
-            onDoubleClick={onStartEditNotes}
-            title="Double-click to edit notes"
-            style={{ fontSize: 10, color: "var(--t3)", fontStyle: "italic", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "text", minHeight: 14 }}
-          >
-            {account.notes || (account.last_played_game ? (
-              <span style={{ display: "flex", alignItems: "center", gap: 4, fontStyle: "normal" }}>
-                <GamepadIcon size={10} color="var(--t3)" />{account.last_played_game}
-              </span>
-            ) : <span style={{ opacity: 0.4 }}>Double-click to add notes…</span>)}
-          </div>
-        )}
-      </div>
-
-      {/* Cookie status */}
-      <div style={{ textAlign: "right", flexShrink: 0, minWidth: 110 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 5, marginBottom: 4 }}>
-          <span style={{
-            fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 5,
-            background: statusColor + "14",
-            color: statusColor,
-            border: `1px solid ${statusColor}30`,
-            letterSpacing: "0.05em",
-          }}>
-            {statusLabel.toUpperCase()}
-          </span>
-        </div>
-        <div style={{ fontSize: 9.5, color: "var(--t3)" }}>{t("last_launched")}: {lastLaunchedDisplay}</div>
-        {account.cookie_updated_at && (
-          <div style={{ fontSize: 9.5, color: "var(--t3)" }}>
-            Cookie updated: {new Date(account.cookie_updated_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-          </div>
-        )}
-        <div style={{ fontSize: 9.5, color: "var(--t3)" }}>
-          Added: {new Date(account.added_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-        </div>
-        <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
-          {!isValid && (
-            <button
-              onClick={onRelogin}
-              style={{
-                marginTop: 5, fontSize: 9, padding: "2px 9px", borderRadius: 5,
-                border: "1px solid var(--red)", background: "transparent",
-                color: "var(--red)", cursor: "pointer", fontWeight: 600,
-                opacity: hovered ? 1 : 0.5, transition: "opacity .12s",
-              }}
-              onFocus={() => setHovered(true)}
-              onBlur={() => setHovered(false)}
-            >
-              {t("relogin_btn")}
-            </button>
-          )}
-          <button
-            onClick={onValidate}
+            onClick={onOpenDetails}
+            title={account.notes}
             style={{
-              marginTop: 5, fontSize: 9, padding: "2px 9px", borderRadius: 5,
-              border: "1px solid var(--g06)", background: "transparent",
-              color: "var(--t3)", cursor: "pointer", fontWeight: 600,
-              opacity: hovered ? 1 : 0.5, transition: "opacity .12s",
+              fontSize: 9.5, color: "var(--t3)", fontStyle: "italic", marginTop: 4,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "90%",
+              cursor: "pointer",
             }}
-            onFocus={() => setHovered(true)}
-            onBlur={() => setHovered(false)}
           >
-            {t("re_validate_btn")}
-          </button>
-        </div>
+            "{account.notes}"
+          </div>
+        )}
       </div>
 
-      {/* Icon actions */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
-        <button
-          onClick={onQuickLaunch}
-          title="Quick Launch (custom Place ID)"
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: "var(--t3)", padding: 5, borderRadius: 7,
-            opacity: hovered ? 1 : 0.5, transition: "all .12s",
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-          onMouseEnter={e => { e.currentTarget.style.color = "#60A5FA"; e.currentTarget.style.background = "var(--g08)"; }}
-          onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.background = "none"; }}
-          onFocus={() => setHovered(true)}
-          onBlur={() => setHovered(false)}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
-          </svg>
-        </button>
-        <button
-          onClick={onOpenUtilities}
-          title="Account Utilities"
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: "var(--t3)", padding: 5, borderRadius: 7,
-            opacity: hovered ? 1 : 0.5, transition: "all .12s",
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-          onMouseEnter={e => { e.currentTarget.style.color = "var(--amber)"; e.currentTarget.style.background = "var(--g08)"; }}
-          onMouseLeave={e => { e.currentTarget.style.color = "var(--t3)"; e.currentTarget.style.background = "none"; }}
-          onFocus={() => setHovered(true)}
-          onBlur={() => setHovered(false)}
-        >
-          <SettingsIcon size={14} />
-        </button>
-        <button
-          onClick={onToggleFav}
-          title="Toggle favorite"
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: account.is_favorite ? "var(--amber)" : "var(--t3)",
-            transition: "all .12s", padding: 5, borderRadius: 7,
-            opacity: hovered || account.is_favorite ? 1 : 0.5,
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = "var(--g08)"; }}
-          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
-          onFocus={() => setHovered(true)}
-          onBlur={() => setHovered(false)}
-        >
-          <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
-        </button>
-        <button
-          onClick={onRemove}
-          title="Remove account"
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: "var(--red)", padding: 5, borderRadius: 7,
-            opacity: hovered ? 0.7 : 0.5, transition: "all .12s",
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-          onMouseEnter={e => { e.currentTarget.style.opacity = "1"; e.currentTarget.style.background = "rgba(248,113,113,0.08)"; }}
-          onMouseLeave={e => { e.currentTarget.style.opacity = hovered ? "0.7" : "0.5"; e.currentTarget.style.background = "none"; }}
-          onFocus={e => { setHovered(true); e.currentTarget.style.opacity = "1"; }}
-          onBlur={e => { setHovered(false); e.currentTarget.style.opacity = "0.5"; }}
-        >
-          <TrashIcon size={13} color="var(--red)" />
-        </button>
-      </div>
-
-      {/* Launch buttons */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
+      {/* Card Action Footer */}
+      <div style={{ width: "100%", display: "flex", gap: 6, marginTop: "auto", paddingTop: 8, borderTop: "1px solid var(--g04)" }}>
         <button
           onClick={onLaunch}
           disabled={isLaunching || !isValid}
           style={{
-            display: "flex", alignItems: "center", gap: 7,
-            padding: "9px 18px", borderRadius: 10, border: "none",
-            background: isLaunching
-              ? "var(--g04)"
-              : isValid
-                ? "var(--accent)"
-                : "var(--g04)",
-            color: isLaunching ? "var(--t3)" : isValid ? "var(--accent-text)" : "var(--t3)",
-            fontSize: 12, fontWeight: 800,
+            flex: 2, height: 32, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+            borderRadius: 9, border: "none",
+            background: isLaunching ? "var(--g04)" : isValid ? "var(--accent)" : "var(--g04)",
+            color: isLaunching ? "var(--t3)" : isValid ? "#000" : "var(--t3)",
+            fontSize: 11, fontWeight: 800,
             cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
-            boxShadow: isValid && !isLaunching ? "0 4px 14px var(--g20)" : "none",
             transition: "all .12s",
-            filter: hovered && isValid && !isLaunching ? "brightness(1.08)" : "none",
           }}
         >
-          <ZapIcon size={12} color={isValid && !isLaunching ? "var(--accent-text)" : "var(--t3)"} />
-          {isLaunching ? t("launching_suffix") : t("quick_launch_btn")}
+          <ZapIcon size={11} color={isValid && !isLaunching ? "#000" : "var(--t3)"} />
+          {isLaunching ? "..." : "Launch"}
         </button>
-        {onReplayGame && account.default_place_id && (
-          <button
-            onClick={onReplayGame}
-            disabled={isLaunching || !isValid}
-            title="Replay last game"
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-              padding: "5px 12px", borderRadius: 8, border: "1px solid var(--g06)",
-              background: "transparent",
-              color: isValid ? "var(--t2)" : "var(--t3)",
-              fontSize: 10, fontWeight: 700,
-              cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
-              transition: "all .12s",
-            }}
-            onMouseEnter={e => { if (isValid && !isLaunching) { e.currentTarget.style.background = "var(--g04)"; e.currentTarget.style.borderColor = "var(--g10)"; }}}
-            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "var(--g06)"; }}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-              <path d="M3 3v5h5" />
-            </svg>
-            Replay
-          </button>
-        )}
+
+        <button
+          onClick={onOpenDetails}
+          title="Account Details & Games"
+          style={{
+            flex: 1, height: 32, display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+            borderRadius: 9, border: "1px solid var(--g06)", background: "var(--g03)",
+            color: "var(--t2)", fontSize: 10.5, fontWeight: 700, cursor: "pointer",
+          }}
+        >
+          👁️ Info
+        </button>
+
+        <button
+          onClick={onOpenUtilities}
+          title="Utilities"
+          style={{
+            width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
+            borderRadius: 9, border: "1px solid var(--g06)", background: "var(--g03)",
+            color: "var(--t3)", cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          <SettingsIcon size={13} />
+        </button>
       </div>
     </div>
   );

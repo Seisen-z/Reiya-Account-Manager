@@ -1,10 +1,13 @@
-﻿import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { CATALOG } from "../data/catalog";
+import { CATALOG, SEISEN_LOADER_SCRIPT } from "../data/catalog";
 import { useLanguage } from "../context/LanguageContext";
+import { useToast } from "../components/Toast";
 import {
-  StarIcon, CheckIcon, SearchIcon, CopyIcon, TerminalIcon, ActivityIcon,
+  StarIcon, CheckIcon, SearchIcon, CopyIcon, TerminalIcon, ActivityIcon, ZapIcon, XIcon,
 } from "../components/Icons";
 
 /* ── Types ── */
@@ -14,7 +17,6 @@ interface Game {
   category: string;
   description: string;
   status: "Supported" | "Discontinued";
-  scriptUrl: string;
   isFavorite: boolean;
 }
 
@@ -35,17 +37,20 @@ type StatusFilter = "All" | "Supported" | "Discontinued";
 /* ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 export default function Hub() {
   const { t } = useLanguage();
+  const toast = useToast();
+  const navigate = useNavigate();
   const [games, setGames] = useState<Game[]>(() =>
     CATALOG.map(g => ({ ...g, isFavorite: false as boolean }))
   );
   const [thumbnails,    setThumbnails]    = useState<Record<string, string>>({});
   const [thumbsLoading, setThumbsLoading] = useState(true);
 
-  const [search,       setSearch]       = useState("");
-  const [category,     setCategory]     = useState("All");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
-  const [favOnly,      setFavOnly]      = useState(false);
-  const [execCopied,   setExecCopied]   = useState(false);
+  const [search,          setSearch]          = useState("");
+  const [category,        setCategory]        = useState("All");
+  const [statusFilter,    setStatusFilter]    = useState<StatusFilter>("All");
+  const [favOnly,         setFavOnly]         = useState(false);
+  const [execCopied,      setExecCopied]      = useState(false);
+  const [selectedPlaceId, setSelectedPlaceId] = useState<string>(() => localStorage.getItem("reiya_last_place_id") || "");
 
   useEffect(() => {
     const placeIds = CATALOG.map(g => g.placeId);
@@ -285,7 +290,14 @@ export default function Hub() {
             game={game}
             thumbnail={thumbnails[game.placeId]}
             thumbLoading={thumbsLoading}
+            isSelected={selectedPlaceId === game.placeId}
             onToggleFav={() => toggleFav(game.placeId)}
+            onSelectForLaunch={() => {
+              localStorage.setItem("reiya_last_place_id", game.placeId);
+              setSelectedPlaceId(game.placeId);
+              toast.success(`Selected "${game.name}" for Home launch!`);
+            }}
+            onGoHome={() => navigate("/")}
           />
         ))}
       </div>
@@ -293,131 +305,278 @@ export default function Hub() {
   );
 }
 
-/* â”€â”€ Game card â”€â”€ */
-function GameCard({ game, thumbnail, thumbLoading, onToggleFav }: {
+/* ── Expandable Game Card ── */
+function GameCard({ game, thumbnail, thumbLoading, isSelected, onToggleFav, onSelectForLaunch, onGoHome }: {
   game: Game;
   thumbnail?: string;
   thumbLoading: boolean;
+  isSelected?: boolean;
   onToggleFav: () => void;
+  onSelectForLaunch: () => void;
+  onGoHome: () => void;
 }) {
   const { t } = useLanguage();
-  const [hovered, setHovered] = useState(false);
+  const toast = useToast();
+  const [isOpen, setIsOpen] = useState(false);
+  const [copiedScript, setCopiedScript] = useState(false);
   const catColor = CAT_COLOR[game.category] ?? "#888";
   const isActive = game.status === "Supported";
+  const layoutId = `expandable-game-card-${game.placeId}`;
+
+  const copyScript = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await writeText(SEISEN_LOADER_SCRIPT);
+      setCopiedScript(true);
+      toast.success("Copied Seisen Hub script!");
+      setTimeout(() => setCopiedScript(false), 2000);
+    } catch {
+      toast.error("Failed to copy script");
+    }
+  };
 
   return (
-    <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        position: "relative",
-        aspectRatio: "1 / 1",
-        borderRadius: 14,
-        overflow: "hidden",
-        background: "var(--g02)",
-        border: `1px solid ${hovered ? catColor + "66" : "var(--g05)"}`,
-        boxShadow: hovered
-          ? `0 0 0 1px ${catColor}22, 0 16px 40px rgba(0,0,0,.55)`
-          : "0 2px 8px rgba(0,0,0,.25)",
-        transform: hovered ? "translateY(-3px) scale(1.015)" : "none",
-        transition: "all .22s cubic-bezier(0.4, 0, 0.2, 1)",
-        cursor: "default",
-      }}
-    >
-      {/* Thumbnail */}
-      {thumbnail ? (
-        <img
-          src={thumbnail}
-          alt={game.name}
-          style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }}
-        />
-      ) : thumbLoading ? (
-        <div className="skeleton" style={{ width: "100%", aspectRatio: "1 / 1" }} />
-      ) : (
-        <div style={{ width: "100%", aspectRatio: "1 / 1", background: "var(--surface-3)" }} />
-      )}
-
-      {/* Category badge */}
-      <span style={{
-        position: "absolute", bottom: 8, left: 8,
-        fontSize: 9, fontWeight: 800, letterSpacing: "0.05em",
-        padding: "3px 8px", borderRadius: 6,
-        background: catColor + "CC", color: "#fff",
-        backdropFilter: "blur(4px)",
-        transition: "opacity .15s",
-        opacity: hovered ? 0 : 1,
-        pointerEvents: "none",
-      }}>
-        {game.category.toUpperCase()}
-      </span>
-
-      {/* Favorite button */}
-      <button
-        onClick={e => { e.stopPropagation(); onToggleFav(); }}
+    <>
+      <motion.div
+        layoutId={layoutId}
+        onClick={() => setIsOpen(true)}
         style={{
-          position: "absolute", top: 8, right: 8,
-          width: 28, height: 28, borderRadius: 8, zIndex: 20,
-          background: game.isFavorite ? "rgba(232,232,232,.3)" : "rgba(0,0,0,.55)",
-          border: `1px solid ${game.isFavorite ? "rgba(232,232,232,.6)" : "rgba(255,255,255,.15)"}`,
-          color: game.isFavorite ? "var(--amber)" : "rgba(255,255,255,.5)",
-          cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          backdropFilter: "blur(6px)",
-          transition: "all .12s",
-        }}
-      >
-        <StarIcon size={14} fill={game.isFavorite ? "var(--amber)" : "none"} color={game.isFavorite ? "var(--amber)" : "rgba(255,255,255,.5)"} />
-      </button>
-      {/* Hover overlay */}
-      <div style={{
-        position: "absolute", inset: 0,
-        background: `linear-gradient(to top,
-          rgba(0,0,0,.97) 0%,
-          rgba(0,0,0,.82) 50%,
-          rgba(0,0,0,.3) 80%,
-          transparent 100%)`,
-        display: "flex", flexDirection: "column", justifyContent: "flex-end",
-        padding: "12px",
-        transform: hovered ? "translateY(0)" : "translateY(100%)",
-        transition: "transform .28s cubic-bezier(0.4, 0, 0.2, 1)",
-        zIndex: 10,
-      }}>
-        <span style={{
-          alignSelf: "flex-start",
-          fontSize: 9, fontWeight: 800, letterSpacing: "0.05em",
-          padding: "2px 8px", borderRadius: 5, marginBottom: 6,
-          background: catColor + "28", color: catColor,
-          border: `1px solid ${catColor}44`,
-        }}>
-          {game.category.toUpperCase()}
-        </span>
-
-        <div style={{ fontSize: 13, fontWeight: 800, color: "#fff", lineHeight: 1.25, marginBottom: 5 }}>
-          {game.name}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 8 }}>
-          <span style={{
-            width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
-            background: isActive ? "var(--green)" : "var(--red)",
-            boxShadow: isActive ? "0 0 5px var(--green)" : "none",
-          }} />
-          <span style={{ fontSize: 10, fontWeight: 600, color: isActive ? "var(--green)" : "var(--red)" }}>
-            {isActive ? t("supported") : t("discontinued")}
-          </span>
-        </div>
-
-        <p style={{
-          fontSize: 10.5, color: "rgba(255,255,255,.5)", lineHeight: 1.45,
-          margin: "0 0 10px",
-          display: "-webkit-box",
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: "vertical",
+          position: "relative",
+          aspectRatio: "1 / 1",
+          borderRadius: 14,
           overflow: "hidden",
+          background: "var(--g02)",
+          border: `1px solid ${isSelected ? "var(--green)" : "var(--g05)"}`,
+          boxShadow: isSelected
+            ? "0 0 14px rgba(52,211,153,0.3)"
+            : "0 4px 14px rgba(0,0,0,.3)",
+          cursor: "pointer",
+        }}
+        whileHover={{ y: -4, scale: 1.02 }}
+        transition={{ type: "spring", stiffness: 350, damping: 25 }}
+      >
+        {/* Selected Badge */}
+        {isSelected && (
+          <span style={{
+            position: "absolute", top: 8, left: 8, zIndex: 20,
+            fontSize: 8.5, fontWeight: 900, letterSpacing: "0.05em",
+            padding: "3px 8px", borderRadius: 6,
+            background: "var(--green)", color: "#000",
+            boxShadow: "0 2px 8px rgba(52,211,153,0.5)",
+            display: "flex", alignItems: "center", gap: 3,
+          }}>
+            <CheckIcon size={9} color="#000" strokeWidth={3} /> Selected
+          </span>
+        )}
+
+        {/* Favorite Button */}
+        <button
+          onClick={e => { e.stopPropagation(); onToggleFav(); }}
+          style={{
+            position: "absolute", top: 8, right: 8,
+            width: 28, height: 28, borderRadius: 8, zIndex: 20,
+            background: game.isFavorite ? "rgba(232,232,232,.3)" : "rgba(0,0,0,.55)",
+            border: `1px solid ${game.isFavorite ? "rgba(232,232,232,.6)" : "rgba(255,255,255,.15)"}`,
+            color: game.isFavorite ? "var(--amber)" : "rgba(255,255,255,.5)",
+            cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            backdropFilter: "blur(6px)",
+            transition: "all .12s",
+          }}
+        >
+          <StarIcon size={14} fill={game.isFavorite ? "var(--amber)" : "none"} color={game.isFavorite ? "var(--amber)" : "rgba(255,255,255,.5)"} />
+        </button>
+
+        {/* Image Container */}
+        <motion.div layoutId={`image-container-${layoutId}`} style={{ width: "100%", height: "100%", overflow: "hidden" }}>
+          {thumbnail ? (
+            <motion.img
+              layoutId={`image-${layoutId}`}
+              src={thumbnail}
+              alt={game.name}
+              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+            />
+          ) : thumbLoading ? (
+            <div className="skeleton" style={{ width: "100%", height: "100%" }} />
+          ) : (
+            <div style={{ width: "100%", height: "100%", background: "var(--surface-3)" }} />
+          )}
+        </motion.div>
+
+        {/* Bottom Banner Title Overlay */}
+        <div style={{
+          position: "absolute", inset: 0,
+          background: `linear-gradient(to top, rgba(0,0,0,.92) 0%, rgba(0,0,0,.4) 50%, transparent 100%)`,
+          display: "flex", flexDirection: "column", justifyContent: "flex-end",
+          padding: "10px 12px",
+          zIndex: 10,
         }}>
-          {game.description}
-        </p>      </div>
-    </div>
+          <span style={{
+            alignSelf: "flex-start", fontSize: 8.5, fontWeight: 800, letterSpacing: "0.05em",
+            padding: "2px 7px", borderRadius: 5, marginBottom: 4,
+            background: catColor + "CC", color: "#fff", backdropFilter: "blur(4px)",
+          }}>
+            {game.category.toUpperCase()}
+          </span>
+          <motion.h3 layoutId={`title-${layoutId}`} style={{ fontSize: 12.5, fontWeight: 800, color: "#fff", lineHeight: 1.2, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {game.name}
+          </motion.h3>
+        </div>
+      </motion.div>
+
+      {/* Expanded Modal View */}
+      <AnimatePresence>
+        {isOpen && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsOpen(false)}
+              style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(12px)" }}
+            />
+
+            {/* Modal Card */}
+            <motion.div
+              layoutId={layoutId}
+              style={{
+                position: "relative",
+                width: "100%", maxWidth: 520,
+                borderRadius: 20, overflow: "hidden",
+                background: "var(--modal-bg)",
+                border: "1px solid var(--modal-border)",
+                boxShadow: "0 20px 60px rgba(0,0,0,0.75)",
+                zIndex: 10, display: "flex", flexDirection: "column",
+                maxHeight: "90vh",
+              }}
+            >
+              {/* Close Button */}
+              <button
+                onClick={() => setIsOpen(false)}
+                style={{
+                  position: "absolute", top: 12, right: 12, zIndex: 30,
+                  width: 32, height: 32, borderRadius: "50%",
+                  background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)",
+                  color: "#fff", cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  backdropFilter: "blur(8px)", transition: "all .12s",
+                }}
+              >
+                <XIcon size={14} color="#fff" />
+              </button>
+
+              {/* Expanded Header Image */}
+              <motion.div layoutId={`image-container-${layoutId}`} style={{ position: "relative", height: 230, width: "100%", flexShrink: 0, overflow: "hidden" }}>
+                {thumbnail ? (
+                  <motion.img
+                    layoutId={`image-${layoutId}`}
+                    src={thumbnail}
+                    alt={game.name}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
+                ) : (
+                  <div style={{ width: "100%", height: "100%", background: "var(--surface-3)" }} />
+                )}
+                <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top, var(--modal-bg) 0%, transparent 70%)" }} />
+              </motion.div>
+
+              {/* Modal Body */}
+              <div style={{ padding: "20px 24px 24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{
+                    fontSize: 9.5, fontWeight: 900, letterSpacing: "0.06em",
+                    padding: "3px 10px", borderRadius: 6,
+                    background: catColor + "25", color: catColor,
+                    border: `1px solid ${catColor}45`,
+                  }}>
+                    {game.category.toUpperCase()}
+                  </span>
+                  <span style={{
+                    fontSize: 9.5, fontWeight: 800,
+                    padding: "3px 10px", borderRadius: 6,
+                    background: isActive ? "rgba(52,211,153,0.12)" : "rgba(248,113,113,0.12)",
+                    color: isActive ? "var(--green)" : "var(--red)",
+                    border: `1px solid ${isActive ? "rgba(52,211,153,0.25)" : "rgba(248,113,113,0.25)"}`,
+                  }}>
+                    {isActive ? t("supported") : t("discontinued")}
+                  </span>
+                </div>
+
+                <motion.h3 layoutId={`title-${layoutId}`} style={{ fontSize: 20, fontWeight: 900, color: "var(--t1)", margin: 0, letterSpacing: "-0.3px" }}>
+                  {game.name}
+                </motion.h3>
+
+                <p style={{ fontSize: 12, color: "var(--t2)", lineHeight: 1.5, margin: 0 }}>
+                  {game.description}
+                </p>
+
+                {/* Details Box */}
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: "var(--g03)", border: "1px solid var(--g05)", display: "flex", flexDirection: "column", gap: 6, fontSize: 11 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", color: "var(--t3)" }}>
+                    <span>Roblox Place ID:</span>
+                    <span style={{ fontFamily: "monospace", color: "var(--t1)", fontWeight: 700 }}>{game.placeId}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", color: "var(--t3)" }}>
+                    <span>Script Status:</span>
+                    <span style={{ color: isActive ? "var(--green)" : "var(--red)", fontWeight: 800 }}>{game.status}</span>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      if (isSelected) {
+                        setIsOpen(false);
+                        onGoHome();
+                      } else {
+                        onSelectForLaunch();
+                      }
+                    }}
+                    style={{
+                      flex: 1, padding: "10px 16px", borderRadius: 10, border: "none",
+                      background: isSelected ? "var(--green)" : "var(--accent)",
+                      color: isSelected ? "#000" : "var(--accent-text)",
+                      fontSize: 12, fontWeight: 800, cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                      boxShadow: "0 4px 14px rgba(0,0,0,0.3)", transition: "filter .12s",
+                    }}
+                  >
+                    {isSelected ? (
+                      <>
+                        <CheckIcon size={13} color="#000" strokeWidth={3} />
+                        <span>Selected · Go to Home ➔</span>
+                      </>
+                    ) : (
+                      <>
+                        <ZapIcon size={13} />
+                        <span>Select for Home Launch</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={copyScript}
+                    style={{
+                      padding: "10px 16px", borderRadius: 10,
+                      border: "1px solid var(--g08)", background: "var(--g04)",
+                      color: copiedScript ? "var(--green)" : "var(--t1)",
+                      fontSize: 12, fontWeight: 700, cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: 6, transition: "all .12s",
+                    }}
+                  >
+                    {copiedScript ? <CheckIcon size={13} color="var(--green)" /> : <CopyIcon size={13} />}
+                    <span>{copiedScript ? "Copied Script" : "Copy Script"}</span>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
