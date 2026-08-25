@@ -21,6 +21,8 @@ import { MoveToGroupModal } from "../components/MoveToGroupModal";
 import { AccountsHeaderBar } from "../components/AccountsHeaderBar";
 import { AccountsToolbar } from "../components/AccountsToolbar";
 import { BulkActionBar } from "../components/BulkActionBar";
+import Tooltip from "../components/ui/Tooltip";
+import { CATALOG } from "../data/catalog";
 
 export interface ComboResult { username: string; ok: boolean; reason: string; }
 
@@ -1167,6 +1169,7 @@ export function AccountDetailModal({
 /* ── Game Thumbnail Badge for Favorite Games ── */
 export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: string; size?: number; onLaunch?: (placeId: string) => void }) {
   const [thumbUrl, setThumbUrl] = useState<string>("");
+  const [gameName, setGameName] = useState<string>(() => CATALOG.find(g => g.placeId === placeId)?.name || "");
 
   useEffect(() => {
     let active = true;
@@ -1201,39 +1204,53 @@ export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: 
     return () => { active = false; };
   }, [placeId]);
 
+  useEffect(() => {
+    let active = true;
+    if (!placeId || gameName) return;
+
+    invoke<{ name: string }>("fetch_place_details", { placeId: Number(placeId) })
+      .then(details => {
+        if (active && details?.name) setGameName(details.name);
+      })
+      .catch(() => {});
+
+    return () => { active = false; };
+  }, [placeId, gameName]);
+
   return (
-    <div
-      onClick={e => {
-        if (onLaunch) { e.stopPropagation(); onLaunch(placeId); }
-      }}
-      title={`Favorite Game: Place ${placeId} (Click to launch)`}
-      style={{
-        width: size, height: size, borderRadius: 7, overflow: "hidden",
-        border: "1.5px solid var(--g07)", background: "var(--g04)",
-        cursor: "pointer", flexShrink: 0, transition: "all .15s ease",
-        boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-      }}
-      onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.15)"; e.currentTarget.style.borderColor = "#A78BFA"; }}
-      onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.borderColor = "var(--g07)"; }}
-    >
-      {thumbUrl ? (
-        <img
-          src={thumbUrl}
-          alt={`Place ${placeId}`}
-          onError={e => {
-            const target = e.currentTarget;
-            if (!target.dataset.triedFallback) {
-              target.dataset.triedFallback = "true";
-              target.src = `https://www.roblox.com/asset-thumbnail/image?assetId=${placeId}&width=150&height=150&format=png`;
-            }
-          }}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      ) : (
-        <span style={{ fontSize: size * 0.4 }}>🎮</span>
-      )}
-    </div>
+    <Tooltip content={`${gameName || `Place ${placeId}`} · Click to launch`} position="left">
+      <div
+        onClick={e => {
+          if (onLaunch) { e.stopPropagation(); onLaunch(placeId); }
+        }}
+        style={{
+          width: size, height: size, borderRadius: 7, overflow: "hidden",
+          border: "1.5px solid var(--g07)", background: "var(--g04)",
+          cursor: "pointer", flexShrink: 0, transition: "all .15s ease",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+        onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.15)"; e.currentTarget.style.borderColor = "#A78BFA"; }}
+        onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.borderColor = "var(--g07)"; }}
+      >
+        {thumbUrl ? (
+          <img
+            src={thumbUrl}
+            alt={gameName || `Place ${placeId}`}
+            onError={e => {
+              const target = e.currentTarget;
+              if (!target.dataset.triedFallback) {
+                target.dataset.triedFallback = "true";
+                target.src = `https://www.roblox.com/asset-thumbnail/image?assetId=${placeId}&width=150&height=150&format=png`;
+              }
+            }}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        ) : (
+          <span style={{ fontSize: size * 0.4 }}>🎮</span>
+        )}
+      </div>
+    </Tooltip>
   );
 }
 
