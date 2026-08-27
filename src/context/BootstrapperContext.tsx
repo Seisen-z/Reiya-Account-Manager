@@ -95,6 +95,8 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
   const [status, setStatus]             = useState<BootstrapperStatus | null>(null);
   const [progress, setProgress]         = useState<BootstrapperProgress | null>(null);
   const [installing, setInstalling]     = useState(false);
+  const installingRef = useRef(false);
+  useEffect(() => { installingRef.current = installing; }, [installing]);
   const [checking, setChecking]         = useState(false);
   const [error, setError]               = useState("");
   const [successMsg, setSuccessMsg]     = useState("");
@@ -112,6 +114,9 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
   const [installMode, setInstallModeState] = useState<"latest" | "custom">(
     () => (localStorage.getItem("reiya_bootstrapper_install_mode") as "latest" | "custom") || "latest"
   );
+
+  const channelRef = useRef(channel);
+  useEffect(() => { channelRef.current = channel; }, [channel]);
 
   const setChannel = (c: string) => {
     setChannelState(c);
@@ -156,6 +161,7 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
             setSuccessMsg("Roblox installed successfully! Protocol registered.");
             refreshStatus();
             scanInstalls(); // Re-scan after install
+            loadInstalledVersions(); // Pick up the newly downloaded build in the local list
           }
           if (payload.error) {
             setInstalling(false);
@@ -164,6 +170,20 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
         });
       };
       setupListener();
+
+      // Silently re-check for a new Roblox version every 30s so the
+      // "Update Available" badge stays fresh without user action.
+      const pollInterval = setInterval(() => {
+        if (installingRef.current) return;
+        invoke<BootstrapperStatus>("bootstrapper_check_update", { channel: channelRef.current || null })
+          .then(setStatus)
+          .catch(() => {});
+      }, 30000);
+
+      return () => {
+        clearInterval(pollInterval);
+        if (unlistenRef.current) unlistenRef.current();
+      };
     } else {
       // Mock data for browser testing
       setDetected({
