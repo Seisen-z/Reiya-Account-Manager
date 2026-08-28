@@ -29,6 +29,7 @@ import { SavePasswordPromptModal } from "../components/SavePasswordPromptModal";
 import { HomeHeaderBar } from "../components/HomeHeaderBar";
 import { SelectedAccountHero } from "../components/SelectedAccountHero";
 import { PinnedGamesSection } from "../components/PinnedGamesSection";
+import { useSavedGames } from "../context/SavedGamesContext";
 import { RecentGamesSection } from "../components/RecentGamesSection";
 import SessionBento from "../components/ui/index";
 import Tooltip from "../components/ui/Tooltip";
@@ -95,7 +96,7 @@ export interface RecentGame {
   name: string;
   creator: string;
   iconUrl: string;
-  playedAt: string;
+  playedAt?: string;
   privateServer?: string;
 }
 
@@ -334,17 +335,14 @@ export default function Home() {
     });
   }, []);
 
-  // Feature 9: Pinned games
-  const [pinnedGames, setPinnedGames] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem("reiya_pinned_games") || "[]"); } catch { return []; }
-  });
-  const togglePinGame = useCallback((placeId: string) => {
-    setPinnedGames(prev => {
-      const next = prev.includes(placeId) ? prev.filter(id => id !== placeId) : [...prev, placeId];
-      localStorage.setItem("reiya_pinned_games", JSON.stringify(next));
-      return next;
-    });
-  }, []);
+  // Feature 9: Pinned games — backed by the shared SavedGamesContext so Home
+  // and the Utilities page always agree on what's pinned (they used to keep
+  // separate, unsynced localStorage lists).
+  const { savedGames, toggleSaved } = useSavedGames();
+  const pinnedGames = useMemo(() => savedGames.map(g => g.placeId), [savedGames]);
+  const togglePinGame = useCallback((g: RecentGame) => {
+    toggleSaved({ placeId: g.placeId, name: g.name, creator: g.creator, iconUrl: g.iconUrl, privateServer: g.privateServer });
+  }, [toggleSaved]);
 
   // Feature 10: Session detail popover
   const [sessionDetail, setSessionDetail] = useState<Session | null>(null);
@@ -1396,10 +1394,9 @@ export default function Home() {
       <div className="scroll" style={{ flex: 1, padding: 18, display: "flex", flexDirection: "column", gap: 0 }}>
 
       {/* Side-by-Side: Pinned Games (Left) & Recently Played (Right) — Max 8 items each */}
-      <div style={{ display: "grid", gridTemplateColumns: (pinnedGames.length > 0 && recentGames.some(g => pinnedGames.includes(g.placeId))) ? "1fr 1fr" : "1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: savedGames.length > 0 ? "1fr 1fr" : "1fr", gap: 16 }}>
         <PinnedGamesSection
-          pinnedGames={pinnedGames}
-          recentGames={recentGames}
+          pinnedGames={savedGames}
           launchPlaceId={launchPlaceId}
           thumbs={thumbs}
           onTogglePin={togglePinGame}

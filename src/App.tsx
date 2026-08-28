@@ -20,6 +20,7 @@ import AppLock       from "./pages/AppLock";
 import SecuritySetup from "./pages/SecuritySetup";
 import VaultUnlock   from "./pages/VaultUnlock";
 import { BootstrapperProvider } from "./context/BootstrapperContext";
+import { SavedGamesProvider } from "./context/SavedGamesContext";
 import { UpdateProvider, useUpdate } from "./context/UpdateContext";
 import { useLanguage } from "./context/LanguageContext";
 
@@ -151,21 +152,23 @@ function AppInner() {
   return (
     <BrowserRouter>
       <BootstrapperProvider>
-        {needsVaultUnlock && <VaultUnlock onUnlocked={() => setVaultUnlocked(true)} />}
-        {!needsVaultUnlock && locked && <AppLock onUnlocked={() => setLocked(false)} />}
-        {!needsVaultUnlock && updateInfo && <UpdatePrompt info={updateInfo} />}
-        {!needsVaultUnlock && !updateInfo && !securitySetupDone && (
-          <SecuritySetup onDone={(mode) => {
-            setSecurityMode(mode);
-            setVaultUnlocked(true);
-            setSecuritySetupDone(true);
-            localStorage.setItem("reiya_security_setup_v1", "done");
-          }} />
-        )}
-        {!needsVaultUnlock && !updateInfo && securitySetupDone && !onboardingDone && (
-          <Onboarding onDone={() => setOnboardingDone(true)} />
-        )}
-        {!needsVaultUnlock && <AppContent />}
+        <SavedGamesProvider>
+          {needsVaultUnlock && <VaultUnlock onUnlocked={() => setVaultUnlocked(true)} />}
+          {!needsVaultUnlock && locked && <AppLock onUnlocked={() => setLocked(false)} />}
+          {!needsVaultUnlock && updateInfo && <UpdatePrompt info={updateInfo} />}
+          {!needsVaultUnlock && !updateInfo && !securitySetupDone && (
+            <SecuritySetup onDone={(mode) => {
+              setSecurityMode(mode);
+              setVaultUnlocked(true);
+              setSecuritySetupDone(true);
+              localStorage.setItem("reiya_security_setup_v1", "done");
+            }} />
+          )}
+          {!needsVaultUnlock && !updateInfo && securitySetupDone && !onboardingDone && (
+            <Onboarding onDone={() => setOnboardingDone(true)} />
+          )}
+          {!needsVaultUnlock && <AppContent />}
+        </SavedGamesProvider>
       </BootstrapperProvider>
     </BrowserRouter>
   );

@@ -8,7 +8,7 @@ export const RecentGamesSection: FC<{
   launchPlaceId: string;
   thumbs: Record<string, string>;
   pinnedGames: string[];
-  onTogglePin: (placeId: string) => void;
+  onTogglePin: (g: RecentGame) => void;
   onSelectGame: (placeId: string) => void;
   onGameContextMenu: (e: React.MouseEvent, g: RecentGame) => void;
   onDeleteGame: (placeId: string, name: string) => void;
@@ -60,7 +60,7 @@ export const RecentGamesSection: FC<{
             <GameCard key={g.placeId} g={g} isSelected={isSelected} hasPrivateServer={hasPrivateServer}
               thumb={thumbs[g.placeId]}
               isPinned={pinnedGames.includes(g.placeId)}
-              onTogglePin={() => onTogglePin(g.placeId)}
+              onTogglePin={() => onTogglePin(g)}
               onSelect={() => onSelectGame(g.placeId)}
               onContextMenu={(e) => onGameContextMenu(e, g)}
               onDelete={() => onDeleteGame(g.placeId, g.name)}

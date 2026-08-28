@@ -40,6 +40,43 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.13",
+    date: "2026-08-28",
+    title: "Fixed data loss on update, rebuilt Utilities page",
+    changes: [
+      { kind: "fixed", text: "Fixed a bug where updating the app could wipe your accounts, pinned games, and recent games — saves are now written atomically so a mid-update crash can never leave a corrupted file." },
+      { kind: "fixed", text: "The updater now detects a failed silent install and tells you, instead of quietly leaving you on the old version with no explanation." },
+      { kind: "fixed", text: "Fixed the app's own version number getting stuck reporting an old release internally, even after installing a newer one." },
+      { kind: "improved", text: "Pinned Games (Home) and Favorites (Utilities) now share one list instead of two separate, unsynced ones — starring a game in either place shows up in both." },
+      { kind: "new", text: "Rebuilt the Utilities page: search, Pinned, Recently Played, and History now live in one collapsible list on the left, with a detail panel on the right showing servers, private server setup, and a direct Launch button — no more tab-hunting or a separate confirm step." },
+    ],
+  },
+  {
+    version: "1.1.12",
+    date: "2026-08-28",
+    title: "Respect pinned Roblox version",
+    changes: [
+      { kind: "fixed", text: "Launching with auto-update enabled always re-checked and force-installed the latest Roblox version, even after explicitly switching to an older build via \"Use this version\" or a custom pinned install. A pinned install now skips the update check entirely, regardless of the auto-update toggle." },
+    ],
+  },
+  {
+    version: "1.1.11",
+    date: "2026-08-27",
+    title: "Fix stale Installed Locally list",
+    changes: [
+      { kind: "fixed", text: "The Installed Locally list on the Bootstrapper page now refreshes after every install completes — it was only fetched once on load, making old builds look deleted when they just weren't being re-listed." },
+      { kind: "improved", text: "The app now polls Roblox's version API every 30 seconds in the background, so the Update Available badge stays current without a manual check." },
+    ],
+  },
+  {
+    version: "1.1.10",
+    date: "2026-08-25",
+    title: "Fix Accounts game tooltip",
+    changes: [
+      { kind: "fixed", text: "The game tooltip on the Accounts page was showing the raw place ID instead of the game's name." },
+    ],
+  },
+  {
     version: "1.1.9",
     date: "2026-08-19",
     title: "Hub Expandable Cards & Accounts Instant Caching",

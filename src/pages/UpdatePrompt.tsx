@@ -50,6 +50,14 @@ export default function UpdatePrompt({ info }: Props) {
     return () => { unlisten.then(f => f()); };
   }, []);
 
+  useEffect(() => {
+    invoke<string | null>("take_update_failure_marker").then(detail => {
+      if (detail) {
+        setError(`The last update didn't install (${detail}) — you're still on the previous version. Please try again.`);
+      }
+    });
+  }, []);
+
   const handleUpdate = async () => {
     setUiPhase("downloading");
     setError("");

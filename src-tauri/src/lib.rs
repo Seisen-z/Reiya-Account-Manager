@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    io::Write,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use sysinfo::System;
@@ -330,6 +331,25 @@ fn accounts_path() -> PathBuf {
     data_dir().join("accounts.json")
 }
 
+/// Writes `contents` to `path` without ever leaving a truncated/zero-filled
+/// file behind if the process is killed mid-write (e.g. by the updater's
+/// `std::process::exit`). Writes to a sibling `.tmp` file, fsyncs it, then
+/// atomically renames it over the target — the target is only ever replaced
+/// by a complete write.
+fn atomic_write<C: AsRef<[u8]>>(path: &Path, contents: C) -> std::io::Result<()> {
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    let tmp_path = path.with_file_name(format!("{}.tmp", file_name.to_string_lossy()));
+    {
+        let mut f = fs::File::create(&tmp_path)?;
+        f.write_all(contents.as_ref())?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
 fn session_tracker_path() -> PathBuf {
     data_dir().join("session_tracker.json")
 }
@@ -340,7 +360,7 @@ fn save_session_tracker(tracker: &SessionTracker) {
         .map(|(&id, (_, info))| (id, info.clone()))
         .collect();
     if let Ok(s) = serde_json::to_string_pretty(&data) {
-        let _ = fs::write(session_tracker_path(), s);
+        let _ = atomic_write(&session_tracker_path(), s);
     }
 }
 
@@ -388,7 +408,7 @@ fn load_security_config() -> SecurityConfig {
 
 fn save_security_config(cfg: &SecurityConfig) {
     if let Ok(s) = serde_json::to_string_pretty(cfg) {
-        let _ = fs::write(security_path(), s);
+        let _ = atomic_write(&security_path(), s);
     }
 }
 
@@ -712,7 +732,7 @@ fn get_first_valid_cookie() -> Option<String> {
 fn save_stored(accounts: &[StoredAccount]) {
     let path = accounts_path();
     if let Ok(s) = serde_json::to_string_pretty(accounts) {
-        let _ = fs::write(path, s);
+        let _ = atomic_write(&path, s);
     }
 }
 
@@ -763,7 +783,7 @@ fn append_event(entry: EventEntry) {
     events.insert(0, entry);
     events.truncate(500);
     if let Ok(s) = serde_json::to_string_pretty(&events) {
-        let _ = fs::write(events_path(), s);
+        let _ = atomic_write(&events_path(), s);
     }
 }
 
@@ -773,7 +793,7 @@ fn append_session_record(record: SessionRecord) {
     history.insert(0, record);
     history.truncate(500);
     if let Ok(s) = serde_json::to_string_pretty(&history) {
-        let _ = fs::write(session_history_path(), s);
+        let _ = atomic_write(&session_history_path(), s);
     }
 }
 
@@ -1524,7 +1544,7 @@ fn set_private_server(place_id: String, private_server: Option<String>) -> Resul
     }
 
     if let Ok(s) = serde_json::to_string_pretty(&val) {
-        let _ = fs::write(&settings_path, s);
+        let _ = atomic_write(&settings_path, s);
     }
 
     Ok(())
@@ -1550,7 +1570,7 @@ fn remove_recent_game(place_id: String) -> Result<(), String> {
     }
 
     if let Ok(s) = serde_json::to_string_pretty(&val) {
-        let _ = fs::write(&settings_path, s);
+        let _ = atomic_write(&settings_path, s);
     }
 
     Ok(())
@@ -3349,7 +3369,7 @@ fn save_settings(settings: serde_json::Value, state: tauri::State<'_, MultiState
     }
 
     let s = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
-    fs::write(&settings_path, s).map_err(|e| e.to_string())?;
+    atomic_write(&settings_path, s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4214,7 +4234,7 @@ fn set_launcher_preference(kind: String) -> Result<(), String> {
     };
     val["PreferredLauncher"] = serde_json::Value::String(kind);
     let s = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
-    fs::write(&settings_path, s).map_err(|e| e.to_string())?;
+    atomic_write(&settings_path, s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4236,7 +4256,7 @@ fn set_auto_update_preference(enabled: bool) -> Result<(), String> {
     };
     val["AutoUpdateRoblox"] = serde_json::Value::Bool(enabled);
     let s = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
-    fs::write(&settings_path, s).map_err(|e| e.to_string())?;
+    atomic_write(&settings_path, s).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4737,16 +4757,21 @@ async fn download_and_install_update(app: tauri::AppHandle, url: String) -> Resu
 
     // Get current exe so the helper can relaunch it after install
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let failed_marker = data_dir().join("update_failed.txt");
 
     // Write a detached helper script:
     //   1. Wait for this process to exit
     //   2. Run installer silently
-    //   3. Wait for installer to finish
-    //   4. Relaunch the updated binary
+    //   3. Check whether the installer actually succeeded — if it didn't
+    //      (e.g. blocked by AV, needed elevation it didn't get), leave a
+    //      marker so the relaunched app can tell the user the update did
+    //      NOT apply, instead of silently reopening the old version.
+    //   4. Relaunch the binary (new one on success, old one on failure)
     let script = format!(
-        "@echo off\r\ntimeout /t 3 /nobreak >nul\r\nstart /wait \"\" \"{}\" /S\r\nstart \"\" \"{}\"\r\ndel \"%~0\"\r\n",
-        tmp_path.display(),
-        current_exe.display(),
+        "@echo off\r\ntimeout /t 3 /nobreak >nul\r\nstart /wait \"\" \"{tmp}\" /S\r\nif errorlevel 1 (\r\n  echo Installer exited with code %errorlevel%>\"{marker}\"\r\n) else (\r\n  del \"{marker}\" >nul 2>&1\r\n)\r\nstart \"\" \"{exe}\"\r\ndel \"%~0\"\r\n",
+        tmp = tmp_path.display(),
+        marker = failed_marker.display(),
+        exe = current_exe.display(),
     );
     let script_path = std::env::temp_dir().join("reiya_updater.bat");
     std::fs::write(&script_path, &script).map_err(|e| e.to_string())?;
@@ -4777,6 +4802,19 @@ async fn download_and_install_update(app: tauri::AppHandle, url: String) -> Resu
 
 #[tauri::command]
 fn get_app_version() -> String { APP_VERSION.to_string() }
+
+/// Checks whether the previous update attempt's silent install failed
+/// (see `download_and_install_update`'s helper script). Returns the
+/// installer's error detail and clears the marker so it's only reported once.
+#[tauri::command]
+fn take_update_failure_marker() -> Option<String> {
+    let marker = data_dir().join("update_failed.txt");
+    let detail = fs::read_to_string(&marker).ok().map(|s| s.trim().to_string());
+    if detail.is_some() {
+        let _ = fs::remove_file(&marker);
+    }
+    detail
+}
 
 #[tauri::command]
 fn edit_account(
@@ -4915,7 +4953,7 @@ fn save_favorites(favorites: Vec<FavoriteGameDto>) -> Result<(), String> {
     val["FavoriteGames"] = serde_json::Value::Array(favs_val);
 
     if let Ok(s) = serde_json::to_string_pretty(&val) {
-        let _ = fs::write(&settings_path, s);
+        let _ = atomic_write(&settings_path, s);
     }
     Ok(())
 }
@@ -4984,7 +5022,7 @@ async fn add_recent_game_internal(place_id_str: &str) -> Result<(), String> {
     val["RecentGames"] = serde_json::Value::Array(recent_games_list);
 
     if let Ok(s) = serde_json::to_string_pretty(&val) {
-        let _ = fs::write(&settings_path, s);
+        let _ = atomic_write(&settings_path, s);
     }
 
     Ok(())
@@ -5003,7 +5041,7 @@ pub struct FavoriteGameDto {
 }
 
 #[tauri::command]
-fn get_legacy_favorites() -> Vec<FavoriteGameDto> {
+fn get_favorites() -> Vec<FavoriteGameDto> {
     let settings_path = data_dir().join("settings.json");
     if !settings_path.exists() {
         return vec![];
@@ -5075,7 +5113,7 @@ fn read_installed_version() -> Option<String> {
 }
 
 fn write_installed_version(hash: &str) {
-    let _ = fs::write(installed_version_path(), hash);
+    let _ = atomic_write(&installed_version_path(), hash);
 }
 
 /// Marks whether the currently installed version was explicitly chosen by the
@@ -5091,7 +5129,7 @@ fn read_pinned() -> bool {
 }
 
 fn write_pinned(pinned: bool) {
-    let _ = fs::write(pinned_version_path(), if pinned { "1" } else { "0" });
+    let _ = atomic_write(&pinned_version_path(), if pinned { "1" } else { "0" });
 }
 
 #[derive(Serialize, Deserialize)]
@@ -5844,7 +5882,7 @@ fn get_fastflags() -> serde_json::Value {
 fn save_fastflags(flags: serde_json::Value) -> Result<(), String> {
     // Persist the master copy.
     let s = serde_json::to_string_pretty(&flags).map_err(|e| e.to_string())?;
-    fs::write(fastflags_path(), &s).map_err(|e| e.to_string())?;
+    atomic_write(&fastflags_path(), &s).map_err(|e| e.to_string())?;
 
     // Push the change (or the absence of flags) to every known Roblox install
     // immediately so the user doesn't need to relaunch through Reiya for it
@@ -6912,7 +6950,7 @@ async fn import_accounts(app: tauri::AppHandle, password: String) -> Result<usiz
         }
     }
 
-    fs::write(&accounts_path, serde_json::to_string_pretty(&existing).unwrap())
+    atomic_write(&accounts_path, serde_json::to_string_pretty(&existing).unwrap())
         .map_err(|e| e.to_string())?;
 
     let _ = app;
@@ -7583,7 +7621,7 @@ pub fn run() {
             fetch_place_details,
             get_multi_instance,
             set_multi_instance,
-            get_legacy_favorites,
+            get_favorites,
             get_recent_games,
             save_favorites,
             set_private_server,
@@ -7609,6 +7647,7 @@ pub fn run() {
             check_for_update,
             download_and_install_update,
             get_app_version,
+            take_update_failure_marker,
             edit_account,
             get_auth_ticket_command,
             bootstrapper_check_update,
