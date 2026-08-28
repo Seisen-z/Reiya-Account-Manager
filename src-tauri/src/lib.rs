@@ -3857,6 +3857,7 @@ async fn install_roblox_for_launch(app: &tauri::AppHandle, version_hash: &str) -
 
     // Persist version hash
     write_installed_version(version_hash);
+    write_pinned(false);
 
     // Download the Roblox launcher (RobloxPlayerInstaller.exe or RobloxPlayerLauncher.exe).
     // Required as parent process by Hyperion anti-cheat; not inside any zip package.
@@ -3965,16 +3966,19 @@ async fn ensure_latest_and_launch(
         return Err("Launch cancelled by user".into());
     }
 
-    let auto_update = read_auto_update();
+    // A pinned version (chosen explicitly via "Install & Overwrite" with a
+    // hash, or "Use this version" from Installed Locally) is never silently
+    // replaced by the update check, regardless of the auto-update toggle.
+    let auto_update = read_auto_update() && !read_pinned();
 
     if !auto_update {
-        // Auto-update disabled — skip the update check entirely and launch
-        // whatever version is already installed, if any.
+        // Auto-update disabled (or version pinned) — skip the update check
+        // entirely and launch whatever version is already installed, if any.
         if let Some(installed) = read_installed_version() {
             let exe = version_dir(&installed).join("RobloxPlayerBeta.exe");
             if exe.exists() {
                 let _ = app.emit("launch-progress", LaunchProgressPayload {
-                    status: format!("Auto-update disabled — using installed version {}", &installed[..installed.len().min(24)]),
+                    status: format!("Using pinned version {}", &installed[..installed.len().min(24)]),
                     percent: 40,
                 });
                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -5074,6 +5078,22 @@ fn write_installed_version(hash: &str) {
     let _ = fs::write(installed_version_path(), hash);
 }
 
+/// Marks whether the currently installed version was explicitly chosen by the
+/// user (via a pinned/custom install or switching to an already-downloaded
+/// build) rather than just being "whatever latest was last time." Pinned
+/// installs are never silently replaced by the auto-update-on-launch check.
+fn pinned_version_path() -> PathBuf {
+    bootstrapper_root().join("pinned.txt")
+}
+
+fn read_pinned() -> bool {
+    fs::read_to_string(pinned_version_path()).map(|s| s.trim() == "1").unwrap_or(false)
+}
+
+fn write_pinned(pinned: bool) {
+    let _ = fs::write(pinned_version_path(), if pinned { "1" } else { "0" });
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct BootstrapperStatus {
     pub installed_version: Option<String>,
@@ -5188,6 +5208,7 @@ fn use_installed_roblox_version(version_hash: String) -> Result<(), String> {
         return Err(format!("Version {} is not installed locally.", hash));
     }
     write_installed_version(&hash);
+    write_pinned(true);
     bootstrapper_register_protocol_internal(&exe.to_string_lossy())?;
     Ok(())
 }
@@ -5419,6 +5440,7 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
     };
 
     // 1. Resolve version hash: use the pinned version if provided, else fetch latest for channel.
+    let is_pinned = pinned_version.as_ref().is_some_and(|v| !v.trim().is_empty());
     let version_hash = if let Some(raw_v) = pinned_version.filter(|v| !v.trim().is_empty()) {
         let v = raw_v.trim();
         if v == "version-hidden" {
@@ -5584,6 +5606,7 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
     // Persist installed version
     eprintln!("[INFO bootstrapper_install] Persisting version hash...");
     write_installed_version(&version_hash);
+    write_pinned(is_pinned);
 
     // Download the Roblox launcher (RobloxPlayerInstaller.exe or RobloxPlayerLauncher.exe).
     // Required as parent process by Hyperion anti-cheat; not inside any zip package.
