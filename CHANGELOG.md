@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.14 — 2026-09-03
+
+### Changed
+- Bootstrapper updates now download new Roblox builds locally without replacing the current build. Select a downloaded build from **Installed Locally** when you want to switch.
+
+
 ## v1.1.8 — 2026-08-19
 
 ### Added

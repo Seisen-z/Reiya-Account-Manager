@@ -168,12 +168,12 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
             <button onClick={() => checkUpdate()} disabled={checking || installing} className="glow-btn" style={ghostBtnStyle(checking || installing)}>
               <RefreshIcon size={12} />{checking ? t("checking") : t("check")}
             </button>
-            <button onClick={() => startInstall()} disabled={installing || checking} className="glow-btn"
+            <button onClick={() => startInstall(undefined, undefined, !isInstalled)} disabled={installing || checking} className="glow-btn"
               style={{
                 ...ghostBtnStyle(installing || checking),
                 ...(needsUpdate ? { background: "var(--accent)", color: "var(--accent-text)", border: "none", boxShadow: "0 4px 14px var(--g15)" } : {}),
               }}>
-              <DownloadIcon size={12} />{installing ? `${progress?.percent ?? 0}%` : isInstalled ? t("update_btn") : t("download_install")}
+              <DownloadIcon size={12} />{installing ? `${progress?.percent ?? 0}%` : isInstalled ? "Download update" : t("download_install")}
             </button>
             {isInstalled && (
               <button onClick={handleRegisterProtocol} disabled={registering || installing} className="glow-btn" style={{ ...ghostBtnStyle(registering || installing), color: "#818CF8", border: "1px solid rgba(129,140,248,0.25)", background: "rgba(129,140,248,0.05)" }}>
@@ -338,14 +338,14 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
                   </div>
                 </div>
 
-                {/* Install & Overwrite action button + status */}
+                {/* Download action: new builds stay local until explicitly selected. */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 4, paddingTop: 10, borderTop: "1px solid var(--g04)" }}>
                   <div style={{ fontSize: 9.5, color: "var(--t3)", lineHeight: 1.4, flex: 1 }}>
                     {installMode === "latest"
-                      ? "Will fetch and install the newest Roblox client for channel " + (channel || "LIVE") + ". Overwrites existing install."
+                      ? "Will download the newest Roblox client for channel " + (channel || "LIVE") + ". Your current version stays selected."
                       : customVersionHash
-                        ? `Will download & force overwrite Roblox version ${customVersionHash} for channel ${channel || "LIVE"}.`
-                        : "Enter or select a version hash to download and force overwrite."}
+                        ? `Will download Roblox version ${customVersionHash} for channel ${channel || "LIVE"} and keep your current version selected.`
+                        : "Enter or select a version hash to download it locally."}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
                     {/* If custom hash is already downloaded locally */}
@@ -358,7 +358,7 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
                       </button>
                     )}
                     <button
-                      onClick={() => startInstall(installMode === "custom" ? customVersionHash : undefined, channel)}
+                      onClick={() => startInstall(installMode === "custom" ? customVersionHash : undefined, channel, !isInstalled)}
                       disabled={installing || checking || (installMode === "custom" && !customVersionHash.trim())}
                       className="glow-btn"
                       style={{
@@ -370,7 +370,7 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
                       }}
                     >
                       <DownloadIcon size={12} />
-                      {installing ? `Installing ${progress?.percent ?? 0}%` : "Install & Overwrite"}
+                      {installing ? `Downloading ${progress?.percent ?? 0}%` : "Download locally"}
                     </button>
                   </div>
                 </div>

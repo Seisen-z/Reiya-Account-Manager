@@ -3723,7 +3723,7 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
     Ok(None)
 }
 
-async fn install_roblox_for_launch(app: &tauri::AppHandle, version_hash: &str) -> Result<(), String> {
+async fn install_roblox_for_launch(app: &tauri::AppHandle, version_hash: &str, activate: bool) -> Result<(), String> {
     use futures_util::StreamExt;
     
     let client = reqwest::Client::builder()
@@ -3760,6 +3760,15 @@ async fn install_roblox_for_launch(app: &tauri::AppHandle, version_hash: &str) -
     }
 
     let install_dir = version_dir(version_hash);
+    let cached_exe = install_dir.join("RobloxPlayerBeta.exe");
+    if cached_exe.exists() {
+        if activate {
+            write_installed_version(version_hash);
+            write_pinned(false);
+            let _ = bootstrapper_register_protocol_internal(&cached_exe.to_string_lossy());
+        }
+        return Ok(());
+    }
     if install_dir.exists() {
         let _ = fs::remove_dir_all(&install_dir);
     }
@@ -3875,9 +3884,12 @@ async fn install_roblox_for_launch(app: &tauri::AppHandle, version_hash: &str) -
         }
     }
 
-    // Persist version hash
-    write_installed_version(version_hash);
-    write_pinned(false);
+    // Background updates are cached beside the active build. They become active
+    // only when no client exists yet or the user chooses them from the page.
+    if activate {
+        write_installed_version(version_hash);
+        write_pinned(false);
+    }
 
     // Download the Roblox launcher (RobloxPlayerInstaller.exe or RobloxPlayerLauncher.exe).
     // Required as parent process by Hyperion anti-cheat; not inside any zip package.
@@ -3913,9 +3925,9 @@ async fn install_roblox_for_launch(app: &tauri::AppHandle, version_hash: &str) -
         }
     }
 
-    // Register protocol handler
+    // Keep the protocol handler on the selected build while updates download.
     let exe_path = install_dir.join("RobloxPlayerBeta.exe");
-    if exe_path.exists() {
+    if activate && exe_path.exists() {
         let _ = bootstrapper_register_protocol_internal(&exe_path.to_string_lossy());
     }
 
@@ -4037,15 +4049,17 @@ async fn ensure_latest_and_launch(
 
     let installed_ver = if status.needs_update || status.exe_path.is_none() {
         let latest = status.latest_version.ok_or_else(|| "Could not resolve latest Roblox version".to_string())?;
+        let active_before_download = read_installed_version()
+            .filter(|version| version_dir(version).join("RobloxPlayerBeta.exe").exists());
         let _ = app.emit("launch-progress", LaunchProgressPayload {
             status: format!("Update found — downloading {}...", &latest[..latest.len().min(24)]),
             percent: 10,
         });
-        if let Err(e) = install_roblox_for_launch(app, &latest).await {
+        if let Err(e) = install_roblox_for_launch(app, &latest, active_before_download.is_none()).await {
             emit_error(app, &e);
             return Err(e);
         }
-        latest
+        active_before_download.unwrap_or(latest)
     } else {
         // Already up-to-date — walk through real verification steps
         let ver = status.installed_version.ok_or_else(|| "Could not resolve installed Roblox version".to_string())?;
@@ -5443,9 +5457,9 @@ fn repair_bootstrapper_folders(version_dir: &std::path::Path) -> Result<(), Stri
 }
 
 #[tauri::command]
-async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>, channel: Option<String>) -> Result<(), String> {
+async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>, channel: Option<String>, activate: Option<bool>) -> Result<(), String> {
     eprintln!("[INFO bootstrapper_install] Starting Reiya bootstrapper installation...");
-    let res = bootstrapper_install_impl(app.clone(), version_hash, channel).await;
+    let res = bootstrapper_install_impl(app.clone(), version_hash, channel, activate.unwrap_or(true)).await;
     if let Err(ref e) = res {
         eprintln!("[ERROR bootstrapper_install] Installation failed: {}", e);
         let _ = app.emit("bootstrapper-progress", BootstrapperProgress {
@@ -5464,7 +5478,7 @@ async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>, chan
     res
 }
 
-async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String>, channel: Option<String>) -> Result<(), String> {
+async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String>, channel: Option<String>, activate: bool) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .user_agent("RobloxBootstrapper")
         .build()
@@ -5503,6 +5517,24 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
         v
     };
 
+    // A complete cached build never needs to be overwritten. Activate it only
+    // when the caller explicitly asks to switch versions.
+    let install_dir = version_dir(&version_hash);
+    let cached_exe = install_dir.join("RobloxPlayerBeta.exe");
+    if cached_exe.exists() {
+        if activate {
+            write_installed_version(&version_hash);
+            write_pinned(is_pinned);
+            bootstrapper_register_protocol_internal(&cached_exe.to_string_lossy())?;
+        }
+        let _ = app.emit("bootstrapper-progress", BootstrapperProgress {
+            stage: if activate { "Complete" } else { "Downloaded" }.into(),
+            package: String::new(), package_index: 0, total_packages: 0,
+            percent: 100, speed_kbps: 0, done: true, error: None,
+        });
+        return Ok(());
+    }
+
     // 2. Fetch package manifest with channel fallback support
     let manifest_url = if ch.is_empty() || ch.eq_ignore_ascii_case("LIVE") {
         format!("{}/{}-rbxPkgManifest.txt", BOOTSTRAPPER_CDN, version_hash)
@@ -5540,7 +5572,6 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
     }
     eprintln!("[INFO bootstrapper_install] Parsed manifest, found {} total packages.", packages.len());
 
-    let install_dir = version_dir(&version_hash);
     eprintln!("[INFO bootstrapper_install] Target installation directory: {:?}", install_dir);
     if install_dir.exists() {
         let _ = fs::remove_dir_all(&install_dir);
@@ -5641,10 +5672,15 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
         }
     }
 
-    // Persist installed version
-    eprintln!("[INFO bootstrapper_install] Persisting version hash...");
-    write_installed_version(&version_hash);
-    write_pinned(is_pinned);
+    // Keep downloaded updates available locally without replacing the selected
+    // client. Only an explicit switch changes version.txt and the protocol handler.
+    if activate {
+        eprintln!("[INFO bootstrapper_install] Activating version hash...");
+        write_installed_version(&version_hash);
+        write_pinned(is_pinned);
+    } else {
+        eprintln!("[INFO bootstrapper_install] Downloaded {} without changing the active version.", version_hash);
+    }
 
     // Download the Roblox launcher (RobloxPlayerInstaller.exe or RobloxPlayerLauncher.exe).
     // Required as parent process by Hyperion anti-cheat; not inside any zip package.
@@ -5701,17 +5737,19 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
     // Write AppSettings.xml and fix folder structure so RobloxPlayerBeta.exe can launch directly.
     let _ = repair_bootstrapper_folders(&install_dir);
 
-    // Register protocol handler
+    // Register the protocol handler only for the active build.
     let exe_path = install_dir.join("RobloxPlayerBeta.exe");
     if exe_path.exists() {
-        eprintln!("[INFO bootstrapper_install] Registering RobloxPlayerBeta protocol handler...");
-        bootstrapper_register_protocol_internal(&exe_path.to_string_lossy())?;
+        if activate {
+            eprintln!("[INFO bootstrapper_install] Registering RobloxPlayerBeta protocol handler...");
+            bootstrapper_register_protocol_internal(&exe_path.to_string_lossy())?;
+        }
     } else {
         return Err("RobloxPlayerBeta.exe was not created or found after extraction".into());
     }
 
     let _ = app.emit("bootstrapper-progress", BootstrapperProgress {
-        stage: "Complete".into(),
+        stage: if activate { "Complete" } else { "Downloaded" }.into(),
         package: String::new(),
         package_index: total,
         total_packages: total,

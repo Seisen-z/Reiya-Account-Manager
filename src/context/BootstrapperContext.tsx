@@ -71,7 +71,7 @@ interface BootstrapperContextValue {
   setInstallMode: (mode: "latest" | "custom") => void;
   refreshStatus: () => Promise<void>;
   checkUpdate: (customChannel?: string) => Promise<void>;
-  startInstall: (versionHash?: string, customChannel?: string) => Promise<void>;
+  startInstall: (versionHash?: string, customChannel?: string, activate?: boolean) => Promise<void>;
   scanInstalls: () => Promise<void>;
   updateLauncherPreference: (kind: string) => Promise<void>;
   updateAutoUpdate: (enabled: boolean) => Promise<void>;
@@ -158,7 +158,9 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
           setProgress(payload);
           if (payload.done) {
             setInstalling(false);
-            setSuccessMsg("Roblox installed successfully! Protocol registered.");
+            setSuccessMsg(payload.stage === "Downloaded"
+              ? "Roblox update downloaded locally. Choose it from Installed Locally when you want to switch."
+              : "Roblox installed successfully! Protocol registered.");
             refreshStatus();
             scanInstalls(); // Re-scan after install
             loadInstalledVersions(); // Pick up the newly downloaded build in the local list
@@ -265,7 +267,7 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const startInstall = async (versionHash?: string, customChannel?: string) => {
+  const startInstall = async (versionHash?: string, customChannel?: string, activate = true) => {
     // Don't start if already running
     if (installing) return;
     setInstalling(true);
@@ -275,7 +277,7 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
     try {
       const ch = customChannel ?? channel;
       const v = versionHash !== undefined ? versionHash : (installMode === "custom" ? customVersionHash : undefined);
-      await invoke("bootstrapper_install", { versionHash: v || null, channel: ch || null });
+      await invoke("bootstrapper_install", { versionHash: v || null, channel: ch || null, activate });
     } catch (e) {
       setError(String(e));
       setInstalling(false);
