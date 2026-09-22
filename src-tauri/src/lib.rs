@@ -171,24 +171,17 @@ pub struct MultiState {
     active: Mutex<bool>,
     #[cfg(windows)]
     handles: Mutex<Option<MultiRobloxHandles>>,
-    #[cfg(windows)]
-    launch_count: Mutex<u32>,
 }
 
 impl MultiState {
     pub fn new(active: bool) -> Self {
-        #[cfg(windows)]
-        let handles = if active {
-            enable_multi_roblox_internal().map(|(h, _)| h)
-        } else {
-            None
-        };
         Self {
             active: Mutex::new(active),
             #[cfg(windows)]
-            handles: Mutex::new(handles),
-            #[cfg(windows)]
-            launch_count: Mutex::new(0),
+            // Acquire the singleton objects lazily at launch time. Creating or
+            // attaching to them at app startup can keep a previous Roblox
+            // instance's objects alive after that process has already exited.
+            handles: Mutex::new(None),
         }
     }
 
@@ -202,13 +195,8 @@ impl MultiState {
         #[cfg(windows)]
         {
             let mut handles_lock = self.handles.lock().unwrap();
-            if active {
-                if handles_lock.is_none() {
-                    *handles_lock = enable_multi_roblox_internal().map(|(h, _)| h);
-                }
-            } else {
+            if !active {
                 *handles_lock = None;
-                *self.launch_count.lock().unwrap() = 0;
             }
         }
     }
@@ -217,11 +205,20 @@ impl MultiState {
         #[cfg(windows)]
         {
             if *self.active.lock().unwrap() {
-                *self.launch_count.lock().unwrap() += 1;
                 let mut handles_lock = self.handles.lock().unwrap();
                 if handles_lock.is_none() {
-                    if let Some((h, _)) = enable_multi_roblox_internal() {
-                        *handles_lock = Some(h);
+                    if let Some((handles, attached_to_existing)) = enable_multi_roblox_internal() {
+                        if attached_to_existing {
+                            // Do not retain handles opened from a Roblox process
+                            // that was already running. Retaining them makes the
+                            // named singleton objects survive after Roblox exits,
+                            // so a later launch can incorrectly report that
+                            // another instance is still running.
+                            eprintln!("[MultiRoblox] Existing singleton objects detected; releasing borrowed handles and retrying on the next launch.");
+                            drop(handles);
+                        } else {
+                            *handles_lock = Some(handles);
+                        }
                     }
                 }
             }
@@ -229,13 +226,8 @@ impl MultiState {
     }
 
     pub fn end_launch(&self) {
-        #[cfg(windows)]
-        {
-            let mut count = self.launch_count.lock().unwrap();
-            if *count > 0 { *count -= 1; }
-            // Note: Singleton handles remain active in `handles` as long as MultiRoblox is active
-            // so that running Roblox instances are protected continuously from singleton single-instance termination.
-        }
+        // Clean handles remain active while MultiRoblox is enabled so later
+        // Roblox clients can start without tearing down another launch's state.
     }
 }
 
@@ -260,6 +252,7 @@ fn enable_multi_roblox_internal() -> Option<(MultiRobloxHandles, bool)> {
         eprintln!("[MultiRoblox] Failed to create singleton event. Error: {}", unsafe { GetLastError() });
         return None;
     }
+    let event_already_existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
     println!("[MultiRoblox] Created singleton event.");
 
     // ROBLOX_singletonMutex is the actual mutex Roblox uses for singleton detection.
@@ -272,7 +265,8 @@ fn enable_multi_roblox_internal() -> Option<(MultiRobloxHandles, bool)> {
         unsafe { windows_sys::Win32::Foundation::CloseHandle(singleton_event); }
         return None;
     }
-    let attached_to_existing = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let mutex_already_existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let attached_to_existing = event_already_existed || mutex_already_existed;
     if attached_to_existing {
         eprintln!("[MultiRoblox] Singleton mutex already existed (likely a Roblox instance running outside Reiya) — multi-instance may not work this session.");
     } else {
@@ -5481,6 +5475,8 @@ async fn bootstrapper_install(app: AppHandle, version_hash: Option<String>, chan
 async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String>, channel: Option<String>, activate: bool) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .user_agent("RobloxBootstrapper")
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create reqwest client: {}", e))?;
 
@@ -5616,13 +5612,45 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
             continue;
         }
 
-        // Stream download to memory with speed tracking
+        // Stream download to memory and report progress while large packages are
+        // still arriving. Previously the UI only received an event before and
+        // after RobloxApp.zip, which made a healthy download look stuck at 0%.
+        let package_size = pkg_resp.content_length();
         let mut bytes_buf: Vec<u8> = Vec::new();
         let mut stream = pkg_resp.bytes_stream();
         let start_time = std::time::Instant::now();
+        let mut last_progress_emit = start_time;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| format!("Error downloading stream chunk of package '{}': {}", pkg_name, e))?;
             bytes_buf.extend_from_slice(&chunk);
+
+            let now = std::time::Instant::now();
+            let download_finished = package_size.is_some_and(|size| bytes_buf.len() as u64 >= size);
+            if last_progress_emit.elapsed() >= std::time::Duration::from_millis(200) || download_finished {
+                let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
+                let speed_kbps = ((bytes_buf.len() as f64 / elapsed) / 1024.0) as u64;
+                let package_fraction = package_size
+                    .filter(|size| *size > 0)
+                    .map(|size| (bytes_buf.len() as f64 / size as f64).clamp(0.0, 1.0))
+                    .unwrap_or(0.0);
+                let mut percent = (((idx as f64 + package_fraction) / total.max(1) as f64) * 100.0) as u32;
+                if !bytes_buf.is_empty() {
+                    percent = percent.max(1);
+                }
+                percent = percent.min(99);
+
+                let _ = app.emit("bootstrapper-progress", BootstrapperProgress {
+                    stage: "Downloading".into(),
+                    package: pkg_name.clone(),
+                    package_index: idx + 1,
+                    total_packages: total,
+                    percent,
+                    speed_kbps,
+                    done: false,
+                    error: None,
+                });
+                last_progress_emit = now;
+            }
         }
         let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
         let speed_kbps = ((bytes_buf.len() as f64 / elapsed) / 1024.0) as u64;
@@ -5633,7 +5661,7 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
             package: pkg_name.clone(),
             package_index: idx + 1,
             total_packages: total,
-            percent: ((idx as f32 / total as f32) * 100.0) as u32,
+            percent: ((((idx + 1) as f64 / total.max(1) as f64) * 100.0) as u32).min(99),
             speed_kbps,
             done: false,
             error: None,
@@ -7397,6 +7425,7 @@ pub fn run() {
 
                     let mut exited_sessions = Vec::new();
                     let now = Utc::now();
+                    let tracker_changed;
 
                     {
                         let mut map = tracker.0.lock().unwrap();
@@ -7458,6 +7487,7 @@ pub fn run() {
                             }
                         }
 
+                        tracker_changed = !keys_to_remove.is_empty();
                         for key in keys_to_remove {
                             map.remove(&key);
                         }
@@ -7495,6 +7525,10 @@ pub fn run() {
                                 }
                             }
                         }
+                    }
+
+                    if tracker_changed {
+                        save_session_tracker(&tracker);
                     }
 
                     for (pid, info) in exited_sessions {

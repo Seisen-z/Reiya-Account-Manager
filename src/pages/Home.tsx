@@ -824,7 +824,6 @@ export default function Home() {
 
   const handlePastePlaceId = async () => {
     try {
-      const { readText } = await import("@tauri-apps/plugin-clipboard-manager");
       const clip = await readText();
       if (clip) {
         const match = clip.match(/\d{6,}/);
@@ -1393,7 +1392,7 @@ export default function Home() {
       {/* Scrollable: Recently Played + Session Chart */}
       <div className="scroll" style={{ flex: 1, padding: 18, display: "flex", flexDirection: "column", gap: 0 }}>
 
-      {/* Side-by-Side: Pinned Games (Left) & Recently Played (Right) — Max 8 items each */}
+      {/* Side-by-Side: Pinned Games (Left) & Recently Played (Right) — 18 items per page */}
       <div style={{ display: "grid", gridTemplateColumns: savedGames.length > 0 ? "1fr 1fr" : "1fr", gap: 16 }}>
         <PinnedGamesSection
           pinnedGames={savedGames}

@@ -40,6 +40,19 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.15",
+    date: "2026-09-22",
+    title: "Launch reliability and expanded game history",
+    changes: [
+      { kind: "fixed", text: "Fixed stale Roblox singleton handles that could incorrectly report another instance was still running after the previous client had already closed." },
+      { kind: "fixed", text: "Expired live-session tracker entries are now removed from persistent storage instead of returning after Reiya restarts." },
+      { kind: "fixed", text: "Large Roblox package downloads now stream visible percentage and speed updates instead of appearing stuck at 0%." },
+      { kind: "fixed", text: "Updated React Router to the patched release identified by the production dependency audit." },
+      { kind: "improved", text: "Pinned Games and Recently Played now show 18 games per page, display total counts, and provide pagination when more games are available." },
+      { kind: "improved", text: "Removed a duplicate clipboard module load to reduce the production bundle and avoid loading the same plugin twice." },
+    ],
+  },
+  {
     version: "1.1.13",
     date: "2026-08-28",
     title: "Fixed data loss on update, rebuilt Utilities page",

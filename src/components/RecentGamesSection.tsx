@@ -1,4 +1,4 @@
-import { FC } from "react";
+import { FC, useEffect, useState } from "react";
 import { useLanguage } from "../context/LanguageContext";
 import { GameCard, RecentGame } from "../pages/Home";
 import { SectionHeader } from "./SectionHeader";
@@ -23,13 +23,24 @@ export const RecentGamesSection: FC<{
   onSetPlaceIdFromSearch,
 }) => {
   const { t } = useLanguage();
+  const gamesPerPage = 18;
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(recentGames.length / gamesPerPage));
+
+  useEffect(() => {
+    setPage(current => Math.min(current, pageCount - 1));
+  }, [pageCount]);
+
   if (recentGames.length === 0) return null;
+
+  const visibleGames = recentGames.slice(page * gamesPerPage, (page + 1) * gamesPerPage);
+
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <SectionHeader
         dotColor="#FCD34D"
         dotShadow="0 0 6px rgba(252,211,77,0.35)"
-        title={t("recently_played")}
+        title={`${t("recently_played")} (${recentGames.length})`}
         style={{ marginBottom: 10 }}
         trailing={
           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -49,11 +60,22 @@ export const RecentGamesSection: FC<{
               className="field glass-input"
               style={{ width: 110, height: 22, fontSize: 9.5, padding: "0 7px" }}
             />
+            {pageCount > 1 && (
+              <>
+                <span style={{ color: "var(--muted)", fontSize: 9.5 }}>{page + 1}/{pageCount}</span>
+                <button className="btn btn-ghost" aria-label="Previous recent games page" disabled={page === 0}
+                  onClick={() => setPage(current => Math.max(0, current - 1))}
+                  style={{ width: 24, height: 22, padding: 0, opacity: page === 0 ? 0.4 : 1 }}>{"<"}</button>
+                <button className="btn btn-ghost" aria-label="Next recent games page" disabled={page === pageCount - 1}
+                  onClick={() => setPage(current => Math.min(pageCount - 1, current + 1))}
+                  style={{ width: 24, height: 22, padding: 0, opacity: page === pageCount - 1 ? 0.4 : 1 }}>{">"}</button>
+              </>
+            )}
           </div>
         }
       />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 8 }}>
-        {recentGames.slice(0, 8).map(g => {
+        {visibleGames.map(g => {
           const isSelected = launchPlaceId === g.placeId;
           const hasPrivateServer = !!g.privateServer;
           return (
