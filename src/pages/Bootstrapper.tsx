@@ -15,6 +15,18 @@ interface FastFlagPreset {
   category: string; flags: Record<string, any>;
 }
 
+interface LaunchDiagnostics {
+  preferred_launcher: string;
+  resolved_launcher: string;
+  active_version: string | null;
+  executable_path: string | null;
+  executable_exists: boolean;
+  protocol_handler: string | null;
+  official_available: boolean;
+  reiya_available: boolean;
+  recommendation: string;
+}
+
 const KIND_COLORS: Record<string, string> = {
   official: "#60A5FA", bloxstrap: "#A78BFA", fishstrap: "#34D399", reiya: "var(--accent)",
 };
@@ -76,11 +88,25 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
   const [registering, setRegistering] = useState(false);
   const [regError, setRegError] = useState("");
   const [regSuccess, setRegSuccess] = useState("");
+  const [managerMessage, setManagerMessage] = useState("");
+  const [managingVersion, setManagingVersion] = useState("");
+  const [diagnostics, setDiagnostics] = useState<LaunchDiagnostics | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+
+  const refreshDiagnostics = async () => {
+    setDiagnosticsLoading(true);
+    try { setDiagnostics(await invoke<LaunchDiagnostics>("get_launch_diagnostics")); }
+    catch { setDiagnostics(null); }
+    finally { setDiagnosticsLoading(false); }
+  };
 
   useEffect(() => {
     if (deployVersions.length === 0) loadDeployVersions();
     if (installedVersions.length === 0) loadInstalledVersions();
+    refreshDiagnostics();
   }, []);
+
+  useEffect(() => { refreshDiagnostics(); }, [preferredLauncher, status?.installed_version]);
 
   const handleRegisterProtocol = async () => {
     setRegistering(true); setRegError(""); setRegSuccess("");
@@ -89,6 +115,48 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
       setRegSuccess("roblox-player:// protocol registered to Reiya successfully!");
     } catch (e) { setRegError(String(e)); } finally { setRegistering(false); }
   };
+
+  const handleVersionLabel = async (version: string, currentLabel: string) => {
+    const label = prompt("Version label (leave blank to remove):", currentLabel);
+    if (label === null) return;
+    setManagingVersion(version); setManagerMessage("");
+    try {
+      await invoke("set_installed_roblox_version_label", { versionHash: version, label });
+      setManagerMessage("Version label saved.");
+      await loadInstalledVersions();
+    } catch (e) { setManagerMessage(String(e)); } finally { setManagingVersion(""); }
+  };
+
+  const handleOpenVersion = async (version: string) => {
+    try { await invoke("open_installed_roblox_version_folder", { versionHash: version }); }
+    catch (e) { setManagerMessage(String(e)); }
+  };
+
+  const handleDeleteVersion = async (version: string) => {
+    if (!confirm(`Delete local Roblox build ${version}?`)) return;
+    setManagingVersion(version); setManagerMessage("");
+    try {
+      await invoke("delete_installed_roblox_version", { versionHash: version });
+      setManagerMessage("Local version deleted.");
+      await loadInstalledVersions();
+    } catch (e) { setManagerMessage(String(e)); } finally { setManagingVersion(""); }
+  };
+
+  const handleRepairVersion = async (version: string) => {
+    setManagingVersion(version); setManagerMessage("");
+    try {
+      const report = await invoke<{ healthy: boolean; actions: string[]; missing: string[] }>("repair_installed_roblox_version", { versionHash: version });
+      if (report.healthy) {
+        setManagerMessage(`Repair complete: ${report.actions.join(", ")}.`);
+      } else {
+        setManagerMessage(`Missing ${report.missing.join(", ")}; downloading a clean copy now.`);
+        await startInstall(version, channel, true);
+      }
+      await loadInstalledVersions();
+    } catch (e) { setManagerMessage(String(e)); } finally { setManagingVersion(""); }
+  };
+
+  const formatBytes = (bytes: number) => bytes > 0 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : "Size unavailable";
 
   const isInstalled = !!status?.exe_path;
   const needsUpdate = status?.needs_update ?? true;
@@ -227,6 +295,24 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
               const available = opt.alwaysAvailable || !!detectedInstalls?.installs.find(i => i.kind === opt.id)?.found;
               return <LauncherCard key={opt.id} id={opt.id} name={opt.name} subtitle={opt.subtitle} desc={opt.desc} accentColor={opt.accentColor} isSelected={isSelected} available={available} onSelect={() => updateLauncherPreference(opt.id)} />;
             })}
+          </div>
+
+          <div style={{ marginTop: 12, padding: "12px 14px", borderRadius: 11, background: diagnostics?.executable_exists ? "rgba(52,211,153,0.05)" : "rgba(248,113,113,0.06)", border: `1px solid ${diagnostics?.executable_exists ? "rgba(52,211,153,0.18)" : "rgba(248,113,113,0.22)"}` }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: diagnostics?.executable_exists ? "var(--green)" : "var(--red)" }} />
+                  <span style={{ fontSize: 10.5, fontWeight: 900, color: "var(--t1)", letterSpacing: "0.06em" }}>LAUNCH HEALTH</span>
+                  <span style={{ fontSize: 9, color: "var(--t3)" }}>{diagnosticsLoading ? "Checking…" : `Resolved: ${diagnostics?.resolved_launcher || preferredLauncher}`}</span>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--t2)", lineHeight: 1.45 }}>{diagnostics?.recommendation || "Checking launcher configuration…"}</div>
+                {diagnostics?.executable_path && <div title={diagnostics.executable_path} style={{ marginTop: 4, fontSize: 9, color: "var(--t3)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{diagnostics.executable_path}</div>}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button onClick={refreshDiagnostics} disabled={diagnosticsLoading} style={{ padding: "5px 9px", borderRadius: 7, border: "1px solid var(--g07)", background: "var(--g03)", color: "var(--t2)", fontSize: 9.5, cursor: "pointer" }}>Refresh</button>
+                {diagnostics?.official_available && preferredLauncher !== "official" && <button onClick={async () => { await updateLauncherPreference("official"); await refreshDiagnostics(); }} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid rgba(96,165,250,0.3)", background: "rgba(96,165,250,0.1)", color: "#60A5FA", fontSize: 9.5, fontWeight: 800, cursor: "pointer" }}>Use Official</button>}
+              </div>
+            </div>
           </div>
 
           {/* Roblox Version Control */}
@@ -393,6 +479,7 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
                 Builds Reiya has already downloaded on this PC from past updates. Switching is instant — no download.
                 {loadingInstalledVersions && " Refreshing…"}
               </div>
+              {managerMessage && <div style={{ marginBottom: 8, padding: "7px 10px", borderRadius: 7, background: "var(--g03)", color: "var(--t2)", fontSize: 10 }}>{managerMessage}</div>}
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {installedVersions.map(v => (
                   <div key={v.version} style={{
@@ -401,25 +488,25 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
                     background: v.is_current ? "rgba(52,211,153,0.06)" : "var(--g01)",
                     border: `1px solid ${v.is_current ? "rgba(52,211,153,0.3)" : "var(--g05)"}`,
                   }}>
-                    <div style={{ minWidth: 0 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: "var(--t1)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {v.version}
+                        {v.label ? `${v.label} — ` : ""}{v.version}
                       </div>
-                      {v.installed_at && (
-                        <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 1 }}>
-                          Downloaded {new Date(v.installed_at).toLocaleString()}
-                        </div>
-                      )}
+                      <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 1 }}>
+                        {formatBytes(v.size_bytes)}{v.installed_at ? ` • Downloaded ${new Date(v.installed_at).toLocaleString()}` : ""}
+                      </div>
                     </div>
-                    {v.is_current ? (
-                      <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9.5, fontWeight: 800, color: "var(--green)", flexShrink: 0 }}>
-                        <CheckIcon size={11} /> Current
-                      </span>
-                    ) : (
-                      <button onClick={() => useInstalledVersion(v.version)} style={{ flexShrink: 0, padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(52,211,153,0.25)", background: "rgba(52,211,153,0.08)", color: "var(--green)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-                        Use this version
-                      </button>
-                    )}
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {v.is_current ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9.5, fontWeight: 800, color: "var(--green)" }}><CheckIcon size={11} /> Current</span>
+                      ) : (
+                        <button disabled={managingVersion === v.version} onClick={() => useInstalledVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(52,211,153,0.25)", background: "rgba(52,211,153,0.08)", color: "var(--green)", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>Use</button>
+                      )}
+                      <button disabled={managingVersion === v.version} onClick={() => handleRepairVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--g07)", background: "var(--g03)", color: "var(--t2)", fontSize: 9.5, cursor: "pointer" }}>Repair</button>
+                      <button onClick={() => handleOpenVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--g07)", background: "transparent", color: "var(--t3)", fontSize: 9.5, cursor: "pointer" }}>Folder</button>
+                      <button disabled={managingVersion === v.version} onClick={() => handleVersionLabel(v.version, v.label)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--g07)", background: "transparent", color: "var(--t3)", fontSize: 9.5, cursor: "pointer" }}>Label</button>
+                      {!v.is_current && <button disabled={managingVersion === v.version} onClick={() => handleDeleteVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(248,113,113,0.25)", background: "rgba(248,113,113,0.06)", color: "var(--red)", fontSize: 9.5, cursor: "pointer" }}>Delete</button>}
+                    </div>
                   </div>
                 ))}
               </div>

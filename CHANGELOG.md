@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.1.16 - 2026-10-02
+
+### Added
+- Card and list layouts for Accounts, with the selected layout remembered.
+- Per-account launch presets and bulk preset assignment.
+- Downloaded Roblox build management and Launch Health diagnostics.
+
+### Improved
+- One-click repair for Reiya files, FastFlags, protocol registration, and missing Roblox components.
+
+### Fixed
+- Duplicate launch-progress window errors and overlapping launch requests.
+- Copy Password is available again for accounts with a stored password.
+
 ## v1.1.14 — 2026-09-03
 
 ### Changed

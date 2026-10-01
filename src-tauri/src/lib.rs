@@ -29,6 +29,16 @@ struct LaunchProgressError {
     message: String,
 }
 
+static LAUNCH_PROGRESS_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+struct LaunchProgressGuard;
+impl Drop for LaunchProgressGuard {
+    fn drop(&mut self) {
+        LAUNCH_PROGRESS_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 mod browser_extractor;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -626,6 +636,14 @@ struct StoredAccount {
     auto_rejoin_enabled: bool,
     #[serde(alias = "LaunchCooldownSeconds", default = "fallback_cooldown")]
     launch_cooldown_seconds: i32,
+    #[serde(alias = "LaunchPresetName", default, deserialize_with = "deserialize_nullable_string")]
+    launch_preset_name: String,
+    #[serde(alias = "DefaultPrivateServer", default, deserialize_with = "deserialize_nullable_string")]
+    default_private_server: String,
+    #[serde(alias = "LauncherPreference", default, deserialize_with = "deserialize_nullable_string")]
+    launcher_preference: String,
+    #[serde(alias = "LaunchDelaySeconds", default)]
+    launch_delay_seconds: u32,
     #[serde(default)]
     password: Option<String>,
     #[serde(default)]
@@ -653,6 +671,10 @@ pub struct AccountDto {
     safe_launch_enabled: bool,
     auto_rejoin_enabled: bool,
     launch_cooldown_seconds: i32,
+    launch_preset_name: String,
+    default_private_server: String,
+    launcher_preference: String,
+    launch_delay_seconds: u32,
     password: Option<String>,
     group: Option<String>,
     cookie_updated_at: Option<String>,
@@ -748,6 +770,10 @@ fn to_dto(a: &StoredAccount) -> AccountDto {
         safe_launch_enabled: a.safe_launch_enabled,
         auto_rejoin_enabled: a.auto_rejoin_enabled,
         launch_cooldown_seconds: a.launch_cooldown_seconds,
+        launch_preset_name: a.launch_preset_name.clone(),
+        default_private_server: a.default_private_server.clone(),
+        launcher_preference: a.launcher_preference.clone(),
+        launch_delay_seconds: a.launch_delay_seconds,
         password: a.password.as_deref().map(decrypt_password),
         group: a.group.clone(),
         cookie_updated_at: a.cookie_updated_at.map(|d| d.to_rfc3339()),
@@ -1306,6 +1332,10 @@ async fn add_account(cookie: String) -> Result<AccountDto, String> {
         safe_launch_enabled: false,
         auto_rejoin_enabled: false,
         launch_cooldown_seconds: -1,
+        launch_preset_name: String::new(),
+        default_private_server: String::new(),
+        launcher_preference: String::new(),
+        launch_delay_seconds: 0,
         password: None,
         group: None,
     };
@@ -1386,7 +1416,10 @@ async fn add_accounts_bulk(cookies: Vec<String>) -> Vec<BulkAddResult> {
                         notes: String::new(), tags: Vec::new(),
                         default_place_id: String::new(), default_game_name: String::new(),
                         safe_launch_enabled: false, auto_rejoin_enabled: false,
-                        launch_cooldown_seconds: -1, password: None, group: None,
+                        launch_cooldown_seconds: -1,
+                        launch_preset_name: String::new(), default_private_server: String::new(),
+                        launcher_preference: String::new(), launch_delay_seconds: 0,
+                        password: None, group: None,
                     };
                     accounts.push(account);
                     save_stored(&accounts);
@@ -1634,6 +1667,27 @@ async fn launch_account(
         .find(|a| a.user_id == user_id)
         .ok_or("Account not found")?;
 
+    let account_default_place = account.default_place_id.trim().to_string();
+    let account_default_game = account.default_game_name.trim().to_string();
+    let account_private_server = account.default_private_server.trim().to_string();
+    let account_launcher_preference = account.launcher_preference.trim().to_lowercase();
+    let account_launch_delay = account.launch_delay_seconds.min(300);
+
+    let place_id = place_id.or_else(|| (!account_default_place.is_empty()).then_some(account_default_place));
+    let game_name = game_name.or_else(|| (!account_default_game.is_empty()).then_some(account_default_game));
+    let access_code = access_code.or_else(|| (!account_private_server.is_empty()).then_some(account_private_server));
+
+    if let Some(ref pid) = place_id {
+        let t = pid.trim();
+        if !t.is_empty() && !t.chars().all(|c| c.is_ascii_digit()) {
+            return Err("Invalid preset place ID: must be numeric".to_string());
+        }
+    }
+
+    if account_launch_delay > 0 {
+        tokio::time::sleep(tokio::time::Duration::from_secs(account_launch_delay as u64)).await;
+    }
+
     let cookie = decrypt_cookie(&account.encrypted_cookie)?;
 
     let (ticket, rotated_cookie) = get_auth_ticket(&cookie)
@@ -1802,7 +1856,11 @@ async fn launch_account(
 
     // Always use the bootstrapper flow when the saved preference is "reiya" or "auto"
     // (so the custom launch window always appears), regardless of what the frontend sends.
-    let pref = read_launcher_preference();
+    let saved_pref = read_launcher_preference();
+    let pref = match account_launcher_preference.as_str() {
+        "official" | "reiya" | "bloxstrap" | "fishstrap" | "protocol" => account_launcher_preference,
+        _ => saved_pref,
+    };
     let force_bootstrapper = matches!(pref.as_str(), "reiya" | "auto");
     if use_bootstrapper || force_bootstrapper {
         // Resolve which launcher to actually use
@@ -3933,48 +3991,67 @@ async fn ensure_latest_and_launch(
     launch_args: &str,
     _multi_active: bool,
 ) -> Result<Option<u32>, String> {
-    if let Some(existing) = app.get_webview_window("launch_progress") {
-        let _ = existing.close();
-        // Poll until the window is fully destroyed before creating a new one.
-        // 150 ms was not enough on slower machines, causing "already exists" errors.
-        let mut waited_close = 0u32;
-        while app.get_webview_window("launch_progress").is_some() && waited_close < 2000 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            waited_close += 50;
+    // The progress window is a singleton UI surface. Roblox process state is
+    // unrelated to this label, so reject only truly concurrent launch requests
+    // and reuse a stale/existing progress window instead of recreating its label.
+    if LAUNCH_PROGRESS_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        if let Some(existing) = app.get_webview_window("launch_progress") {
+            let _ = existing.show();
+            let _ = existing.set_focus();
         }
+        return Err("A launch is already in progress. Wait for it to finish before launching again.".to_string());
     }
+    let _launch_progress_guard = LaunchProgressGuard;
 
-    let win = WebviewWindowBuilder::new(
-        app,
-        "launch_progress",
-        WebviewUrl::App(std::path::PathBuf::from("index.html")),
-    )
-    .title("Reiya Launcher")
-    .inner_size(480.0, 320.0)
-    .decorations(false)
-    .transparent(true)
-    .resizable(false)
-    .center()
-    .initialization_script("window.history.replaceState(null, '', '/launch-progress');")
-    .build()
-    .map_err(|e| format!("Failed to create launch progress window: {}", e))?;
+    let (win, created_now) = if let Some(existing) = app.get_webview_window("launch_progress") {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        (existing, false)
+    } else {
+        let created = WebviewWindowBuilder::new(
+            app,
+            "launch_progress",
+            WebviewUrl::App(std::path::PathBuf::from("index.html")),
+        )
+        .title("Reiya Launcher")
+        .inner_size(480.0, 320.0)
+        .decorations(false)
+        .transparent(true)
+        .resizable(false)
+        .center()
+        .initialization_script("window.history.replaceState(null, '', '/launch-progress');")
+        .build()
+        .map_err(|e| format!("Failed to create launch progress window: {}", e))?;
+        let _ = created.show();
+        let _ = created.set_focus();
+        (created, true)
+    };
 
-    let _ = win.show();
-    let _ = win.set_focus();
-
-    // Wait for the frontend to emit "launch-progress-ready" (listener registered).
-    // This replaces a fixed sleep — we only proceed once the webview is actually ready.
-    let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let ready_clone = ready.clone();
-    win.listen("launch-progress-ready", move |_| {
-        ready_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
-    let mut waited_ms = 0u32;
-    while !ready.load(std::sync::atomic::Ordering::SeqCst) && waited_ms < 4000 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        waited_ms += 50;
+    // A newly-created webview must register its listeners before the backend
+    // emits progress. A reused window already has those listeners attached.
+    if created_now {
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready_clone = ready.clone();
+        win.listen("launch-progress-ready", move |_| {
+            ready_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let mut waited_ms = 0u32;
+        while !ready.load(std::sync::atomic::Ordering::SeqCst) && waited_ms < 4000 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            waited_ms += 50;
+        }
+        eprintln!("[DEBUG launch_progress] Frontend ready after {}ms", waited_ms);
+    } else {
+        eprintln!("[DEBUG launch_progress] Reusing existing progress window");
     }
-    eprintln!("[DEBUG launch_progress] Frontend ready after {}ms", waited_ms);
 
     // Helper: emit an error to the window instead of silently closing it.
     let emit_error = |app: &tauri::AppHandle, msg: &str| {
@@ -4244,6 +4321,64 @@ fn set_launcher_preference(kind: String) -> Result<(), String> {
     let s = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
     atomic_write(&settings_path, s).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+
+
+#[derive(Serialize)]
+pub struct LaunchDiagnostics {
+    pub preferred_launcher: String,
+    pub resolved_launcher: String,
+    pub active_version: Option<String>,
+    pub executable_path: Option<String>,
+    pub executable_exists: bool,
+    pub protocol_handler: Option<String>,
+    pub official_available: bool,
+    pub reiya_available: bool,
+    pub recommendation: String,
+}
+
+#[tauri::command]
+fn get_launch_diagnostics() -> LaunchDiagnostics {
+    let preferred = read_launcher_preference();
+    let active_version = read_installed_version();
+    let reiya_exe = active_version.as_ref().map(|v| version_dir(v).join("RobloxPlayerBeta.exe"));
+    let reiya_available = reiya_exe.as_ref().map_or(false, |p| p.exists());
+    let official_exe = find_official_roblox_exe();
+    let official_available = official_exe.as_ref().map_or(false, |p| p.exists());
+    let resolved = if preferred == "auto" {
+        if reiya_available { "reiya".to_string() } else { "official".to_string() }
+    } else {
+        preferred.clone()
+    };
+    let selected_exe = match resolved.as_str() {
+        "reiya" => reiya_exe,
+        "official" => official_exe,
+        "bloxstrap" => std::env::var("LOCALAPPDATA").ok().map(|p| PathBuf::from(p).join("Bloxstrap").join("Bloxstrap.exe")),
+        "fishstrap" => std::env::var("LOCALAPPDATA").ok().map(|p| PathBuf::from(p).join("Fishstrap").join("Fishstrap.exe")),
+        _ => None,
+    };
+    let executable_exists = selected_exe.as_ref().map_or(resolved == "protocol", |p| p.exists());
+    let recommendation = if resolved == "reiya" && official_available {
+        "Official Roblox is available as a recovery launcher if Reiya authentication fails.".to_string()
+    } else if !executable_exists && official_available {
+        "The selected launcher is unavailable. Switch to Official Roblox.".to_string()
+    } else if executable_exists {
+        "Launcher path is ready.".to_string()
+    } else {
+        "Install or select an available Roblox launcher.".to_string()
+    };
+    LaunchDiagnostics {
+        preferred_launcher: preferred,
+        resolved_launcher: resolved,
+        active_version,
+        executable_path: selected_exe.map(|p| p.to_string_lossy().to_string()),
+        executable_exists,
+        protocol_handler: read_protocol_handler(),
+        official_available,
+        reiya_available,
+        recommendation,
+    }
 }
 
 #[tauri::command]
@@ -4831,6 +4966,11 @@ fn edit_account(
     notes: String,
     tags: Vec<String>,
     default_place_id: String,
+    default_game_name: String,
+    launch_preset_name: String,
+    default_private_server: String,
+    launcher_preference: String,
+    launch_delay_seconds: u32,
     safe_launch_enabled: bool,
     auto_rejoin_enabled: bool,
     launch_cooldown_seconds: i32,
@@ -4848,7 +4988,12 @@ fn edit_account(
     };
     account.notes = notes;
     account.tags = tags;
-    account.default_place_id = default_place_id;
+    account.default_place_id = default_place_id.trim().to_string();
+    account.default_game_name = default_game_name.trim().to_string();
+    account.launch_preset_name = launch_preset_name.trim().to_string();
+    account.default_private_server = default_private_server.trim().to_string();
+    account.launcher_preference = launcher_preference.trim().to_lowercase();
+    account.launch_delay_seconds = launch_delay_seconds.min(300);
     account.safe_launch_enabled = safe_launch_enabled;
     account.auto_rejoin_enabled = auto_rejoin_enabled;
     account.launch_cooldown_seconds = launch_cooldown_seconds;
@@ -4856,6 +5001,44 @@ fn edit_account(
     let dto = to_dto(account);
     save_stored(&accounts);
     Ok(dto)
+}
+
+
+
+#[tauri::command]
+fn bulk_apply_launch_preset(
+    user_ids: Vec<i64>,
+    launch_preset_name: String,
+    default_place_id: String,
+    default_game_name: String,
+    default_private_server: String,
+    launcher_preference: String,
+    launch_delay_seconds: u32,
+) -> Result<usize, String> {
+    if user_ids.is_empty() { return Err("Select at least one account.".to_string()); }
+    let clean_place = default_place_id.trim();
+    if !clean_place.is_empty() && !clean_place.chars().all(|c| c.is_ascii_digit()) {
+        return Err("Default place ID must be numeric.".to_string());
+    }
+    let clean_launcher = launcher_preference.trim().to_lowercase();
+    if !clean_launcher.is_empty() && !matches!(clean_launcher.as_str(), "official" | "reiya" | "bloxstrap" | "fishstrap" | "protocol") {
+        return Err("Unsupported launcher preference.".to_string());
+    }
+    let ids: std::collections::HashSet<i64> = user_ids.into_iter().collect();
+    let mut accounts = load_stored();
+    let mut changed = 0usize;
+    for account in accounts.iter_mut().filter(|a| ids.contains(&a.user_id)) {
+        account.launch_preset_name = launch_preset_name.trim().chars().take(64).collect();
+        account.default_place_id = clean_place.to_string();
+        account.default_game_name = default_game_name.trim().chars().take(100).collect();
+        account.default_private_server = default_private_server.trim().chars().take(500).collect();
+        account.launcher_preference = clean_launcher.clone();
+        account.launch_delay_seconds = launch_delay_seconds.min(300);
+        changed += 1;
+    }
+    if changed == 0 { return Err("No selected accounts were found.".to_string()); }
+    save_stored(&accounts);
+    Ok(changed)
 }
 
 #[tauri::command]
@@ -5207,8 +5390,36 @@ async fn get_roblox_deploy_history() -> Result<Vec<RobloxDeployVersion>, String>
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InstalledRobloxVersion {
     pub version: String,
+    pub label: String,
     pub installed_at: Option<String>,
     pub is_current: bool,
+    pub size_bytes: u64,
+}
+
+fn version_labels_path() -> PathBuf { bootstrapper_root().join("version-labels.json") }
+
+fn load_version_labels() -> std::collections::HashMap<String, String> {
+    fs::read_to_string(version_labels_path()).ok()
+        .and_then(|s| serde_json::from_str(clean_bom(&s)).ok())
+        .unwrap_or_default()
+}
+
+fn directory_size(path: &std::path::Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else { return 0 };
+    entries.flatten().map(|entry| {
+        let p = entry.path();
+        if p.is_dir() { directory_size(&p) } else { entry.metadata().map(|m| m.len()).unwrap_or(0) }
+    }).sum()
+}
+
+fn normalized_version_hash(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    let hash = if trimmed.starts_with("version-") { trimmed.to_string() } else { format!("version-{}", trimmed) };
+    let suffix = hash.trim_start_matches("version-");
+    if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Invalid Roblox version hash".to_string());
+    }
+    Ok(hash)
 }
 
 /// Lists Roblox builds already downloaded to disk under the Reiya Versions folder
@@ -5220,6 +5431,7 @@ pub struct InstalledRobloxVersion {
 fn list_installed_roblox_versions() -> Vec<InstalledRobloxVersion> {
     let current = read_installed_version();
     let mut out: Vec<InstalledRobloxVersion> = Vec::new();
+    let labels = load_version_labels();
     let Ok(entries) = fs::read_dir(versions_dir()) else { return out };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -5231,8 +5443,10 @@ fn list_installed_roblox_versions() -> Vec<InstalledRobloxVersion> {
             .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
         out.push(InstalledRobloxVersion {
             version: name.to_string(),
+            label: labels.get(name).cloned().unwrap_or_default(),
             installed_at,
             is_current: current.as_deref() == Some(name),
+            size_bytes: directory_size(&path),
         });
     }
     out.sort_by(|a, b| b.installed_at.cmp(&a.installed_at));
@@ -5243,12 +5457,7 @@ fn list_installed_roblox_versions() -> Vec<InstalledRobloxVersion> {
 /// network fetch, just re-points version.txt and the protocol handler at it.
 #[tauri::command]
 fn use_installed_roblox_version(version_hash: String) -> Result<(), String> {
-    let v_clean = version_hash.trim();
-    let hash = if !v_clean.starts_with("version-") {
-        format!("version-{}", v_clean)
-    } else {
-        v_clean.to_string()
-    };
+    let hash = normalized_version_hash(&version_hash)?;
     let exe = version_dir(&hash).join("RobloxPlayerBeta.exe");
     if !exe.exists() {
         return Err(format!("Version {} is not installed locally.", hash));
@@ -5257,6 +5466,87 @@ fn use_installed_roblox_version(version_hash: String) -> Result<(), String> {
     write_pinned(true);
     bootstrapper_register_protocol_internal(&exe.to_string_lossy())?;
     Ok(())
+}
+
+
+
+#[tauri::command]
+fn set_installed_roblox_version_label(version_hash: String, label: String) -> Result<(), String> {
+    let hash = normalized_version_hash(&version_hash)?;
+    if !version_dir(&hash).join("RobloxPlayerBeta.exe").exists() {
+        return Err(format!("Version {} is not installed locally.", hash));
+    }
+    let mut labels = load_version_labels();
+    let clean = label.trim();
+    if clean.is_empty() { labels.remove(&hash); } else { labels.insert(hash, clean.chars().take(48).collect()); }
+    let json = serde_json::to_string_pretty(&labels).map_err(|e| e.to_string())?;
+    atomic_write(&version_labels_path(), json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_installed_roblox_version_folder(version_hash: String) -> Result<(), String> {
+    let hash = normalized_version_hash(&version_hash)?;
+    let dir = version_dir(&hash);
+    if !dir.is_dir() { return Err(format!("Version {} is not installed locally.", hash)); }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open version folder: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_installed_roblox_version(version_hash: String) -> Result<(), String> {
+    let hash = normalized_version_hash(&version_hash)?;
+    if read_installed_version().as_deref() == Some(hash.as_str()) {
+        return Err("Switch to another version before deleting the active build.".to_string());
+    }
+    let dir = version_dir(&hash);
+    if !dir.is_dir() { return Err(format!("Version {} is not installed locally.", hash)); }
+    fs::remove_dir_all(&dir).map_err(|e| format!("Failed to delete {}: {}", hash, e))?;
+    let mut labels = load_version_labels();
+    if labels.remove(&hash).is_some() {
+        let json = serde_json::to_string_pretty(&labels).map_err(|e| e.to_string())?;
+        atomic_write(&version_labels_path(), json).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct RobloxRepairReport {
+    pub version: String,
+    pub healthy: bool,
+    pub actions: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+#[tauri::command]
+fn repair_installed_roblox_version(version_hash: Option<String>) -> Result<RobloxRepairReport, String> {
+    let hash = match version_hash {
+        Some(v) if !v.trim().is_empty() => normalized_version_hash(&v)?,
+        _ => read_installed_version().ok_or_else(|| "No active Reiya Roblox version is installed.".to_string())?,
+    };
+    let dir = version_dir(&hash);
+    if !dir.is_dir() { return Err(format!("Version {} is not installed locally.", hash)); }
+
+    let mut actions = Vec::new();
+    repair_bootstrapper_folders(&dir)?;
+    actions.push("Repaired Roblox folder structure".to_string());
+
+    let exe = dir.join("RobloxPlayerBeta.exe");
+    if exe.exists() {
+        apply_fastflags_to_exe(&exe);
+        actions.push("Re-applied FastFlags".to_string());
+        bootstrapper_register_protocol_internal(&exe.to_string_lossy())?;
+        actions.push("Re-registered roblox-player protocol".to_string());
+    }
+
+    let required = ["RobloxPlayerBeta.exe", "RobloxPlayerBeta.dll", "content", "PlatformContent", "ExtraContent"];
+    let missing: Vec<String> = required.iter().filter(|name| !dir.join(name).exists()).map(|s| s.to_string()).collect();
+    Ok(RobloxRepairReport { version: hash, healthy: missing.is_empty(), actions, missing })
 }
 
 #[tauri::command]
@@ -7721,6 +8011,7 @@ pub fn run() {
             get_app_version,
             take_update_failure_marker,
             edit_account,
+            bulk_apply_launch_preset,
             get_auth_ticket_command,
             bootstrapper_check_update,
             bootstrapper_get_status,
@@ -7736,11 +8027,16 @@ pub fn run() {
             detect_roblox_installs,
             get_launcher_preference,
             set_launcher_preference,
+            get_launch_diagnostics,
             get_auto_update_preference,
             set_auto_update_preference,
             get_roblox_deploy_history,
             list_installed_roblox_versions,
             use_installed_roblox_version,
+            set_installed_roblox_version_label,
+            open_installed_roblox_version_folder,
+            delete_installed_roblox_version,
+            repair_installed_roblox_version,
             login_with_credentials,
             fetch_rscripts,
             fetch_rscripts_trending,

@@ -51,6 +51,10 @@ export const AccountConfigSidebarModal: FC<{
   const [safeLaunch, setSafeLaunch] = useState(false);
   const [autoRejoin, setAutoRejoin] = useState(false);
   const [cooldown, setCooldown] = useState(0);
+  const [launchPresetName, setLaunchPresetName] = useState("");
+  const [defaultPrivateServer, setDefaultPrivateServer] = useState("");
+  const [launcherPreference, setLauncherPreference] = useState("");
+  const [launchDelaySeconds, setLaunchDelaySeconds] = useState(0);
 
   const [notes, setNotes] = useState("");
   const [tags, setTags] = useState("");
@@ -83,6 +87,10 @@ export const AccountConfigSidebarModal: FC<{
       setSafeLaunch(!!account.safe_launch_enabled);
       setAutoRejoin(!!account.auto_rejoin_enabled);
       setCooldown(account.launch_cooldown_seconds ?? 0);
+      setLaunchPresetName(account.launch_preset_name || "");
+      setDefaultPrivateServer(account.default_private_server || "");
+      setLauncherPreference(account.launcher_preference || "");
+      setLaunchDelaySeconds(account.launch_delay_seconds ?? 0);
       setNotes(account.notes || "");
       setTags((account.tags || []).join(", "));
       setErrorMsg("");
@@ -108,6 +116,11 @@ export const AccountConfigSidebarModal: FC<{
         notes: notes.trim(),
         tags: tagsList,
         defaultPlaceId: defaultPlaceId.trim(),
+        defaultGameName: defaultGameName.trim(),
+        launchPresetName: launchPresetName.trim(),
+        defaultPrivateServer: defaultPrivateServer.trim(),
+        launcherPreference,
+        launchDelaySeconds,
         safeLaunchEnabled: safeLaunch,
         autoRejoinEnabled: autoRejoin,
         launchCooldownSeconds: cooldown,
@@ -157,6 +170,19 @@ export const AccountConfigSidebarModal: FC<{
     }
   };
 
+  const handleCopySavedPassword = async () => {
+    if (!account.password) {
+      toast.error("No password is saved for this account.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(account.password);
+      toast.success("Password copied.");
+    } catch (e) {
+      toast.error("Failed to copy password: " + e);
+    }
+  };
+
   const handleExportConfig = async () => {
     try {
       const cfg = {
@@ -166,6 +192,10 @@ export const AccountConfigSidebarModal: FC<{
         Notes: notes,
         DefaultPlaceId: defaultPlaceId,
         DefaultGameName: defaultGameName,
+        LaunchPresetName: launchPresetName,
+        DefaultPrivateServer: defaultPrivateServer,
+        LauncherPreference: launcherPreference,
+        LaunchDelaySeconds: launchDelaySeconds,
         IsFavorite: isFavorite,
         SafeLaunchEnabled: safeLaunch,
         AutoRejoinEnabled: autoRejoin,
@@ -188,6 +218,11 @@ export const AccountConfigSidebarModal: FC<{
       if (parsed.Notes) setNotes(parsed.Notes);
       if (Array.isArray(parsed.Tags)) setTags(parsed.Tags.join(", "));
       if (parsed.DefaultPlaceId) setDefaultPlaceId(parsed.DefaultPlaceId);
+      if (parsed.DefaultGameName) setDefaultGameName(parsed.DefaultGameName);
+      if (parsed.LaunchPresetName) setLaunchPresetName(parsed.LaunchPresetName);
+      if (parsed.DefaultPrivateServer) setDefaultPrivateServer(parsed.DefaultPrivateServer);
+      if (parsed.LauncherPreference !== undefined) setLauncherPreference(String(parsed.LauncherPreference));
+      if (parsed.LaunchDelaySeconds !== undefined) setLaunchDelaySeconds(Number(parsed.LaunchDelaySeconds));
       if (parsed.SafeLaunchEnabled !== undefined) setSafeLaunch(Boolean(parsed.SafeLaunchEnabled));
       if (parsed.AutoRejoinEnabled !== undefined) setAutoRejoin(Boolean(parsed.AutoRejoinEnabled));
       if (parsed.LaunchCooldownSeconds !== undefined) setCooldown(Number(parsed.LaunchCooldownSeconds));
@@ -414,6 +449,35 @@ export const AccountConfigSidebarModal: FC<{
                 />
               </div>
 
+              <div style={{ padding: "11px 13px", background: "rgba(167,139,250,0.06)", borderRadius: 10, border: "1px solid rgba(167,139,250,0.2)", display: "flex", flexDirection: "column", gap: 9 }}>
+                <span style={{ fontSize: 10.5, fontWeight: 900, color: "#A78BFA" }}>PER-ACCOUNT LAUNCH PRESET</span>
+                <div>
+                  <FieldLabel>Preset Name</FieldLabel>
+                  <input className="field glass-input" value={launchPresetName} onChange={e => setLaunchPresetName(e.target.value)} placeholder="e.g. Main farming preset" style={{ width: "100%", height: 32, fontSize: 11, outline: "none" }} disabled={saving} />
+                </div>
+                <div>
+                  <FieldLabel>Private Server URL / Code</FieldLabel>
+                  <input className="field glass-input" value={defaultPrivateServer} onChange={e => setDefaultPrivateServer(e.target.value)} placeholder="Optional private server link or code" style={{ width: "100%", height: 32, fontSize: 11, outline: "none" }} disabled={saving} />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div>
+                    <FieldLabel>Launcher</FieldLabel>
+                    <select className="field glass-input" value={launcherPreference} onChange={e => setLauncherPreference(e.target.value)} style={{ width: "100%", height: 32, fontSize: 11, outline: "none" }} disabled={saving}>
+                      <option value="">Use global setting</option>
+                      <option value="official">Official Roblox</option>
+                      <option value="reiya">Reiya Built-in</option>
+                      <option value="bloxstrap">Bloxstrap</option>
+                      <option value="fishstrap">Fishstrap</option>
+                      <option value="protocol">System Protocol</option>
+                    </select>
+                  </div>
+                  <div>
+                    <FieldLabel>Startup Delay (seconds)</FieldLabel>
+                    <input type="number" min={0} max={300} className="field glass-input" value={launchDelaySeconds} onChange={e => setLaunchDelaySeconds(Math.max(0, Math.min(300, Number(e.target.value))))} style={{ width: "100%", height: 32, fontSize: 11, outline: "none" }} disabled={saving} />
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <FieldLabel>Favorite Games (Place IDs)</FieldLabel>
                 <input
@@ -605,6 +669,18 @@ export const AccountConfigSidebarModal: FC<{
                     </button>
                   </div>
                 </div>
+              </div>
+
+              <div style={{ padding: "12px 14px", background: "var(--g03)", borderRadius: 10, border: "1px solid var(--g05)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "var(--t2)", marginBottom: 3 }}>SAVED LOGIN PASSWORD</div>
+                  <div style={{ fontSize: 9.5, color: "var(--t3)" }}>
+                    {account.password ? "A saved password is available for this account." : "No password was saved when this account was imported."}
+                  </div>
+                </div>
+                <button onClick={handleCopySavedPassword} disabled={!account.password} className="btn btn-ghost" style={{ flexShrink: 0, fontSize: 10.5, opacity: account.password ? 1 : 0.45 }}>
+                  Copy Password
+                </button>
               </div>
 
               {/* Export / Import Config */}

@@ -40,6 +40,19 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.16",
+    date: "2026-10-02",
+    title: "Account tools, launch recovery, and layout controls",
+    changes: [
+      { kind: "new", text: "Added card and list layouts for the Accounts page, with the selected layout remembered between sessions." },
+      { kind: "new", text: "Added per-account launch presets and bulk preset assignment for launcher, game, private server, and startup delay settings." },
+      { kind: "new", text: "Added downloaded Roblox build management with version labels, folder access, repair, switching, and deletion controls." },
+      { kind: "improved", text: "Added Launch Health diagnostics and one-click repair for Reiya files, FastFlags, protocol registration, and missing Roblox components." },
+      { kind: "fixed", text: "Prevented duplicate launch-progress windows by reusing the existing window and rejecting overlapping launch requests." },
+      { kind: "fixed", text: "Restored Copy Password in the account context menu and Security settings when an account has a stored password." },
+    ],
+  },
+  {
     version: "1.1.15",
     date: "2026-09-22",
     title: "Launch reliability and expanded game history",

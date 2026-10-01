@@ -51,6 +51,10 @@ export interface Account {
   safe_launch_enabled: boolean;
   auto_rejoin_enabled: boolean;
   launch_cooldown_seconds: number;
+  launch_preset_name: string;
+  default_private_server: string;
+  launcher_preference: string;
+  launch_delay_seconds: number;
   password?: string;
   group?: string;
 }
@@ -708,6 +712,7 @@ export default function Home() {
       setLaunchPlaceId(account.default_place_id);
       localStorage.setItem("reiya_last_place_id", account.default_place_id);
     }
+    if (account?.default_private_server) setAccessCode(account.default_private_server);
   }, [selAccount, accounts]);
 
   // Per-account game options: show account-specific history first, then global recents
@@ -1585,6 +1590,23 @@ export default function Home() {
               await navigator.clipboard.writeText(String(acc.user_id));
             }}
           />
+          {accountMenu.account.password && (
+            <DropdownItem
+              icon={<IconSvg><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></IconSvg>}
+              label={t("copy_password_menu")}
+              sub={t("copy_password_sub")}
+              onClick={async () => {
+                const acc = accountMenu.account;
+                setAccountMenu(null);
+                try {
+                  await navigator.clipboard.writeText(acc.password!);
+                  showToast("Password copied.", "success");
+                } catch (err) {
+                  showToast("Failed to copy password: " + err, "error");
+                }
+              }}
+            />
+          )}
           <DropdownItem
             icon={<IconSvg><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" /></IconSvg>}
             label={t("re_login_menu")}

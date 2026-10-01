@@ -44,8 +44,10 @@ export interface RobloxDeployVersion {
 
 export interface InstalledRobloxVersion {
   version: string;
+  label: string;
   installed_at: string | null;
   is_current: boolean;
+  size_bytes: number;
 }
 
 interface BootstrapperContextValue {

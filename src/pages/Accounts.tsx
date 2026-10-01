@@ -18,6 +18,7 @@ import { AccountConfigSidebarModal } from "../components/AccountConfigSidebarMod
 import { ExportAccountsModal } from "../components/ExportAccountsModal";
 import { ImportAccountsModal } from "../components/ImportAccountsModal";
 import { MoveToGroupModal } from "../components/MoveToGroupModal";
+import { BulkLaunchPresetModal, type BulkLaunchPresetValue } from "../components/BulkLaunchPresetModal";
 import { AccountsHeaderBar } from "../components/AccountsHeaderBar";
 import { AccountsToolbar } from "../components/AccountsToolbar";
 import { BulkActionBar } from "../components/BulkActionBar";
@@ -51,6 +52,10 @@ export interface Account {
   safe_launch_enabled: boolean;
   auto_rejoin_enabled: boolean;
   launch_cooldown_seconds: number;
+  launch_preset_name: string;
+  default_private_server: string;
+  launcher_preference: string;
+  launch_delay_seconds: number;
   group?: string;
 }
 
@@ -105,6 +110,13 @@ export default function Accounts() {
   const [loading,     setLoading]     = useState<boolean>(() => accounts.length === 0);
   const [launching,   setLaunching]   = useState<number | null>(null);
   const [sortBy,      setSortBy]      = useState<SortBy>("last_launched");
+  const [viewMode, setViewModeState] = useState<"card" | "list">(() =>
+    localStorage.getItem("reiya_accounts_view_mode") === "list" ? "list" : "card"
+  );
+  const setViewMode = (mode: "card" | "list") => {
+    setViewModeState(mode);
+    localStorage.setItem("reiya_accounts_view_mode", mode);
+  };
   const [copiedId,    setCopiedId]    = useState<number | null>(null);
   const [copiedUid,   setCopiedUid]   = useState<number | null>(null);
   const [sessions,    setSessions]    = useState<Session[]>([]);
@@ -135,6 +147,9 @@ export default function Accounts() {
   const [bulkStatus,     setBulkStatus]     = useState("");
   const [moveGroupModal, setMoveGroupModal] = useState(false);
   const [groupInput,     setGroupInput]     = useState("");
+  const [bulkPresetModal, setBulkPresetModal] = useState(false);
+  const [bulkPresetSaving, setBulkPresetSaving] = useState(false);
+  const [bulkPresetError, setBulkPresetError] = useState("");
 
   const [addMenu,       setAddMenu]       = useState(false);
   const addMenuRef                        = useRef<HTMLDivElement>(null);
@@ -731,6 +746,22 @@ export default function Accounts() {
     setTimeout(() => setBulkStatus(""), 3000);
   };
 
+  const handleBulkApplyPreset = async (preset: BulkLaunchPresetValue) => {
+    setBulkPresetSaving(true); setBulkPresetError("");
+    try {
+      const changed = await invoke<number>("bulk_apply_launch_preset", {
+        userIds: Array.from(selected),
+        ...preset,
+      });
+      await loadAccounts();
+      setBulkPresetModal(false);
+      setBulkStatus(`Launch preset applied to ${changed} account(s)`);
+      clearSelection();
+      setTimeout(() => setBulkStatus(""), 3500);
+    } catch (e) { setBulkPresetError(String(e)); }
+    finally { setBulkPresetSaving(false); }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--bg)" }}>
 
@@ -777,6 +808,8 @@ export default function Accounts() {
           setFilter={setFilter}
           sortBy={sortBy}
           setSortBy={setSortBy}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
         />
       </div>
 
@@ -787,6 +820,7 @@ export default function Accounts() {
         onLaunchAll={handleBulkLaunch}
         onValidateAll={handleBulkValidate}
         onMoveToGroup={() => { setGroupInput(""); setMoveGroupModal(true); }}
+        onApplyLaunchPreset={() => { setBulkPresetError(""); setBulkPresetModal(true); }}
         onSelectAll={selectAll}
         onDeleteAll={handleBulkDelete}
         onClearSelection={clearSelection}
@@ -797,8 +831,8 @@ export default function Accounts() {
         className="scroll"
         style={{
           flex: 1, overflowY: "auto", padding: "20px 24px",
-          display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
-          gap: 16, alignContent: "start",
+          display: "grid", gridTemplateColumns: viewMode === "card" ? "repeat(auto-fill, minmax(250px, 1fr))" : "1fr",
+          gap: viewMode === "card" ? 16 : 8, alignContent: "start",
           background: "radial-gradient(circle at top right, var(--g02) 0%, transparent 60%)",
         }}
       >
@@ -821,6 +855,7 @@ export default function Accounts() {
             <AccountCard
               key={account.user_id}
               account={account}
+              viewMode={viewMode}
               isLaunching={launching === account.user_id}
               isSelected={selected.has(account.user_id)}
               isCopied={copiedId === account.user_id}
@@ -950,6 +985,15 @@ export default function Accounts() {
         importOk={importOk}
         onClose={() => { if (!importLoading) setShowImport(false); }}
         onImport={handleImport}
+      />
+
+      <BulkLaunchPresetModal
+        open={bulkPresetModal}
+        selectedCount={selected.size}
+        saving={bulkPresetSaving}
+        error={bulkPresetError}
+        onClose={() => { if (!bulkPresetSaving) setBulkPresetModal(false); }}
+        onApply={handleBulkApplyPreset}
       />
 
       <MoveToGroupModal
@@ -1256,13 +1300,13 @@ export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: 
 
 /* ── Account Card (Team 4 Inspired Layout) ── */
 function AccountCard({
-  account, isLaunching, isSelected, isCopied, isCopiedUid,
+  account, viewMode, isLaunching, isSelected, isCopied, isCopiedUid,
   isDraggable,
   onToggleSelect, onToggleFav, onRemove, onLaunch, onOpenUtilities,
   onCopyUsername, onCopyUserId, onTagClick,
   onDragStart, onDragOver, onDrop, onOpenDetails,
 }: {
-  account: Account; isLaunching: boolean; isSelected: boolean;
+  account: Account; viewMode: "card" | "list"; isLaunching: boolean; isSelected: boolean;
   isCopied: boolean; isCopiedUid: boolean;
   isEditingNotes?: boolean; editingNotesText?: string; isDraggable: boolean;
   onToggleSelect: () => void;
@@ -1279,6 +1323,9 @@ function AccountCard({
   onOpenDetails: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const isList = viewMode === "list";
+  const avatarSize = isList ? 54 : 90;
+  const avatarFrameSize = isList ? 60 : 96;
   const isValid = account.cookie_status === "Valid";
   const isUnknown = account.cookie_status === "Unknown";
   const statusColor = isValid ? "var(--green)" : isUnknown ? "var(--amber)" : "var(--red)";
@@ -1299,18 +1346,19 @@ function AccountCard({
       onMouseLeave={() => setHovered(false)}
       style={{
         position: "relative",
-        display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center",
-        padding: "20px 16px 16px",
+        display: "flex", flexDirection: isList ? "row" : "column", alignItems: "center", textAlign: isList ? "left" : "center",
+        padding: isList ? "11px 14px 11px 46px" : "20px 16px 16px",
         background: isSelected ? "rgba(167,139,250,0.08)" : "var(--g02)",
         border: `1px solid ${isSelected ? "rgba(167,139,250,0.35)" : hovered ? "var(--g08)" : "var(--g04)"}`,
-        borderRadius: 22, transition: "all .25s cubic-bezier(0.16, 1, 0.3, 1)",
+        borderRadius: isList ? 13 : 22, transition: "all .25s cubic-bezier(0.16, 1, 0.3, 1)",
         cursor: isDraggable ? "grab" : "default",
-        transform: hovered ? "translateY(-3px)" : "none",
-        boxShadow: hovered ? "0 12px 28px rgba(0,0,0,0.35)" : "none",
+        transform: hovered && !isList ? "translateY(-3px)" : "none",
+        boxShadow: hovered ? (isList ? "0 5px 16px rgba(0,0,0,0.2)" : "0 12px 28px rgba(0,0,0,0.35)") : "none",
+        minHeight: isList ? 84 : undefined,
       }}
     >
       {/* Top Header Actions overlay */}
-      <div style={{ position: "absolute", top: 12, left: 12, right: 12, display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 2 }}>
+      <div style={{ position: "absolute", top: isList ? "50%" : 12, transform: isList ? "translateY(-50%)" : undefined, left: 12, right: isList ? undefined : 12, display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 2 }}>
         {/* Checkbox */}
         <div
           onClick={onToggleSelect}
@@ -1327,7 +1375,7 @@ function AccountCard({
         </div>
 
         {/* Top-right Icon buttons */}
-        <div style={{ display: "flex", gap: 3, opacity: hovered || account.is_favorite ? 1 : 0.4, transition: "opacity .12s" }}>
+        {!isList && <div style={{ display: "flex", gap: 3, opacity: hovered || account.is_favorite ? 1 : 0.4, transition: "opacity .12s" }}>
           <button
             onClick={onToggleFav}
             title="Favorite"
@@ -1342,11 +1390,11 @@ function AccountCard({
           >
             <TrashIcon size={13} color="var(--red)" />
           </button>
-        </div>
+        </div>}
       </div>
 
       {/* Right-side Vertical Favorite Games Stack (Max 4 games) */}
-      {favGameIds.length > 0 && (
+      {!isList && favGameIds.length > 0 && (
         <div
           style={{
             position: "absolute",
@@ -1383,8 +1431,8 @@ function AccountCard({
         title="Click to view account details & games"
         style={{
           position: "relative",
-          width: 96, height: 96,
-          margin: "10px auto 14px",
+          width: avatarFrameSize, height: avatarFrameSize,
+          margin: isList ? "0 14px 0 0" : "10px auto 14px",
           cursor: "pointer",
         }}
       >
@@ -1402,7 +1450,7 @@ function AccountCard({
             overflow: "hidden",
           }}
         >
-          <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={90} />
+          <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={avatarSize} />
         </div>
         {/* Cookie Health Status Dot */}
         <span
@@ -1418,11 +1466,11 @@ function AccountCard({
       </div>
 
       {/* Account Info Center */}
-      <div style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, marginBottom: 12 }}>
+      <div style={{ width: isList ? "auto" : "100%", flex: isList ? 1 : undefined, minWidth: 0, display: "flex", flexDirection: "column", alignItems: isList ? "flex-start" : "center", gap: 3, marginBottom: isList ? 0 : 12 }}>
         <span
           onClick={onOpenDetails}
           title="View account info & games"
-          style={{ fontSize: 14, fontWeight: 800, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "90%", cursor: "pointer" }}
+          style={{ fontSize: isList ? 13 : 14, fontWeight: 800, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: isList ? "100%" : "90%", cursor: "pointer" }}
         >
           {account.display_name || account.username}
         </span>
@@ -1439,7 +1487,7 @@ function AccountCard({
         </div>
 
         {/* Status & Group Tags */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: "center", marginBottom: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: isList ? "flex-start" : "center", marginBottom: 4 }}>
           <span
             style={{
               fontSize: 8.5, fontWeight: 900, padding: "2px 7px", borderRadius: 5,
@@ -1473,7 +1521,7 @@ function AccountCard({
         )}
 
         {/* Tags */}
-        {account.tags && account.tags.length > 0 && (
+        {!isList && account.tags && account.tags.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 3, justifyContent: "center", marginTop: 2 }}>
             {account.tags.map(tag => (
               <span
@@ -1492,7 +1540,7 @@ function AccountCard({
         )}
 
         {/* Notes preview */}
-        {account.notes && (
+        {!isList && account.notes && (
           <div
             onClick={onOpenDetails}
             title={account.notes}
@@ -1508,7 +1556,7 @@ function AccountCard({
       </div>
 
       {/* Card Action Footer */}
-      <div style={{ width: "100%", display: "flex", gap: 6, marginTop: "auto", paddingTop: 8, borderTop: "1px solid var(--g04)" }}>
+      <div style={{ width: isList ? 260 : "100%", flexShrink: 0, display: "flex", gap: 6, marginTop: isList ? 0 : "auto", marginLeft: isList ? 14 : 0, paddingTop: isList ? 0 : 8, paddingLeft: isList ? 14 : 0, borderTop: isList ? "none" : "1px solid var(--g04)", borderLeft: isList ? "1px solid var(--g04)" : "none" }}>
         <button
           onClick={onLaunch}
           disabled={isLaunching || !isValid}
@@ -1537,6 +1585,8 @@ function AccountCard({
         >
           👁️ Info
         </button>
+
+        {isList && <button onClick={onToggleFav} title="Favorite" style={{ width: 32, height: 32, borderRadius: 9, border: "1px solid var(--g06)", background: "var(--g03)", cursor: "pointer", color: account.is_favorite ? "var(--amber)" : "var(--t3)" }}><StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} /></button>}
 
         <button
           onClick={onOpenUtilities}

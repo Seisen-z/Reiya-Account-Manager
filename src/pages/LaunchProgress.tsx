@@ -20,6 +20,7 @@ export default function LaunchProgress() {
 
   useEffect(() => {
     const unlistenProgress = listen<LaunchProgressEvent>("launch-progress", (event) => {
+      setError(null);
       setStatus(event.payload.status);
       setPercent(event.payload.percent);
     });

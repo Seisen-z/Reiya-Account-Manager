@@ -3,6 +3,7 @@ import { SearchIcon, StarIcon } from "./Icons";
 
 type FilterTab = "all" | "favorites" | "valid";
 type SortBy = "last_launched" | "name_asc" | "name_desc" | "status" | "added" | "custom";
+type ViewMode = "card" | "list";
 
 export const AccountsToolbar: FC<{
   t: (key: string) => string;
@@ -18,9 +19,11 @@ export const AccountsToolbar: FC<{
   setFilter: (v: FilterTab) => void;
   sortBy: SortBy;
   setSortBy: Dispatch<SetStateAction<SortBy>>;
+  viewMode: ViewMode;
+  setViewMode: (mode: ViewMode) => void;
 }> = ({
   t, groups, totalCount, groupCounts, activeGroup, setActiveGroup,
-  search, setSearch, searchInputRef, filter, setFilter, sortBy, setSortBy,
+  search, setSearch, searchInputRef, filter, setFilter, sortBy, setSortBy, viewMode, setViewMode,
 }) => {
   return (
     <>
@@ -117,6 +120,25 @@ export const AccountsToolbar: FC<{
           <option value="added">Recently Added</option>
           <option value="custom">✦ Custom Order</option>
         </select>
+
+        <div className="premium-tab-track" style={{ flexShrink: 0 }} title="Account layout">
+          {([[
+            "card", "▦", "Card view",
+          ], [
+            "list", "☰", "List view",
+          ]] as [ViewMode, string, string][]).map(([mode, icon, label]) => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={`premium-tab ${viewMode === mode ? "active" : ""}`}
+              title={label}
+              aria-label={label}
+              style={{ width: 34, height: 32, display: "flex", alignItems: "center", justifyContent: "center", padding: 0, fontSize: 14, fontWeight: 900 }}
+            >
+              {icon}
+            </button>
+          ))}
+        </div>
       </div>
     </>
   );
