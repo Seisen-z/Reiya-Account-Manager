@@ -1,21 +1,26 @@
-﻿import { useState } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { THEMES, useTheme, type Theme } from "../context/ThemeContext";
 import { useToast } from "../components/Toast";
 
-type Tab = "dark" | "light";
+import { getHolidayEvents, getActiveHoliday, lunarNewYearDate } from "../context/seasonalTheme";
+
+type Tab = "dark" | "light" | "seasonal";
 
 export default function ThemePage() {
-  const { activeTheme, setTheme } = useTheme();
+  const { activeTheme, setTheme, automatic, useAutomaticTheme } = useTheme();
   const toast = useToast();
   const [tab, setTab] = useState<Tab>(() =>
-    activeTheme.category === "light" ? "light" : "dark"
+    activeTheme.seasonal ? "seasonal" : activeTheme.category
   );
+  const year = new Date().getFullYear();
+  const holiday = getActiveHoliday();
+  const schedule = getHolidayEvents(year);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const handleSelect = async (theme: Theme) => {
-    if (theme.id === activeTheme.id) return;
+    if (theme.id === activeTheme.id && !automatic) return;
     setTheme(theme);
     setSaving(true); setSaved(false);
     try {
@@ -29,8 +34,8 @@ export default function ThemePage() {
     } finally { setSaving(false); }
   };
 
-  const filtered = THEMES.filter(t => t.category === tab);
-  const darkCount = THEMES.filter(t => t.category === "dark").length;
+  const filtered = THEMES.filter(t => tab === "seasonal" ? t.seasonal : !t.seasonal && t.category === tab);
+  const darkCount = THEMES.filter(t => !t.seasonal && t.category === "dark").length;
   const lightCount = THEMES.filter(t => t.category === "light").length;
 
   return (
@@ -79,9 +84,20 @@ export default function ThemePage() {
           </div>
         </div>
 
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface-2)" }}>
+          <span style={{ flex: 1, fontSize: 11, color: "var(--t2)" }}>{automatic ? (holiday ? `${holiday.name} is active. Seasonal themes repeat every year.` : "Automatic mode is on. Your normal theme returns between holidays.") : "Manual mode: your chosen theme stays selected, even during holidays."}</span>
+          <button className="btn btn-ghost" onClick={useAutomaticTheme} disabled={automatic}>{automatic ? "Automatic · On" : "Use automatic theme"}</button>
+        </div>
+        <details className="seasonal-calendar">
+          <summary>Annual holiday calendar · {year}</summary>
+          <div className="seasonal-calendar-grid">{schedule.map(event => <div key={event.name}><b>{event.name}</b><span>{event.start.toLocaleDateString(undefined,{month:'short',day:'numeric'})}{event.end.getTime()-event.start.getTime()>86400000 ? ' – '+new Date(event.end.getFullYear(),event.end.getMonth(),event.end.getDate()-1).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : ''}</span></div>)}</div>
+          <p>Uses your computer’s local date. Halloween: October 9–November 30. All other holidays use the dates shown. Lunar New Year takes priority over Valentine on a shared date; Easter takes priority over Earth Day. Easter uses the Gregorian calendar. Lunar New Year uses offline Hong Kong Observatory dates (2026–2100).</p>
+          {!lunarNewYearDate(year)&&<p>Lunar New Year automatic dates cover 2026–2100. Outside that range, its manual theme remains available.</p>}
+        </details>
         {/* Tabs */}
         <div style={{ display: "flex", gap: 0 }}>
           {([
+            { id: "seasonal" as Tab, label: "Seasonal", count: THEMES.filter(t => t.seasonal).length, icon: "🎃" },
             { id: "dark" as Tab, label: "Dark", count: darkCount, icon: "🌙" },
             { id: "light" as Tab, label: "Light", count: lightCount, icon: "☀️" },
           ]).map(({ id, label, count, icon }) => {
@@ -108,9 +124,9 @@ export default function ThemePage() {
                 <span style={{
                   fontSize: 9, fontWeight: 800,
                   padding: "1px 6px", borderRadius: 99,
-                  background: active ? "var(--accent)" + "22" : "var(--g05)",
+                  background: active ? "var(--accent-dim)" : "var(--g05)",
                   color: active ? "var(--accent)" : "var(--t3)",
-                  border: active ? `1px solid ${"var(--accent)"}30` : "1px solid var(--g06)",
+                  border: active ? "1px solid var(--accent)" : "1px solid var(--g06)",
                   transition: "all .15s",
                 }}>{count}</span>
               </button>
@@ -146,6 +162,8 @@ function ThemeCard({ theme, active, onSelect }: { theme: Theme; active: boolean;
 
   return (
     <button
+      aria-label={`${theme.name} theme`}
+      aria-pressed={active}
       onClick={onSelect}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -181,6 +199,8 @@ function ThemeCard({ theme, active, onSelect }: { theme: Theme; active: boolean;
         position: "relative",
         overflow: "hidden",
       }}>
+        {theme.artwork && <img src={theme.artwork} alt="" style={{ position: "absolute", bottom: 0, right: 0, width: "100%", pointerEvents: "none", zIndex: 1 }} />}
+        {!theme.artwork && theme.seasonalIcon && <span aria-hidden="true" style={{position:'absolute',right:12,bottom:5,fontSize:48,color:theme.vars['--accent'],opacity:.3,pointerEvents:'none'}}>{theme.seasonalIcon}</span>}
         {/* Accent glow */}
         <div style={{
           position: "absolute", top: -30, right: -30,

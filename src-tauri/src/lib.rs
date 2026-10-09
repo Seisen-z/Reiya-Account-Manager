@@ -40,6 +40,7 @@ impl Drop for LaunchProgressGuard {
 }
 
 mod browser_extractor;
+mod premium;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 #[derive(Clone, Serialize, Deserialize)]
@@ -7576,6 +7577,8 @@ pub fn run() {
     #[cfg(windows)]
     let _instance_mutex = acquire_single_instance_mutex();
 
+    if let Err(_) = premium::apply_pending_restore() { eprintln!("Premium restore failed; original data retained"); }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -7957,6 +7960,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            premium::premium_activate, premium::premium_status, premium::premium_backup,
+            premium::premium_backups, premium::premium_restore, premium::premium_restore_preferences, premium::premium_restart, premium::premium_deactivate,
             greet,
             get_accounts,
             add_account,

@@ -9,6 +9,7 @@ function handleDragStart(e: React.MouseEvent) {
 export default function TitleBar() {
   return (
     <div
+      className="app-titlebar"
       onMouseDown={handleDragStart}
       style={{
         height: 38,

@@ -26,7 +26,7 @@ export function AddAccountDisclosure({
     <>
       <button
         onClick={e => { e.stopPropagation(); onOpenChange(!open); }}
-        className="btn glow-btn"
+        className="btn glow-btn halloween-primary"
         style={{
           borderRadius: 8, padding: "7px 14px", fontSize: 11, fontWeight: 800,
           background: "#FFFFFF", color: "#07080a", border: "none",

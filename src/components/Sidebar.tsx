@@ -19,6 +19,7 @@ const NAV_GROUPS = [
     { to: "/utilities",    id: "utilities",    Icon: IcGrid },
   ],
   [
+    { to: "/premium", id: "premium", Icon: IcTheme },
     { to: "/theme",        id: "theme",        Icon: IcTheme },
     { to: "/settings",     id: "settings",     Icon: IcSettings },
   ],
@@ -96,7 +97,7 @@ export default function Sidebar() {
   }, []);
 
   return (
-    <aside style={{
+    <aside className="app-sidebar" style={{
       width: 210,
       flexShrink: 0,
       background: "var(--surface)",
@@ -142,7 +143,7 @@ export default function Sidebar() {
               className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
             >
               <span className="nav-icon"><Icon /></span>
-              {t(id)}
+              {id === "premium" ? "Premium" : t(id)}
             </NavLink>
           ))}
           {i < NAV_GROUPS.length - 1 && <div className="divider" style={{ margin: "8px 6px 0" }} />}

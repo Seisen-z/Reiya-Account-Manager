@@ -1,0 +1,33 @@
+
+import {useEffect,useState} from 'react';
+import {cloudPreferenceSnapshot} from '../lib/cloudRestorePreferences';
+import {invoke} from '@tauri-apps/api/core';
+import {openUrl} from '@tauri-apps/plugin-opener';
+type Status={premium:boolean;display_name?:string;profile_id?:string;expires_at?:string};
+type Backup={id:string;created_at:string;metadata:{accounts:number;files:number;bytes:number}};
+export const cloudPreferences=cloudPreferenceSnapshot;
+export default function Premium(){
+ const [status,setStatus]=useState<Status>({premium:false}),[key,setKey]=useState(''),[name,setName]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[backups,setBackups]=useState<Backup[]>([]),[restore,setRestore]=useState<string|null>(null);
+ const [automatic,setAutomatic]=useState(()=>localStorage.getItem('reiya_premium_auto_backup')==='true');
+ const load=async()=>{const s=await invoke<Status>('premium_status');setStatus(s);if(s.premium){const b=await invoke<{backups:Backup[]}>('premium_backups');setBackups(b.backups);}};
+ useEffect(()=>{load().catch(e=>setMessage(String(e)));},[]);
+ const run=async(fn:()=>Promise<void>)=>{setBusy(true);setMessage('');try{await fn();}catch(e){setMessage(String(e));}finally{setBusy(false);}};
+ return <div className="scroll" style={{padding:28}}><div style={{maxWidth:800,margin:'0 auto'}}>
+  <h1 style={{fontSize:24,fontWeight:800}}>Premium & Cloud Backup</h1>{import.meta.env.DEV&&<p style={{color:"var(--amber)",marginTop:8}}>Local test mode - API and Sandbox purchases use localhost:5173.</p>}<p style={{color:'var(--t2)',margin:'8px 0 20px'}}>No account or password required. Your Premium key identifies your subscription and cloud profile. Free mode always keeps working locally.</p>
+  <section className="card" style={{marginBottom:18}}><h2 style={{fontSize:15,marginBottom:10}}>{status.premium?'Premium active':'Activate Premium'}</h2>
+   {status.premium?<><p>{status.display_name} | Paid until {new Date(status.expires_at!).toLocaleString()}</p><p style={{color:'var(--t3)',fontSize:11,marginTop:5}}>Profile: {status.profile_id}</p><button className="btn btn-ghost" disabled={busy} style={{marginTop:12}} onClick={()=>run(async()=>{await invoke('premium_deactivate');setStatus({premium:false});setBackups([]);localStorage.setItem('reiya_premium_auto_backup','false');setAutomatic(false);})}>Deactivate this device</button></>:<>
+    <label style={{display:'block',marginBottom:6}}>Premium key</label><input className="field" type="password" autoComplete="off" spellCheck={false} value={key} onChange={e=>setKey(e.target.value)} placeholder="REIYA-P-..."/>
+    <label style={{display:'block',margin:'12px 0 6px'}}>Display name (optional, first activation)</label><input className="field" value={name} maxLength={48} onChange={e=>setName(e.target.value)} placeholder="Your display name"/>
+    <div style={{display:'flex',gap:10,marginTop:14}}><button className="btn btn-primary" disabled={busy||!key.trim()} onClick={()=>run(async()=>{const s=await invoke<Status>('premium_activate',{key,displayName:name});setKey('');setStatus(s);await load();setMessage('Premium activated. Back up this computer or restore an existing backup.');})}>Activate Premium</button><button className="btn btn-ghost" onClick={()=>openUrl(import.meta.env.DEV?'http://localhost:5173/premium':'https://www.reiyaa.co/premium')}>Buy with PayPal</button></div>
+    <p style={{color:'var(--t3)',fontSize:11,marginTop:12}}>Keep your key private. Enter the same key on another computer to access the same cloud backups.</p>
+   </>}
+  </section>
+  {status.premium&&<section className="card"><h2 style={{fontSize:15}}>Encrypted full-data backups</h2><p style={{color:'var(--t2)',margin:'9px 0 16px'}}>Accounts and credentials, groups, notes, saved/recent games, session history, settings, UI preferences and bootstrapper configuration. Keeps up to five cloud snapshots (up to 2 MB each), for 15 days after each upload. Expired cloud backups are automatically deleted. Keep an independent local backup; cloud expiry does not delete your local app data. Restoring replaces managed data and preferences with the snapshot.</p>
+   <div style={{display:'flex',gap:10,marginBottom:14}}><button className="btn btn-primary" disabled={busy} onClick={()=>run(async()=>{await invoke('premium_backup',{preferences:cloudPreferences()});await load();setMessage('Encrypted cloud backup saved.');})}>Back up everything now</button><button className="btn btn-ghost" disabled={busy} onClick={()=>run(load)}>Refresh backups</button></div>
+   <label style={{display:'flex',gap:8,alignItems:'center',color:'var(--t2)'}}><input type="checkbox" checked={automatic} onChange={e=>{setAutomatic(e.target.checked);localStorage.setItem('reiya_premium_auto_backup',String(e.target.checked));}}/>Automatic backups every 30 minutes while Reiya is open</label>
+   <div style={{marginTop:16}}>{backups.length===0?<p style={{color:'var(--t3)'}}>No cloud backups yet.</p>:backups.map(b=><div key={b.id} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 0',borderTop:'1px solid var(--border)'}}><div style={{flex:1}}>{new Date(b.created_at).toLocaleString()}<p style={{fontSize:11,color:'var(--t3)'}}>{b.metadata.accounts} accounts | {b.metadata.files} files | {Math.ceil(b.metadata.bytes/1024)} KB</p></div><button className="btn btn-ghost" disabled={busy} onClick={()=>setRestore(b.id)}>Restore</button></div>)}</div>
+   {restore&&<div style={{marginTop:16,padding:16,border:'1px solid var(--amber)',borderRadius:12}}><p>Restore this snapshot and restart Reiya? This replaces matching local data. A local rollback copy is created automatically. Your local vault protection is retained.</p><div style={{display:'flex',gap:10,marginTop:12}}><button className="btn btn-primary" disabled={busy} onClick={()=>run(async()=>{await invoke('premium_restore',{backupId:restore});await invoke('premium_restart');})}>Restart and restore</button><button className="btn btn-ghost" disabled={busy} onClick={()=>setRestore(null)}>Cancel</button></div></div>}
+  </section>}
+  {(busy||message)&&<p role="status" style={{marginTop:16,color:'var(--t2)',overflowWrap:'anywhere'}}>{busy?'Working...':message}</p>}
+ </div></div>;
+}

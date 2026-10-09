@@ -12,3 +12,8 @@ src-tauri/gen/
 src-tauri/target_test/
 .claude/
 supabase/.temp/
+
+.codex-artifacts/
+.env.*
+!.env.example
+Reiya-Website.md

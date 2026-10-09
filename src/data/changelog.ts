@@ -40,6 +40,17 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.17", date: "2026-10-10", title: "Premium cloud backup and recurring seasonal themes",
+    changes: [
+      { kind: "new", text: "Activate Premium with a key in the same app; back up and restore your workspace on up to three computers." },
+      { kind: "new", text: "Optional automatic encrypted cloud backups for accounts, games, settings and app data." },
+      { kind: "new", text: "Seven yearly seasonal themes with cartoon artwork: Halloween, New Year, Valentine, Christmas, Lunar New Year, Easter and Earth Day." },
+      { kind: "improved", text: "Manual themes stay selected; automatic mode follows the local date and restores your normal theme between holidays." },
+      { kind: "improved", text: "Keep up to five cloud snapshots for 15 days after upload. Expired snapshots are automatically removed; local data stays untouched." },
+      { kind: "improved", text: "Redesigned website with an actual-app demo, Premium plans, policy pages and release notes." }
+    ]
+  },
+  {
     version: "1.1.16",
     date: "2026-10-02",
     title: "Account tools, launch recovery, and layout controls",

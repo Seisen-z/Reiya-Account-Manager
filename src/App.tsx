@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { applyRestoredPreferences } from "./lib/cloudRestorePreferences";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
@@ -12,6 +13,8 @@ import Utilities    from "./pages/Utilities";
 import Settings     from "./pages/Settings";
 import Bootstrapper from "./pages/Bootstrapper";
 import ThemePage    from "./pages/Theme";
+import Premium from "./pages/Premium";
+import PremiumAutoBackup from "./components/PremiumAutoBackup";
 import Changelog     from "./pages/Changelog";
 import LaunchProgress from "./pages/LaunchProgress";
 import Onboarding    from "./pages/Onboarding";
@@ -57,6 +60,7 @@ function AppContent() {
 
   return (
     <div className="app">
+      <PremiumAutoBackup />
       <TitleBar />
       <div className="app-body">
         <Sidebar />
@@ -68,6 +72,7 @@ function AppContent() {
             <Route path="/rscript"      element={<Rscripts />} />
             <Route path="/utilities"    element={<Utilities />} />
             <Route path="/bootstrapper" element={<Bootstrapper />} />
+            <Route path="/premium" element={<Premium />} />
             <Route path="/theme"        element={<ThemePage />} />
             <Route path="/settings"     element={<Settings />} />
             <Route path="/changelog"    element={<Changelog />} />
@@ -81,7 +86,7 @@ function AppContent() {
 function AppInner() {
   const { updateInfo } = useUpdate();
   const { t, setLanguage } = useLanguage();
-  const { setTheme } = useTheme();
+  const { hydrateTheme } = useTheme();
   const [ready, setReady] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(
     () => localStorage.getItem("reiya_onboarding_v1") === "done"
@@ -95,19 +100,24 @@ function AppInner() {
   const [lockOnMinimize, setLockOnMinimize] = useState(false);
 
   useEffect(() => {
-    Promise.all([
+    const restorePreferences=async()=>{
+      const preferences=await invoke<Record<string,string>|null>("premium_restore_preferences",{acknowledge:false});
+      if(preferences){
+        applyRestoredPreferences(preferences);
+        await invoke("premium_restore_preferences",{acknowledge:true});
+        setOnboardingDone(localStorage.getItem("reiya_onboarding_v1")==="done");
+        setSecuritySetupDone(localStorage.getItem("reiya_security_setup_v1")==="done"||localStorage.getItem("reiya_onboarding_v1")==="done");
+      }
+    };
+    restorePreferences().catch(()=>{}).then(()=>Promise.all([
       invoke<any>("get_settings").catch(() => ({})),
       invoke<string>("get_security_mode").catch(() => "default"),
-    ]).then(([settings, secMode]) => {
+    ])).then(([settings, secMode]) => {
       setReady(true);
       setSecurityMode(secMode === "password" ? "password" : "default");
       if (secMode !== "password") setVaultUnlocked(true);
       if (settings?.Language) setLanguage(settings.Language);
-      if (settings?.ThemeName) {
-        const saved = THEMES.find(t => t.id === settings.ThemeName);
-        if (saved) setTheme(saved);
-        else applyTheme(THEMES[0]);
-      }
+      hydrateTheme(settings?.ThemeName);
       if (settings?.AppLockEnabled) setLocked(true);
       if (settings?.AppLockOnMinimize) setLockOnMinimize(true);
       localStorage.setItem("reiya_use_bootstrapper", settings?.UseBootstrapperLaunch !== false ? "true" : "false");
@@ -175,7 +185,7 @@ function AppInner() {
 }
 
 import { LanguageProvider } from "./context/LanguageContext";
-import { ThemeProvider, useTheme, THEMES, applyTheme } from "./context/ThemeContext";
+import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { ToastProvider } from "./components/Toast";
 
 export default function App() {

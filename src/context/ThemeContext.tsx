@@ -1,5 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
+import { HOLIDAY_THEMES } from "./holidayThemes";
+import { resolveThemeId, readThemePreference, writeThemePreference, THEME_PREFERENCE_KEY, type ThemePreference } from "./seasonalTheme";
+
 export interface ThemeVars {
   "--bg": string;
   "--surface": string;
@@ -20,6 +23,9 @@ export interface Theme {
   id: string;
   name: string;
   description: string;
+  seasonal?: boolean;
+  seasonalIcon?: string;
+  artwork?: string;
   category: "dark" | "light";
   previewBg: string;
   previewAccent: string;
@@ -557,7 +563,7 @@ export const THEMES: Theme[] = [
     },
   },
 
-  // ── Light themes ─────────────────────────────────────────────────────────
+  // â”€â”€ Light themes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   {
     id: "snow",
     name: "Snow",
@@ -744,12 +750,31 @@ export const THEMES: Theme[] = [
   },
 ];
 
+THEMES.push({
+  id: "halloween", name: "Halloween", category: "dark", seasonal: true, artwork: "/themes/halloween-cartoon.png",
+  description: "Cute pumpkins, friendly ghosts & candy colors",
+  previewBg: "#171022", previewAccent: "#ff9f32",
+  vars: {
+    "--bg": "#171022", "--surface": "#21172e", "--surface-2": "#30203e", "--surface-3": "#422c52",
+    "--accent": "#ff9f32", "--accent-text": "#281337", "--t1": "#fff3df", "--t2": "#d7b9e9", "--t3": "#ad90bd",
+    "--green": "#34d399", "--amber": "#ffbf47", "--red": "#fb7185", "--border": "rgba(255,175,76,0.35)",
+  },
+});
+
+THEMES.push(...HOLIDAY_THEMES);
+
 export function applyTheme(theme: Theme) {
   const root = document.documentElement;
   for (const [key, val] of Object.entries(theme.vars)) {
     root.style.setProperty(key, val);
   }
 
+  const halloween = theme.id === "halloween";
+  root.setAttribute("data-theme-id", theme.id);
+  root.setAttribute("data-seasonal", String(!!theme.seasonal));
+  root.style.setProperty("--seasonal-artwork", theme.artwork ? `url(${JSON.stringify(theme.artwork)})` : "none");
+  root.style.setProperty("--seasonal-symbol", JSON.stringify(theme.seasonalIcon || "\u{1f383}"));
+  root.style.colorScheme = theme.category;
   const light = theme.category === "light";
   root.setAttribute("data-theme", theme.category);
 
@@ -759,7 +784,7 @@ export function applyTheme(theme: Theme) {
   root.style.setProperty("--border-mid",   theme.vars["--border"]);
   root.style.setProperty("--accent-2",     light ? theme.vars["--t2"]      : "#A0A0A0");
 
-  // Adaptive glass helpers — rgba(255,255,255,X) in dark, rgba(0,0,0,X) in light
+  // Adaptive glass helpers â€” rgba(255,255,255,X) in dark, rgba(0,0,0,X) in light
   const g = (a: number) => light ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`;
   root.style.setProperty("--g01",  g(0.01));
   root.style.setProperty("--g02",  g(0.02));   // alias: --glass-subtle
@@ -792,38 +817,73 @@ export function applyTheme(theme: Theme) {
   root.style.setProperty("--modal-bg",       light ? "#ffffff"                 : "rgba(10,11,16,0.97)");
   root.style.setProperty("--modal-border",   light ? "rgba(0,0,0,0.10)"        : "rgba(255,255,255,0.08)");
   root.style.setProperty("--chart-line",     theme.vars["--accent"]);
-  root.style.setProperty("--logo-filter",    light ? "brightness(0)"           : "none");
+  root.style.setProperty("--logo-filter", halloween ? "sepia(1) saturate(6) hue-rotate(350deg)" : light ? "brightness(0)" : "none");
+  if (theme.seasonal && !halloween) {
+    const hex=theme.vars["--accent"].slice(1);
+    const rgb=[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)).join(",");
+    const tint=(a:number)=>`rgba(${rgb},${a})`;
+    for(const n of [1,2,3,4,5,6,7,8,9,10,12,15,18,20,25,30,35])root.style.setProperty(`--g${String(n).padStart(2,"0")}`,tint(n/100));
+    for(const [key,value] of Object.entries({
+      "--glass-subtle":tint(.02),"--glass-line-2":tint(.12),"--glass-line":tint(.20),"--glass-line-strong":tint(.30),
+      "--panel-bg":theme.vars["--surface"],"--input-bg-solid":theme.vars["--surface-2"],"--input-border":tint(.26),
+      "--input-focus":tint(.65),"--modal-bg":theme.vars["--surface"],"--modal-border":tint(.3),"--accent-2":theme.vars["--accent"]
+    }))root.style.setProperty(key,value);
+  }
+  if (halloween) {
+    const g = (a: number) => `rgba(255,149,14,${a})`;
+    for (const n of [1,2,3,4,5,6,7,8,9,10,12,15,18,20,25,30,35]) root.style.setProperty(`--g${String(n).padStart(2,"0")}`, g(n/100));
+    for (const [key, value] of Object.entries({
+      "--glass-subtle": g(.02), "--glass-line-2": g(.12), "--glass-line": g(.20), "--glass-line-strong": g(.30),
+      "--panel-bg": "rgba(33,23,46,.94)", "--input-bg-solid": "#251a32", "--input-border": g(.26),
+      "--input-focus": g(.65), "--modal-bg": "rgba(33,23,46,.98)", "--modal-border": g(.3), "--accent-2": "#ffbf47",
+    })) root.style.setProperty(key, value);
+  }
 }
 
 interface ThemeContextValue {
   activeTheme: Theme;
   setTheme: (t: Theme) => void;
+  hydrateTheme: (savedId?: string) => void;
+  useAutomaticTheme: () => void;
+  automatic: boolean;
   themes: Theme[];
 }
-
+const getTheme = (id: string) => THEMES.find(t => t.id === id) || THEMES[0];
 const ThemeContext = createContext<ThemeContextValue>({
-  activeTheme: THEMES[0],
-  setTheme: () => {},
-  themes: THEMES,
+  activeTheme: THEMES[0], setTheme: () => {}, hydrateTheme: () => {}, useAutomaticTheme: () => {}, automatic: true, themes: THEMES,
 });
-
 export function useTheme() { return useContext(ThemeContext); }
-
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [activeTheme, setActiveThemeState] = useState<Theme>(THEMES[0]);
-
+  const [preference, setPreference] = useState<ThemePreference | null>(readThemePreference);
+  const [savedId, setSavedId] = useState<string>();
+  const [activeTheme, setActiveThemeState] = useState<Theme>(() => getTheme(resolveThemeId(undefined, readThemePreference())));
+  const activate = (id: string) => { const theme = getTheme(id); setActiveThemeState(theme); applyTheme(theme); };
   const setTheme = (t: Theme) => {
-    setActiveThemeState(t);
-    applyTheme(t);
+    const p: ThemePreference = { mode: "manual", themeId: t.id, previousId: !t.seasonal ? t.id : preference?.previousId || savedId || "reiya-dark" };
+    writeThemePreference(p); setPreference(p); activate(t.id);
   };
-
-  useEffect(() => { applyTheme(activeTheme); }, []);
-
-  return (
-    <ThemeContext.Provider value={{ activeTheme, setTheme, themes: THEMES }}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  const hydrateTheme = (id?: string) => {
+    setSavedId(id);
+    const p = readThemePreference() || { mode: "automatic" as const, previousId: id || "reiya-dark" };
+    writeThemePreference(p); setPreference(p); activate(resolveThemeId(id, p));
+  };
+  const useAutomaticTheme = () => {
+    const p: ThemePreference = { mode: "automatic", previousId: preference?.previousId || savedId || "reiya-dark" };
+    writeThemePreference(p); setPreference(p); activate(resolveThemeId(savedId, p));
+  };
+  useEffect(() => {
+    const refresh = () => activate(resolveThemeId(savedId, preference));
+    refresh();
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener("focus", refresh);
+    return () => { clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [savedId, preference]);
+  useEffect(() => {
+    const sync = (event: StorageEvent) => { if (event.key === THEME_PREFERENCE_KEY) setPreference(readThemePreference()); };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, []);
+  return <ThemeContext.Provider value={{ activeTheme, setTheme, hydrateTheme, useAutomaticTheme, automatic: preference?.mode !== "manual", themes: THEMES }}>{children}</ThemeContext.Provider>;
 }
 
 // Kept for backward-compat with Settings.tsx import

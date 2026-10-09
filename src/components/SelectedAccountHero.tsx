@@ -52,6 +52,7 @@ export const SelectedAccountHero: FC<{
 
   return (
     <div
+      className="launch-console"
       style={{
         display: "flex",
         height: 235,
@@ -692,7 +693,7 @@ export const SelectedAccountHero: FC<{
             <button
               onClick={onLaunch}
               disabled={launching || selAccount === null || accounts.length === 0}
-              className="btn glow-btn"
+              className="btn glow-btn halloween-primary"
               style={{
                 padding: "8px 22px",
                 borderRadius: 8,
