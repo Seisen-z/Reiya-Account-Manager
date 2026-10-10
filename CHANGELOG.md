@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.19 - 2026-10-10
+
+### Improved
+- Refined all eight seasonal palettes with readable text, coordinated controls and distinct holiday accents. Halloween now uses warm charcoal instead of purple.
+
+### Added
+- St. Patrick's Day seasonal theme: March 17 every year, emerald-and-gold cartoon shamrocks, and manual selection.
+
 ## v1.1.18 - 2026-10-10
 
 ### Added

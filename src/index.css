@@ -350,35 +350,35 @@ html, body, #root {
 
 /* Cartoon Halloween: static sticker artwork, scoped exclusively to this theme. */
 :root[data-theme-id="halloween"] .app { background: var(--bg); }
-:root[data-theme-id="halloween"] .app-titlebar { background: #21172e !important; border-bottom: 2px solid #ff9f3266 !important; }
-:root[data-theme-id="halloween"] .app-titlebar span { color: #ffbd69 !important; }
-:root[data-theme-id="halloween"] .app-sidebar { position: relative; isolation: isolate; background: #21172e !important; border-right: 2px solid #ff9f3266 !important; }
+:root[data-theme-id="halloween"] .app-titlebar { background: var(--surface) !important; border-bottom: 2px solid var(--border) !important; }
+:root[data-theme-id="halloween"] .app-titlebar span { color: var(--accent) !important; }
+:root[data-theme-id="halloween"] .app-sidebar { position: relative; isolation: isolate; background: var(--surface) !important; border-right: 2px solid var(--border) !important; }
 :root[data-theme-id="halloween"] .app-sidebar::before { content: ""; position: absolute; left: 0; right: 0; bottom: 98px; height: 245px; background: url('/themes/halloween-cartoon.png') left bottom / 350px auto no-repeat; z-index: -1; pointer-events: none; }
-:root[data-theme-id="halloween"] .nav-icon { color: #ffbd69; }
+:root[data-theme-id="halloween"] .nav-icon { color: var(--accent); }
 :root[data-theme-id="halloween"] .nav-item { border-radius: 13px; }
-:root[data-theme-id="halloween"] .nav-item.active { background: #ff9f3226; border: 2px solid #ffb65c; box-shadow: 0 3px 0 #10091b; }
-:root[data-theme-id="halloween"] .home-header { background: url('/themes/halloween-cartoon.png') center bottom / 430px auto no-repeat, #21172e; border-bottom: 2px solid #ff9f3255 !important; }
+:root[data-theme-id="halloween"] .nav-item.active { background: var(--accent-dim); border: 2px solid var(--accent); box-shadow: 0 3px 0 var(--bg); }
+:root[data-theme-id="halloween"] .home-header { background: url('/themes/halloween-cartoon.png') center bottom / 430px auto no-repeat, var(--surface); border-bottom: 2px solid var(--border) !important; }
 :root[data-theme-id="halloween"] .home-header > * { position: relative; }
 :root[data-theme-id="halloween"] .home-header > div:first-child > div:last-child::after { content: " \1F383"; font-size: 19px; }
-:root[data-theme-id="halloween"] .btn-primary { background: #ff9f32; color: #281337; border: 2px solid #ffd391; border-radius: 12px; box-shadow: 0 3px 0 #9c4c23; }
-:root[data-theme-id="halloween"] .btn-primary:hover { background: #ffbb61; }
-:root[data-theme-id="halloween"] .btn-ghost { background: #30203e; border: 2px solid #ac7acc80; border-radius: 12px; box-shadow: 0 2px 0 #10091b; }
+:root[data-theme-id="halloween"] .btn-primary { background: var(--accent); color: var(--accent-text); border: 2px solid var(--control-border); border-radius: 12px; box-shadow: 0 3px 0 var(--bg); }
+:root[data-theme-id="halloween"] .btn-primary:hover { background: var(--accent-hover); }
+:root[data-theme-id="halloween"] .btn-ghost { background: var(--surface-2); border: 2px solid var(--control-border); border-radius: 12px; box-shadow: 0 2px 0 var(--bg); }
 :root[data-theme-id="halloween"] .card,
-:root[data-theme-id="halloween"] .glass-container { background: linear-gradient(135deg, #30203eee, #21172eee), url('/themes/halloween-cartoon.png') right bottom / 180px auto no-repeat; border: 2px solid #bd8cd566; border-radius: 18px; box-shadow: 0 4px 0 #10091b; }
-:root[data-theme-id="halloween"] .field { border: 2px solid #ac7acc66; border-radius: 12px; }
-:root[data-theme-id="halloween"] .field:focus { border-color: #ffbd69; }
-:root[data-theme-id="halloween"] .section-title { color: #ffbd69; }
+:root[data-theme-id="halloween"] .glass-container { background: linear-gradient(135deg, var(--surface-2), var(--surface)), url('/themes/halloween-cartoon.png') right bottom / 180px auto no-repeat; border: 2px solid var(--border); border-radius: 18px; box-shadow: 0 4px 0 var(--bg); }
+:root[data-theme-id="halloween"] .field { border: 2px solid var(--control-border); border-radius: 12px; }
+:root[data-theme-id="halloween"] .field:focus { border-color: var(--accent); }
+:root[data-theme-id="halloween"] .section-title { color: var(--accent); }
 :root[data-theme-id="halloween"] .section-dot { display: none; }
 :root[data-theme-id="halloween"] .section-title::before { content: "\1F383"; font-size: 13px; }
 
 /* Final cartoon integration for primary controls with legacy inline styling. */
-:root[data-theme-id="halloween"] .halloween-primary { background: #ff9f32 !important; color: #281337 !important; border: 2px solid #ffd391 !important; border-radius: 12px !important; box-shadow: 0 3px 0 #9c4c23 !important; }
-:root[data-theme-id="halloween"] .halloween-primary:not(:disabled):hover { background: #ffbb61 !important; }
+:root[data-theme-id="halloween"] .halloween-primary { background: var(--accent) !important; color: var(--accent-text) !important; border: 2px solid var(--control-border) !important; border-radius: 12px !important; box-shadow: 0 3px 0 var(--bg) !important; }
+:root[data-theme-id="halloween"] .halloween-primary:not(:disabled):hover { background: var(--accent-hover) !important; }
 :root[data-theme-id="halloween"] .halloween-primary:disabled { opacity: .45; cursor: not-allowed; }
-:root[data-theme-id="halloween"] .halloween-primary svg { color: #281337 !important; }
-:root[data-theme-id="halloween"] .launch-console { background: #21172e !important; border-bottom: 2px solid #ff9f3255 !important; }
+:root[data-theme-id="halloween"] .halloween-primary svg { color: var(--accent-text) !important; }
+:root[data-theme-id="halloween"] .launch-console { background: var(--surface) !important; border-bottom: 2px solid var(--border) !important; }
 :root[data-theme-id="halloween"] button:focus-visible,
-:root[data-theme-id="halloween"] a:focus-visible { outline: 2px solid #ffd391; outline-offset: 3px; }
+:root[data-theme-id="halloween"] a:focus-visible { outline: 2px solid var(--control-border); outline-offset: 3px; }
 
 /* Recurring seasonal accents: static, restrained and non-interactive. Halloween keeps its artwork. */
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .app-sidebar { position: relative; isolation: isolate; border-right: 1px solid var(--border) !important; }
@@ -402,11 +402,21 @@ html, body, #root {
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .card,
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .glass-container { border: 2px solid var(--border); border-radius: 18px; box-shadow: 0 4px 0 var(--bg); }
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .btn-primary,
-:root[data-seasonal="true"]:not([data-theme-id="halloween"]) .halloween-primary { background: var(--accent) !important; color: var(--accent-text) !important; border: 2px solid var(--t1) !important; border-radius: 12px !important; box-shadow: 0 3px 0 var(--bg) !important; }
+:root[data-seasonal="true"]:not([data-theme-id="halloween"]) .halloween-primary { background: var(--accent) !important; color: var(--accent-text) !important; border: 2px solid var(--accent) !important; border-radius: 12px !important; box-shadow: 0 3px 0 var(--bg) !important; }
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .halloween-primary svg { color: var(--accent-text) !important; }
-:root[data-seasonal="true"]:not([data-theme-id="halloween"]) .btn-ghost { background: var(--surface-2); border: 2px solid var(--border); border-radius: 12px; box-shadow: 0 2px 0 var(--bg); }
-:root[data-seasonal="true"]:not([data-theme-id="halloween"]) .field { border: 2px solid var(--border); border-radius: 12px; }
+:root[data-seasonal="true"]:not([data-theme-id="halloween"]) .btn-ghost { background: var(--surface-2); border: 2px solid var(--control-border); border-radius: 12px; box-shadow: 0 2px 0 var(--bg); }
+:root[data-seasonal="true"]:not([data-theme-id="halloween"]) .field { border: 2px solid var(--control-border); border-radius: 12px; }
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .field:focus { border-color: var(--accent); }
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .app-titlebar,
 :root[data-seasonal="true"]:not([data-theme-id="halloween"]) .launch-console { background: var(--surface) !important; border-bottom: 2px solid var(--border) !important; }
 :root[data-seasonal="true"] button:focus-visible,:root[data-seasonal="true"] a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* Seasonal color roles: hover stays in-palette; status meanings never change. */
+:root[data-seasonal="true"] .btn-primary:not(:disabled):hover,
+:root[data-seasonal="true"] .halloween-primary:not(:disabled):hover { background: var(--accent-hover) !important; }
+
+:root[data-seasonal="true"] .nav-item:hover {
+  background: var(--surface-3); color: var(--t1); border-color: var(--control-border);
+}
+:root[data-seasonal="true"] .nav-item.active { color: var(--t1); }
+:root[data-seasonal="true"] .nav-item:hover .nav-icon { color: var(--accent); }

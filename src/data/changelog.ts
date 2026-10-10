@@ -40,6 +40,13 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.19", date: "2026-10-10", title: "Seasonal colors and St. Patrick's Day",
+    changes: [
+      { kind: "improved", text: "Refined all eight seasonal palettes with distinct holiday accents, readable text and consistent button/input colors; Halloween now uses warm charcoal instead of purple." },
+      { kind: "new", text: "St. Patrick's Day repeats automatically on March 17, with emerald-and-gold cartoon artwork and a manual Theme tab option." }
+    ]
+  },
+  {
     version: "1.1.18", date: "2026-10-10", title: "Premium account portal and refund lifecycle",
     changes: [
       { kind: "new", text: "Manage purchased keys, downloads and refund requests from the website's passwordless My Premium account page." },

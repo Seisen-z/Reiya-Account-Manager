@@ -9,6 +9,9 @@ export interface ThemeVars {
   "--surface-2": string;
   "--surface-3": string;
   "--accent": string;
+  "--accent-hover"?: string;
+  "--accent-2"?: string;
+  "--control-border"?: string;
   "--accent-text": string;
   "--t1": string;
   "--t2": string;
@@ -750,17 +753,6 @@ export const THEMES: Theme[] = [
   },
 ];
 
-THEMES.push({
-  id: "halloween", name: "Halloween", category: "dark", seasonal: true, artwork: "/themes/halloween-cartoon.png",
-  description: "Cute pumpkins, friendly ghosts & candy colors",
-  previewBg: "#171022", previewAccent: "#ff9f32",
-  vars: {
-    "--bg": "#171022", "--surface": "#21172e", "--surface-2": "#30203e", "--surface-3": "#422c52",
-    "--accent": "#ff9f32", "--accent-text": "#281337", "--t1": "#fff3df", "--t2": "#d7b9e9", "--t3": "#ad90bd",
-    "--green": "#34d399", "--amber": "#ffbf47", "--red": "#fb7185", "--border": "rgba(255,175,76,0.35)",
-  },
-});
-
 THEMES.push(...HOLIDAY_THEMES);
 
 export function applyTheme(theme: Theme) {
@@ -782,7 +774,9 @@ export function applyTheme(theme: Theme) {
   root.style.setProperty("--green-dim",    light ? "rgba(5,150,105,0.12)"  : "rgba(52,211,153,0.10)");
   root.style.setProperty("--red-dim",      light ? "rgba(220,38,38,0.10)"  : "rgba(248,113,113,0.10)");
   root.style.setProperty("--border-mid",   theme.vars["--border"]);
-  root.style.setProperty("--accent-2",     light ? theme.vars["--t2"]      : "#A0A0A0");
+  root.style.setProperty("--accent-2", theme.vars["--accent-2"] || (light ? theme.vars["--t2"] : "#A0A0A0"));
+  root.style.setProperty("--accent-hover", theme.vars["--accent-hover"] || theme.vars["--accent"]);
+  root.style.setProperty("--control-border", theme.vars["--control-border"] || theme.vars["--border"]);
 
   // Adaptive glass helpers â€” rgba(255,255,255,X) in dark, rgba(0,0,0,X) in light
   const g = (a: number) => light ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`;
@@ -818,7 +812,7 @@ export function applyTheme(theme: Theme) {
   root.style.setProperty("--modal-border",   light ? "rgba(0,0,0,0.10)"        : "rgba(255,255,255,0.08)");
   root.style.setProperty("--chart-line",     theme.vars["--accent"]);
   root.style.setProperty("--logo-filter", halloween ? "sepia(1) saturate(6) hue-rotate(350deg)" : light ? "brightness(0)" : "none");
-  if (theme.seasonal && !halloween) {
+  if (theme.seasonal) {
     const hex=theme.vars["--accent"].slice(1);
     const rgb=[0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)).join(",");
     const tint=(a:number)=>`rgba(${rgb},${a})`;
@@ -826,18 +820,10 @@ export function applyTheme(theme: Theme) {
     for(const [key,value] of Object.entries({
       "--glass-subtle":tint(.02),"--glass-line-2":tint(.12),"--glass-line":tint(.20),"--glass-line-strong":tint(.30),
       "--panel-bg":theme.vars["--surface"],"--input-bg-solid":theme.vars["--surface-2"],"--input-border":tint(.26),
-      "--input-focus":tint(.65),"--modal-bg":theme.vars["--surface"],"--modal-border":tint(.3),"--accent-2":theme.vars["--accent"]
+      "--input-focus":tint(.65),"--modal-bg":theme.vars["--surface"],"--modal-border":tint(.3),"--accent-2":theme.vars["--accent-2"] || theme.vars["--accent"]
     }))root.style.setProperty(key,value);
   }
-  if (halloween) {
-    const g = (a: number) => `rgba(255,149,14,${a})`;
-    for (const n of [1,2,3,4,5,6,7,8,9,10,12,15,18,20,25,30,35]) root.style.setProperty(`--g${String(n).padStart(2,"0")}`, g(n/100));
-    for (const [key, value] of Object.entries({
-      "--glass-subtle": g(.02), "--glass-line-2": g(.12), "--glass-line": g(.20), "--glass-line-strong": g(.30),
-      "--panel-bg": "rgba(33,23,46,.94)", "--input-bg-solid": "#251a32", "--input-border": g(.26),
-      "--input-focus": g(.65), "--modal-bg": "rgba(33,23,46,.98)", "--modal-border": g(.3), "--accent-2": "#ffbf47",
-    })) root.style.setProperty(key, value);
-  }
+
 }
 
 interface ThemeContextValue {

@@ -3,7 +3,7 @@ import { LUNAR_NEW_YEAR_DATES } from "./lunarNewYearDates";
 export const THEME_PREFERENCE_KEY = "reiya_theme_preference_v1";
 export interface ThemePreference { mode: "automatic" | "manual"; themeId?: string; previousId?: string; }
 export interface HolidayEvent { themeId: string; name: string; start: Date; end: Date; }
-export const SEASONAL_IDS = ["halloween", "new-year", "valentine", "christmas", "lunar-new-year", "easter", "earth-day"];
+export const SEASONAL_IDS = ["halloween", "new-year", "valentine", "christmas", "lunar-new-year", "easter", "earth-day", "st-patrick"];
 const calendarCache = new Map<number, HolidayEvent[]>();
 const localDate = (year: number, month: number, day: number) => new Date(year, month - 1, day);
 const nextDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
@@ -28,6 +28,7 @@ export function getHolidayEvents(year: number): HolidayEvent[] {
   add("new-year","New Year's Day",localDate(year,1,1));
   const lunar=lunarNewYearDate(year);if(lunar)add("lunar-new-year","Lunar New Year",lunar);
   add("valentine","Valentine's Day",localDate(year,2,14));
+  add("st-patrick","St. Patrick's Day",localDate(year,3,17));
   add("easter","Easter Sunday",easterDate(year));
   add("earth-day","Earth Day",localDate(year,4,22));
   add("halloween","Halloween season",localDate(year,10,9),localDate(year,12,1));
@@ -40,7 +41,7 @@ export function getHolidayEvents(year: number): HolidayEvent[] {
 export function getActiveHoliday(now=new Date()): HolidayEvent | null {
   if(!Number.isFinite(now.getTime()))return null;
   // In a shared-date overlap, Lunar New Year takes priority over Valentine; Easter over Earth Day.
-  const priority=["lunar-new-year","easter","valentine","earth-day","new-year","christmas","halloween"];
+  const priority=["lunar-new-year","easter","valentine","st-patrick","earth-day","new-year","christmas","halloween"];
   return getHolidayEvents(now.getFullYear()).filter(e=>now>=e.start&&now<e.end)
     .sort((a,b)=>priority.indexOf(a.themeId)-priority.indexOf(b.themeId))[0]||null;
 }
