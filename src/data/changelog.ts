@@ -40,6 +40,17 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.1.18", date: "2026-10-10", title: "Premium account portal and refund lifecycle",
+    changes: [
+      { kind: "new", text: "Manage purchased keys, downloads and refund requests from the website's passwordless My Premium account page." },
+      { kind: "new", text: "Purchase key delivery now includes a save/copy reminder and email backup." },
+      { kind: "improved", text: "Expired Premium returns to Free mode without deleting local data; cloud access resumes when the same key is renewed." },
+      { kind: "improved", text: "Account metadata sync is authenticated and owner-mapped; cookies and passwords stay in encrypted backups, not metadata tables." },
+      { kind: "fixed", text: "Confirmed refunds revoke Premium and remove cloud data; explicitly consented local erasure runs when the updated app reconnects." },
+      { kind: "fixed", text: "Premium status uses server time and distinguishes expiry, disabled access and completed refunds." }
+    ]
+  },
+  {
     version: "1.1.17", date: "2026-10-10", title: "Premium cloud backup and recurring seasonal themes",
     changes: [
       { kind: "new", text: "Activate Premium with a key in the same app; back up and restore your workspace on up to three computers." },

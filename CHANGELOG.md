@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.18 - 2026-10-10
+
+### Added
+- My Premium account portal with email-code login, saved keys, downloads and refund requests.
+- Purchase key save/copy dialog and email key backup.
+
+### Improved
+- Expired subscriptions keep all local Free-mode data; cloud features pause until renewal.
+- Authenticated account metadata sync with verified ownership; plaintext cloud credentials removed.
+- Premium status uses database time and clear active, expired, disabled and refunded states.
+
+### Fixed
+- Completed refunds revoke keys, stop renewal, and purge cloud backups and owned metadata.
+- Local erasure occurs only after a completed refund with explicit customer consent, when the updated app reconnects.
+- Refund requests and pending refunds do not erase data; ordinary expiration never triggers refund erasure.
+
 ## v1.1.17 - 2026-10-10
 
 ### Added

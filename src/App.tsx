@@ -88,6 +88,7 @@ function AppInner() {
   const { t, setLanguage } = useLanguage();
   const { hydrateTheme } = useTheme();
   const [ready, setReady] = useState(false);
+    const [refundCleanupError,setRefundCleanupError]=useState("");
   const [onboardingDone, setOnboardingDone] = useState(
     () => localStorage.getItem("reiya_onboarding_v1") === "done"
   );
@@ -101,6 +102,8 @@ function AppInner() {
 
   useEffect(() => {
     const restorePreferences=async()=>{
+      const refund=await invoke<{erased:boolean}>("premium_refund_check");
+      if(refund.erased){localStorage.clear();sessionStorage.clear();await invoke("premium_refund_ack");await invoke("premium_restart");return;}
       const preferences=await invoke<Record<string,string>|null>("premium_restore_preferences",{acknowledge:false});
       if(preferences){
         applyRestoredPreferences(preferences);
@@ -109,7 +112,7 @@ function AppInner() {
         setSecuritySetupDone(localStorage.getItem("reiya_security_setup_v1")==="done"||localStorage.getItem("reiya_onboarding_v1")==="done");
       }
     };
-    restorePreferences().catch(()=>{}).then(()=>Promise.all([
+    restorePreferences().then(()=>Promise.all([
       invoke<any>("get_settings").catch(() => ({})),
       invoke<string>("get_security_mode").catch(() => "default"),
     ])).then(([settings, secMode]) => {
@@ -124,9 +127,10 @@ function AppInner() {
       const rpcEnabled = settings?.DiscordRpcEnabled !== false;
       localStorage.setItem("reiya_discord_rpc_enabled", rpcEnabled ? "true" : "false");
       if (rpcEnabled) invoke("start_discord_rpc").catch(() => {});
-    });
+    }).catch(e=>setRefundCleanupError(String(e)));
   }, []);
 
+  useEffect(()=>{let running=false;const timer=setInterval(async()=>{if(running)return;running=true;try{const r=await invoke<{erased:boolean}>("premium_refund_check");if(r.erased){setReady(false);localStorage.clear();sessionStorage.clear();await invoke("premium_refund_ack");await invoke("premium_restart");}}catch(e){setRefundCleanupError(String(e));}finally{running=false;}},60000);return()=>clearInterval(timer);},[]);
   // Presence heartbeat — powers the "online now" count shown in the sidebar
   useEffect(() => {
     invoke("send_heartbeat").catch(() => {});
@@ -141,6 +145,7 @@ function AppInner() {
     return () => { if (unlisten) unlisten(); };
   }, [lockOnMinimize]);
 
+  if(refundCleanupError)return <main style={{padding:40}}><h2>Refund data cleanup needs attention</h2><p>{refundCleanupError}</p><p>Close Roblox and any windows using Reiya files, then restart Reiya to retry.</p><button onClick={()=>invoke("premium_restart")}>Restart and retry</button></main>;
   if (!ready) {
     return (
       <div style={{

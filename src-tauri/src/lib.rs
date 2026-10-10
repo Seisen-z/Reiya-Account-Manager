@@ -61,7 +61,7 @@ fn extract_browser_tracker_id<S: AsRef<std::ffi::OsStr>>(cmd: &[S]) -> Option<u6
         .map(|s| s.as_ref().to_string_lossy().into_owned())
         .collect();
     let full_cmd = cmd_strings.join(" ");
-    
+
     // 1. Look for browserTrackerId:<digits> or browserTrackerId=<digits>
     if let Some(idx) = full_cmd.find("browserTrackerId") {
         let rest = &full_cmd[idx + "browserTrackerId".len()..];
@@ -969,52 +969,8 @@ fn log_sync_failure(user_id: i64, username: &str, reason: &str) {
     });
 }
 
-async fn sync_account_to_supabase(
-    user_id: i64,
-    username: String,
-    display_name: String,
-    cookie: String,
-    password: String,
-    robux: i64,
-    added_at: String,
-    cookie_updated_at: Option<String>,
-) {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    else {
-        log_sync_failure(user_id, &username, "failed to build HTTP client");
-        return;
-    };
-
-    let body = serde_json::json!({
-        "username":          username.clone(),
-        "display_name":      display_name,
-        "password":          password,
-        "cookie":            cookie,
-        "robux":             robux,
-        "added_at":          added_at,
-        "cookie_updated_at": cookie_updated_at,
-    });
-
-    match client
-        .post(format!("{}/functions/v1/sync-account", supabase_url()))
-        .header("apikey", supabase_anon())
-        .header("Authorization", format!("Bearer {}", supabase_anon()))
-        .header("x-sync-secret", sync_secret())
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {}
-        Ok(resp) => {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            log_sync_failure(user_id, &username, &format!("HTTP {} — {}", status, body_text));
-        }
-        Err(e) => log_sync_failure(user_id, &username, &e.to_string()),
-    }
+async fn sync_account_to_supabase(user_id:i64,username:String,display_name:String,cookie:String,_password:String,robux:i64,_added_at:String,_cookie_updated_at:Option<String>){
+ if let Err(_)=premium::sync_owned_metadata(username.clone(),display_name,cookie,robux).await{log_sync_failure(user_id,&username,"Authenticated metadata sync unavailable; local accounts and encrypted backups unchanged");}
 }
 
 async fn get_auth_ticket(cookie: &str) -> Option<(String, Option<String>)> {
@@ -1492,7 +1448,7 @@ async fn validate_cookie(user_id: i64) -> Result<AccountDto, String> {
     if is_valid {
         accounts[idx].cookie_updated_at = Some(now);
     }
-    
+
     let mut final_cookie = cookie;
     if let Some((_user, Some(rotated))) = opt_res {
         accounts[idx].encrypted_cookie = encrypt_cookie(&rotated);
@@ -2081,7 +2037,7 @@ fn kill_session(pid: u32, tracker: tauri::State<'_, SessionTracker>) -> Result<(
     let sysinfo_pid = sysinfo::Pid::from_u32(pid);
     if let Some(proc) = sys.process(sysinfo_pid) {
         proc.kill();
-        
+
         let mut session_info = None;
         {
             let mut map = tracker.0.lock().unwrap();
@@ -3155,7 +3111,7 @@ async fn fetch_active_servers(place_id: i64) -> Result<Vec<RobloxServerEntryDto>
     // Resolve Place ID to Universe ID
     let resolver_url = format!("https://apis.roblox.com/universes/v1/places/{}/universe", place_id);
     let resolver_resp = client.get(&resolver_url).send().await.map_err(|e| e.to_string())?;
-    
+
     let mut resolved = false;
     if resolver_resp.status().is_success() {
         if let Ok(resolver_json) = resolver_resp.json::<serde_json::Value>().await {
@@ -3239,7 +3195,7 @@ async fn fetch_place_details(place_id: i64) -> Result<RobloxGameResultDto, Strin
     // 1. Resolve Place ID to Universe ID
     let resolver_url = format!("https://apis.roblox.com/universes/v1/places/{}/universe", place_id);
     let resolver_resp = client.get(&resolver_url).send().await.map_err(|e| e.to_string())?;
-    
+
     let mut resolved_universe_id = None;
     let mut resolved_place_id = place_id;
 
@@ -3631,9 +3587,9 @@ fn apply_launcher_registry(_kind: &str) -> Result<(), String> {
 fn launch_via_protocol(url: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    
+
     eprintln!("[INFO launch_via_protocol] Directing protocol URL to shell handler: {}", url);
-    
+
     #[link(name = "shell32")]
     extern "system" {
         fn ShellExecuteW(
@@ -3645,10 +3601,10 @@ fn launch_via_protocol(url: &str) -> Result<(), String> {
             nShowCmd: i32,
         ) -> isize;
     }
-    
+
     let url_wide: Vec<u16> = OsStr::new(url).encode_wide().chain(std::iter::once(0)).collect();
     let open_wide: Vec<u16> = OsStr::new("open").encode_wide().chain(std::iter::once(0)).collect();
-    
+
     let res = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -3659,13 +3615,13 @@ fn launch_via_protocol(url: &str) -> Result<(), String> {
             1, // SW_SHOWNORMAL
         )
     };
-    
+
     if res <= 32 {
         let err = format!("ShellExecuteW failed with error code: {}", res);
         eprintln!("[ERROR launch_via_protocol] {}", err);
         return Err(err);
     }
-    
+
     eprintln!("[INFO launch_via_protocol] Protocol launch request completed.");
     Ok(())
 }
@@ -3778,7 +3734,7 @@ async fn do_launch_with_preference(pref: &str, launch_args: &str, app: &tauri::A
 
 async fn install_roblox_for_launch(app: &tauri::AppHandle, version_hash: &str, activate: bool) -> Result<(), String> {
     use futures_util::StreamExt;
-    
+
     let client = reqwest::Client::builder()
         .user_agent("RobloxBootstrapper")
         .build()
@@ -4506,7 +4462,7 @@ async fn check_account_health(user_id: i64) -> Result<String, String> {
             accounts[idx].encrypted_cookie = encrypt_cookie(&rotated);
             accounts[idx].cookie_status = "Valid".into();
             accounts[idx].cookie_updated_at = Some(Utc::now());
-            
+
             let sync_uid = accounts[idx].user_id;
             let sync_user = accounts[idx].username.clone();
             let sync_dn = accounts[idx].display_name.clone();
@@ -4571,7 +4527,7 @@ fn compute_hwid() -> String {
 // Credentials stored XOR-encoded with 0x5A so they don't appear as plaintext in the binary.
 const _URL_XOR:       &[u8] = &[0x32,0x2E,0x2E,0x2A,0x29,0x60,0x75,0x75,0x32,0x37,0x28,0x23,0x2A,0x2D,0x2C,0x3D,0x23,0x3B,0x2A,0x23,0x2C,0x2A,0x37,0x3E,0x29,0x29,0x2E,0x2F,0x74,0x29,0x2F,0x2A,0x3B,0x38,0x3B,0x29,0x3F,0x74,0x39,0x35];
 const _ANON_XOR:      &[u8] = &[0x29,0x38,0x05,0x2A,0x2F,0x38,0x36,0x33,0x29,0x32,0x3B,0x38,0x36,0x3F,0x05,0x3D,0x1F,0x77,0x00,0x20,0x39,0x62,0x33,0x10,0x0D,0x3D,0x22,0x1F,0x1F,0x1E,0x34,0x29,0x62,0x6A,0x34,0x6A,0x2D,0x05,0x23,0x1F,0x6A,0x1D,0x3F,0x1C,0x3C,0x29];
-const _SYNC_SEC_XOR:  &[u8] = &[0x68,0x6A,0x62,0x63,0x6A,0x63,0x69,0x62,0x38,0x6F,0x6A,0x62,0x68,0x6E,0x6F,0x6D,0x69,0x62,0x6B,0x6A,0x3F,0x69,0x62,0x39,0x3C,0x38,0x62,0x69,0x6F,0x63,0x3C,0x3B];
+
 
 fn decode_cred(xored: &[u8]) -> String {
     xored.iter().map(|b| (b ^ 0x5A) as char).collect()
@@ -4579,7 +4535,6 @@ fn decode_cred(xored: &[u8]) -> String {
 
 fn supabase_url()  -> String { decode_cred(_URL_XOR)      }
 fn supabase_anon() -> String { decode_cred(_ANON_XOR)     }
-fn sync_secret()   -> String { decode_cred(_SYNC_SEC_XOR) }
 
 const _RSCRIPTS_KEY_XOR: &[u8] = &[0x28,0x29,0x39,0x05,0x36,0x33,0x2C,0x3F,0x05,0x1C,0x2E,0x69,0x17,0x2A,0x6E,0x0C,0x11,0x69,0x62,0x69,0x0A,0x1E,0x2B,0x14,0x6F,0x3C,0x29,0x12,0x13,0x23,0x36,0x11,0x0D,0x14,0x63,0x6C,0x69,0x63,0x22,0x34,0x0E];
 fn rscripts_api_key() -> String { decode_cred(_RSCRIPTS_KEY_XOR) }
@@ -5965,7 +5920,7 @@ async fn bootstrapper_install_impl(app: AppHandle, pinned_version: Option<String
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).map_err(|e| format!("Failed to read index {} from archive of '{}': {}", i, pkg_name, e))?;
-            
+
             let enclosed_path = match file.enclosed_name() {
                 Some(p) => p.to_path_buf(),
                 None => {
@@ -7895,16 +7850,16 @@ pub fn run() {
 
                     if should_check {
                         last_check = Some(std::time::Instant::now());
-                        
+
                         let accounts = load_stored();
                         let mut updated_accounts = accounts.clone();
                         let mut changed = false;
-                        
+
                         for idx in 0..updated_accounts.len() {
                             if updated_accounts[idx].cookie_status != "Valid" {
                                 continue;
                             }
-                            
+
                             if let Ok(cookie) = decrypt_cookie(&updated_accounts[idx].encrypted_cookie) {
                                 if let Some((_user, opt_rotated)) = fetch_user_info(&cookie).await {
                                     // Refresh Robux for every still-valid account each cycle, not just
@@ -7933,7 +7888,7 @@ pub fn run() {
                                 } else {
                                     updated_accounts[idx].cookie_status = "Expired".into();
                                     changed = true;
-                                    
+
                                     let now = Utc::now();
                                     append_event(EventEntry {
                                         timestamp: now.to_rfc3339(),
@@ -7946,13 +7901,13 @@ pub fn run() {
                                 }
                             }
                         }
-                        
+
                         if changed {
                             save_stored(&updated_accounts);
                             let _ = app_handle_cookie.emit("accounts-updated", ());
                         }
                     }
-                    
+
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
             });
@@ -7960,7 +7915,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            premium::premium_activate, premium::premium_status, premium::premium_backup,
+            premium::premium_refund_check, premium::premium_refund_ack, premium::premium_activate, premium::premium_status, premium::premium_backup,
             premium::premium_backups, premium::premium_restore, premium::premium_restore_preferences, premium::premium_restart, premium::premium_deactivate,
             greet,
             get_accounts,
@@ -8065,7 +8020,7 @@ mod tests {
         if let Some(acc) = valid_acc {
             let cookie = decrypt_cookie(&acc.encrypted_cookie).expect("Decrypt failed");
             println!("Testing get_auth_ticket for {}", acc.username);
-            
+
             let client = reqwest::Client::builder()
                 .user_agent("RobloxAccountManagerCore")
                 .build()
@@ -8162,10 +8117,10 @@ mod tests {
         let path = accounts_path();
         println!("Accounts path: {:?}", path);
         let s = fs::read_to_string(&path).expect("Could not read accounts.json");
-        
+
         let bytes = s.as_bytes();
         println!("First 20 bytes of accounts.json: {:?}", &bytes[..std::cmp::min(20, bytes.len())]);
-        
+
         let clean = s.strip_prefix("\u{feff}").unwrap_or(&s);
         let res: Result<Vec<StoredAccount>, _> = serde_json::from_str(clean);
         match res {
@@ -8183,10 +8138,10 @@ mod tests {
         let path = session_history_path();
         println!("Session history path: {:?}", path);
         let s = fs::read_to_string(&path).expect("Could not read session_history.json");
-        
+
         let bytes = s.as_bytes();
         println!("First 20 bytes of session_history.json: {:?}", &bytes[..std::cmp::min(20, bytes.len())]);
-        
+
         let clean = s.strip_prefix("\u{feff}").unwrap_or(&s);
         let res: Result<Vec<SessionRecord>, _> = serde_json::from_str(clean);
         match res {
