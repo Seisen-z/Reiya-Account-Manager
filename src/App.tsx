@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import { applyRestoredPreferences } from "./lib/cloudRestorePreferences";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,15 +7,15 @@ import TitleBar     from "./components/TitleBar";
 import Sidebar      from "./components/Sidebar";
 import Home         from "./pages/Home";
 import Accounts     from "./pages/Accounts";
-import Hub          from "./pages/Hub";
-import Rscripts     from "./pages/Rscripts";
-import Utilities    from "./pages/Utilities";
-import Settings     from "./pages/Settings";
-import Bootstrapper from "./pages/Bootstrapper";
-import ThemePage    from "./pages/Theme";
-import Premium from "./pages/Premium";
+const Hub = lazy(() => import("./pages/Hub"));
+const Rscripts = lazy(() => import("./pages/Rscripts"));
+const Utilities = lazy(() => import("./pages/Utilities"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Bootstrapper = lazy(() => import("./pages/Bootstrapper"));
+const ThemePage = lazy(() => import("./pages/Theme"));
+const Premium = lazy(() => import("./pages/Premium"));
 import PremiumAutoBackup from "./components/PremiumAutoBackup";
-import Changelog     from "./pages/Changelog";
+const Changelog = lazy(() => import("./pages/Changelog"));
 import LaunchProgress from "./pages/LaunchProgress";
 import Onboarding    from "./pages/Onboarding";
 import UpdatePrompt  from "./pages/UpdatePrompt";
@@ -65,6 +65,7 @@ function AppContent() {
       <div className="app-body">
         <Sidebar />
         <main className="main">
+          <Suspense fallback={null}>
           <Routes>
             <Route path="/"             element={<Home />} />
             <Route path="/accounts"     element={<Accounts />} />
@@ -77,6 +78,7 @@ function AppContent() {
             <Route path="/settings"     element={<Settings />} />
             <Route path="/changelog"    element={<Changelog />} />
           </Routes>
+          </Suspense>
         </main>
       </div>
     </div>

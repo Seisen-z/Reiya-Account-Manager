@@ -18,7 +18,7 @@ import { AccountConfigSidebarModal } from "../components/AccountConfigSidebarMod
 import { ExportAccountsModal } from "../components/ExportAccountsModal";
 import { ImportAccountsModal } from "../components/ImportAccountsModal";
 import { MoveToGroupModal } from "../components/MoveToGroupModal";
-import { BulkLaunchPresetModal, type BulkLaunchPresetValue } from "../components/BulkLaunchPresetModal";
+import { BulkEditModal, type BulkEditValue } from "../components/BulkEditModal";
 import { AccountsHeaderBar } from "../components/AccountsHeaderBar";
 import { AccountsToolbar } from "../components/AccountsToolbar";
 import { BulkActionBar } from "../components/BulkActionBar";
@@ -110,6 +110,7 @@ export default function Accounts() {
   const [loading,     setLoading]     = useState<boolean>(() => accounts.length === 0);
   const [launching,   setLaunching]   = useState<number | null>(null);
   const [sortBy,      setSortBy]      = useState<SortBy>("last_launched");
+  const [gameFilter,  setGameFilter]  = useState<string | null>(null);
   const [viewMode, setViewModeState] = useState<"card" | "list">(() =>
     localStorage.getItem("reiya_accounts_view_mode") === "list" ? "list" : "card"
   );
@@ -183,6 +184,7 @@ export default function Accounts() {
 
   const handleExport = async () => {
     const pwd = exportPwd.trim();
+    if (pwd.length < 8) { setExportErr("Choose a backup password of at least 8 characters."); return; }
     setExportLoading(true); setExportErr(""); setExportOk("");
     try {
       const path = await invoke<string>("export_accounts", { password: pwd });
@@ -325,6 +327,11 @@ export default function Accounts() {
   }, [groups, activeGroup]);
 
   const STATUS_ORDER: Record<string, number> = { Valid: 0, Unknown: 1, Expired: 2 };
+  const favGamesOf = (a: Account) =>
+    (localStorage.getItem("reiya_fav_games_" + a.user_id) || "").split(",").map(x => x.trim()).filter(Boolean);
+  const favGameCounts = new Map<string, number>();
+  accounts.forEach(a => new Set(favGamesOf(a)).forEach(id => favGameCounts.set(id, (favGameCounts.get(id) || 0) + 1)));
+  const favGameList = [...favGameCounts.entries()].sort((x, y) => y[1] - x[1]);
 
   const visible = [...accounts]
     .filter(a => {
@@ -332,7 +339,8 @@ export default function Accounts() {
       const matchSearch = !q || a.username.toLowerCase().includes(q) || a.display_name.toLowerCase().includes(q) || a.tags?.some(t => t.toLowerCase().includes(q));
       const matchFilter = filter === "all" || (filter === "favorites" && a.is_favorite) || (filter === "valid" && a.cookie_status === "Valid");
       const matchGroup = activeGroup === null || a.group === activeGroup;
-      return matchSearch && matchFilter && matchGroup;
+      const matchGame = !gameFilter || favGamesOf(a).includes(gameFilter);
+      return matchSearch && matchFilter && matchGroup && matchGame;
     })
     .sort((a, b) => {
       // Favorite / Pinned accounts always sort to the top first
@@ -746,16 +754,48 @@ export default function Accounts() {
     setTimeout(() => setBulkStatus(""), 3000);
   };
 
-  const handleBulkApplyPreset = async (preset: BulkLaunchPresetValue) => {
+  const handleBulkApplyPreset = async (v: BulkEditValue) => {
     setBulkPresetSaving(true); setBulkPresetError("");
+    const splitList = (x: string) => x.split(",").map(t => t.trim()).filter(Boolean);
+    const addTags = splitList(v.addTags);
+    const removeTags = splitList(v.removeTags).map(t => t.toLowerCase());
+    const favInput = splitList(v.favGames.replace(/\s+/g, ","));
+    const delayNum = v.delay.trim() === "" ? null : Math.max(0, Math.min(300, Number(v.delay)));
     try {
-      const changed = await invoke<number>("bulk_apply_launch_preset", {
-        userIds: Array.from(selected),
-        ...preset,
-      });
+      let changed = 0;
+      for (const a of accounts.filter(x => selected.has(x.user_id))) {
+        let tags = [...(a.tags || [])];
+        if (removeTags.length) tags = tags.filter(t => !removeTags.includes(t.toLowerCase()));
+        for (const t of addTags) if (!tags.some(x => x.toLowerCase() === t.toLowerCase())) tags.push(t);
+        const notes = v.notes.trim() === "" ? a.notes
+          : v.notesMode === "append" ? (a.notes ? a.notes + "\n" : "") + v.notes.trim() : v.notes.trim();
+        const launcher = v.launcher === "" ? a.launcher_preference : v.launcher === "global" ? "" : v.launcher;
+        await invoke("edit_account", {
+          userId: a.user_id,
+          displayName: a.display_name,
+          notes,
+          tags,
+          defaultPlaceId: v.placeId.trim() || a.default_place_id,
+          defaultGameName: v.gameName.trim() || a.default_game_name,
+          launchPresetName: a.launch_preset_name,
+          defaultPrivateServer: v.privateServer.trim() || a.default_private_server,
+          launcherPreference: launcher,
+          launchDelaySeconds: delayNum ?? a.launch_delay_seconds,
+          safeLaunchEnabled: a.safe_launch_enabled,
+          autoRejoinEnabled: a.auto_rejoin_enabled,
+          launchCooldownSeconds: a.launch_cooldown_seconds,
+        });
+        if (favInput.length) {
+          const key = "reiya_fav_games_" + a.user_id;
+          const existing = (localStorage.getItem(key) || "").split(",").map(t => t.trim()).filter(Boolean);
+          const merged = v.favMode === "replace" ? favInput : [...existing, ...favInput.filter(id => !existing.includes(id))];
+          localStorage.setItem(key, merged.join(","));
+        }
+        changed += 1;
+      }
       await loadAccounts();
       setBulkPresetModal(false);
-      setBulkStatus(`Launch preset applied to ${changed} account(s)`);
+      setBulkStatus(`Updated ${changed} account(s)`);
       clearSelection();
       setTimeout(() => setBulkStatus(""), 3500);
     } catch (e) { setBulkPresetError(String(e)); }
@@ -811,6 +851,26 @@ export default function Accounts() {
           viewMode={viewMode}
           setViewMode={setViewMode}
         />
+
+        {favGameList.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 2 }}>
+            <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--t3)", letterSpacing: "0.06em", flexShrink: 0 }}>FAVORITE GAMES</span>
+            {favGameList.map(([id, count]) => (
+              <FavGameChip
+                key={id}
+                placeId={id}
+                count={count}
+                active={gameFilter === id}
+                onClick={() => setGameFilter(gameFilter === id ? null : id)}
+              />
+            ))}
+            {gameFilter && (
+              <button onClick={() => setGameFilter(null)} style={{ background: "none", border: "none", color: "var(--t3)", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>
+                Clear
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <BulkActionBar
@@ -831,8 +891,8 @@ export default function Accounts() {
         className="scroll"
         style={{
           flex: 1, overflowY: "auto", padding: "20px 24px",
-          display: "grid", gridTemplateColumns: viewMode === "card" ? "repeat(auto-fill, minmax(250px, 1fr))" : "1fr",
-          gap: viewMode === "card" ? 16 : 8, alignContent: "start",
+          display: "grid", gridTemplateColumns: viewMode === "card" ? "repeat(auto-fill, minmax(280px, 1fr))" : "1fr",
+          gap: viewMode === "card" ? 12 : 8, alignContent: "start",
           background: "radial-gradient(circle at top right, var(--g02) 0%, transparent 60%)",
         }}
       >
@@ -853,7 +913,6 @@ export default function Accounts() {
         ) : (
           visible.map(account => (
             <AccountCard
-              key={account.user_id}
               account={account}
               viewMode={viewMode}
               isLaunching={launching === account.user_id}
@@ -987,7 +1046,7 @@ export default function Accounts() {
         onImport={handleImport}
       />
 
-      <BulkLaunchPresetModal
+      <BulkEditModal
         open={bulkPresetModal}
         selectedCount={selected.size}
         saving={bulkPresetSaving}
@@ -1211,6 +1270,42 @@ export function AccountDetailModal({
 }
 
 /* ── Game Thumbnail Badge for Favorite Games ── */
+function FavGameChip({ placeId, count, active, onClick }: { placeId: string; count: number; active: boolean; onClick: () => void }) {
+  const [thumb, setThumb] = useState("");
+  const [name, setName] = useState(() => CATALOG.find(g => g.placeId === placeId)?.name || "");
+  useEffect(() => {
+    let on = true;
+    invoke<Record<string, string>>("fetch_place_thumbnails", { placeIds: [placeId] })
+      .then(m => { if (on && m?.[placeId]) setThumb(m[placeId]); })
+      .catch(() => {});
+    if (!name) {
+      invoke<{ name: string }>("fetch_place_details", { placeId: Number(placeId) })
+        .then(d => { if (on && d?.name) setName(d.name); })
+        .catch(() => {});
+    }
+    return () => { on = false; };
+  }, [placeId]);
+  return (
+    <button
+      onClick={onClick}
+      title={name || `Place ${placeId}`}
+      style={{
+        display: "flex", alignItems: "center", gap: 7, flexShrink: 0, height: 32, padding: "0 12px 0 4px",
+        borderRadius: 10, cursor: "pointer", fontSize: 11.5, fontWeight: 700,
+        background: active ? "var(--g08)" : "var(--g02)",
+        border: `1px solid ${active ? "var(--g35)" : "var(--g05)"}`,
+        color: active ? "var(--t1)" : "var(--t2)",
+      }}
+    >
+      {thumb
+        ? <img src={thumb} alt="" style={{ width: 24, height: 24, borderRadius: 6, objectFit: "cover" }} />
+        : <span style={{ width: 24, height: 24, borderRadius: 6, background: "var(--g06)" }} />}
+      <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name || placeId}</span>
+      <span style={{ color: "var(--t3)" }}>{count}</span>
+    </button>
+  );
+}
+
 export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: string; size?: number; onLaunch?: (placeId: string) => void }) {
   const [thumbUrl, setThumbUrl] = useState<string>("");
   const [gameName, setGameName] = useState<string>(() => CATALOG.find(g => g.placeId === placeId)?.name || "");
@@ -1300,10 +1395,10 @@ export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: 
 
 /* ── Account Card (Team 4 Inspired Layout) ── */
 function AccountCard({
-  account, viewMode, isLaunching, isSelected, isCopied, isCopiedUid,
+  account, viewMode, isLaunching, isSelected, isCopied,
   isDraggable,
   onToggleSelect, onToggleFav, onRemove, onLaunch, onOpenUtilities,
-  onCopyUsername, onCopyUserId, onTagClick,
+  onCopyUsername,
   onDragStart, onDragOver, onDrop, onOpenDetails,
 }: {
   account: Account; viewMode: "card" | "list"; isLaunching: boolean; isSelected: boolean;
@@ -1324,8 +1419,6 @@ function AccountCard({
 }) {
   const [hovered, setHovered] = useState(false);
   const isList = viewMode === "list";
-  const avatarSize = isList ? 54 : 90;
-  const avatarFrameSize = isList ? 60 : 96;
   const isValid = account.cookie_status === "Valid";
   const isUnknown = account.cookie_status === "Unknown";
   const statusColor = isValid ? "var(--green)" : isUnknown ? "var(--amber)" : "var(--red)";
@@ -1336,272 +1429,265 @@ function AccountCard({
   const favGamesStr = localStorage.getItem("reiya_fav_games_" + account.user_id) || "";
   const favGameIds = favGamesStr.split(",").map(s => s.trim()).filter(Boolean);
 
-  return (
-    <div
-      draggable={isDraggable}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        position: "relative",
-        display: "flex", flexDirection: isList ? "row" : "column", alignItems: "center", textAlign: isList ? "left" : "center",
-        padding: isList ? "11px 14px 11px 46px" : "20px 16px 16px",
-        background: isSelected ? "rgba(167,139,250,0.08)" : "var(--g02)",
-        border: `1px solid ${isSelected ? "rgba(167,139,250,0.35)" : hovered ? "var(--g08)" : "var(--g04)"}`,
-        borderRadius: isList ? 13 : 22, transition: "all .25s cubic-bezier(0.16, 1, 0.3, 1)",
-        cursor: isDraggable ? "grab" : "default",
-        transform: hovered && !isList ? "translateY(-3px)" : "none",
-        boxShadow: hovered ? (isList ? "0 5px 16px rgba(0,0,0,0.2)" : "0 12px 28px rgba(0,0,0,0.35)") : "none",
-        minHeight: isList ? 84 : undefined,
-      }}
-    >
-      {/* Top Header Actions overlay */}
-      <div style={{ position: "absolute", top: isList ? "50%" : 12, transform: isList ? "translateY(-50%)" : undefined, left: 12, right: isList ? undefined : 12, display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 2 }}>
-        {/* Checkbox */}
-        <div
-          onClick={onToggleSelect}
-          style={{
-            width: 18, height: 18, borderRadius: 5, flexShrink: 0,
-            border: `2px solid ${isSelected ? "#A78BFA" : "var(--g12)"}`,
-            background: isSelected ? "#A78BFA" : "transparent",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            cursor: "pointer", transition: "all .12s",
-            opacity: hovered || isSelected ? 1 : 0.4,
-          }}
-        >
-          {isSelected && <CheckIcon size={11} color="#fff" />}
-        </div>
-
-        {/* Top-right Icon buttons */}
-        {!isList && <div style={{ display: "flex", gap: 3, opacity: hovered || account.is_favorite ? 1 : 0.4, transition: "opacity .12s" }}>
-          <button
-            onClick={onToggleFav}
-            title="Favorite"
-            style={{ background: "none", border: "none", cursor: "pointer", padding: 3, color: account.is_favorite ? "var(--amber)" : "var(--t3)" }}
-          >
-            <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
-          </button>
-          <button
-            onClick={onRemove}
-            title="Remove"
-            style={{ background: "none", border: "none", cursor: "pointer", padding: 3, color: "var(--red)" }}
-          >
-            <TrashIcon size={13} color="var(--red)" />
-          </button>
-        </div>}
-      </div>
-
-      {/* Right-side Vertical Favorite Games Stack (Max 4 games) */}
-      {!isList && favGameIds.length > 0 && (
-        <div
-          style={{
-            position: "absolute",
-            top: 48,
-            right: 12,
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            alignItems: "center",
-            zIndex: 3,
-          }}
-        >
-          {favGameIds.slice(0, 4).map(pid => (
-            <GameThumbnailBadge
-              key={pid}
-              placeId={pid}
-              size={26}
-              onLaunch={(pId) => {
-                invoke("launch_account", {
-                  userId: account.user_id,
-                  placeId: pId,
-                  jobId: null, accessCode: null, gameName: null,
-                  useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
-                });
-              }}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Team 4 Style Circular Avatar with Ring Effect */}
+  if (!isList) {
+    const iconBtn = {
+      width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+      background: "none", border: "none", cursor: "pointer", padding: 0, borderRadius: 7, flexShrink: 0,
+    } as const;
+    const canLaunch = isValid && !isLaunching;
+    return (
       <div
-        onClick={onOpenDetails}
-        title="Click to view account details & games"
+        className="acct-card"
+        draggable={isDraggable}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         style={{
-          position: "relative",
-          width: avatarFrameSize, height: avatarFrameSize,
-          margin: isList ? "0 14px 0 0" : "10px auto 14px",
-          cursor: "pointer",
+          position: "relative", display: "flex", flexDirection: "column", gap: 12,
+          padding: "14px 14px 12px",
+          background: isSelected ? "rgba(167,139,250,0.08)" : "var(--g02)",
+          border: `1px solid ${isSelected ? "rgba(167,139,250,0.35)" : hovered ? "var(--g08)" : "var(--g04)"}`,
+          borderRadius: 14, transition: "border-color .15s, background .15s",
+          cursor: isDraggable ? "grab" : "default",
         }}
       >
-        <div
-          style={{
-            width: "100%", height: "100%", borderRadius: "50%",
-            padding: 3,
-            background: isSelected
-              ? "linear-gradient(135deg, #A78BFA, #60A5FA)"
-              : hovered
-                ? "linear-gradient(135deg, rgba(255,255,255,0.25), var(--g08))"
-                : "var(--g06)",
-            transition: "all 0.3s ease",
-            transform: hovered ? "scale(1.05)" : "scale(1)",
-            overflow: "hidden",
-          }}
-        >
-          <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={avatarSize} />
-        </div>
-        {/* Cookie Health Status Dot */}
-        <span
-          title={`Status: ${statusLabel}`}
-          style={{
-            position: "absolute", bottom: 2, right: 2,
-            width: 14, height: 14, borderRadius: "50%",
-            background: statusColor,
-            border: "2.5px solid #0B0D11",
-            boxShadow: isValid ? "0 0 8px var(--green)" : "none",
-          }}
-        />
-      </div>
-
-      {/* Account Info Center */}
-      <div style={{ width: isList ? "auto" : "100%", flex: isList ? 1 : undefined, minWidth: 0, display: "flex", flexDirection: "column", alignItems: isList ? "flex-start" : "center", gap: 3, marginBottom: isList ? 0 : 12 }}>
-        <span
-          onClick={onOpenDetails}
-          title="View account info & games"
-          style={{ fontSize: isList ? 13 : 14, fontWeight: 800, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: isList ? "100%" : "90%", cursor: "pointer" }}
-        >
-          {account.display_name || account.username}
-        </span>
-
-        {/* Username & User ID */}
-        <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--t3)", marginBottom: 4 }}>
-          <span onClick={onCopyUsername} title={isCopied ? "Copied!" : "Copy @username"} style={{ cursor: "pointer", color: isCopied ? "var(--green)" : "var(--t2)" }}>
-            {isCopied ? "✓ Copied" : `@${account.username}`}
-          </span>
-          <span>·</span>
-          <span onClick={onCopyUserId} title={isCopiedUid ? "Copied!" : "Copy User ID"} style={{ cursor: "pointer", color: isCopiedUid ? "var(--green)" : "var(--t3)" }}>
-            {isCopiedUid ? "✓ ID Copied" : `ID: ${account.user_id}`}
-          </span>
-        </div>
-
-        {/* Status & Group Tags */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: isList ? "flex-start" : "center", marginBottom: 4 }}>
-          <span
-            style={{
-              fontSize: 8.5, fontWeight: 900, padding: "2px 7px", borderRadius: 5,
-              background: statusColor + "15", color: statusColor, border: `1px solid ${statusColor}30`,
-              letterSpacing: "0.04em",
-            }}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div
+            onClick={onOpenDetails}
+            title="View account details"
+            style={{ position: "relative", width: 44, height: 44, flexShrink: 0, cursor: "pointer", opacity: isValid ? 1 : 0.55 }}
           >
-            {statusLabel.toUpperCase()}
-          </span>
-          {account.group && (
-            <span style={{ fontSize: 8.5, fontWeight: 800, padding: "2px 7px", borderRadius: 5, background: "var(--g05)", color: "var(--t2)", border: "1px solid var(--g07)" }}>
-              {account.group}
+            <div style={{ width: 44, height: 44, borderRadius: "50%", overflow: "hidden", background: "var(--g06)" }}>
+              <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={44} />
+            </div>
+            <span
+              title={`Cookie: ${statusLabel}`}
+              style={{
+                position: "absolute", bottom: -1, right: -1, width: 11, height: 11, borderRadius: "50%",
+                background: statusColor, border: "2.5px solid var(--bg, #0B0D11)",
+              }}
+            />
+            <div
+              onClick={e => { e.stopPropagation(); onToggleSelect(); }}
+              title={isSelected ? "Deselect" : "Select"}
+              style={{
+                position: "absolute", inset: 0, borderRadius: "50%", cursor: "pointer",
+                background: isSelected ? "rgba(167,139,250,0.85)" : "rgba(0,0,0,0.55)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                opacity: hovered || isSelected ? 1 : 0, transition: "opacity .12s",
+              }}
+            >
+              <div style={{
+                width: 16, height: 16, borderRadius: 5, border: "2px solid #fff",
+                background: isSelected ? "#fff" : "transparent", display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                {isSelected && <CheckIcon size={11} color="#7C5CE0" />}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div
+              onClick={onOpenDetails}
+              style={{ fontSize: 13.5, fontWeight: 800, color: isValid ? "var(--t1)" : "var(--t2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{account.display_name || account.username}</span>
+              {account.is_favorite && <StarIcon size={11} fill="var(--amber)" color="var(--amber)" />}
+            </div>
+            <div
+              onClick={onCopyUsername}
+              title={isCopied ? "Copied" : `Copy @${account.username} · ID ${account.user_id}`}
+              style={{ fontSize: 11, color: isCopied ? "var(--green)" : "var(--t3)", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}
+            >
+              {isCopied ? "Copied" : `@${account.username}`}
+            </div>
+          </div>
+
+          {isValid ? (
+            <button
+              className="acct-launch"
+              onClick={onLaunch}
+              disabled={!canLaunch}
+              style={{
+                height: 30, padding: "0 14px", flexShrink: 0, display: "flex", alignItems: "center", gap: 6,
+                borderRadius: 8, border: "none",
+                background: canLaunch ? "var(--accent)" : "var(--g04)",
+                color: canLaunch ? "#000" : "var(--t3)",
+                fontSize: 11.5, fontWeight: 800, cursor: canLaunch ? "pointer" : "not-allowed",
+              }}
+            >
+              <ZapIcon size={11} color={canLaunch ? "#000" : "var(--t3)"} />
+              {isLaunching ? "Launching" : "Launch"}
+            </button>
+          ) : (
+            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", color: statusColor, flexShrink: 0 }}>
+              {statusLabel.toUpperCase()}
             </span>
           )}
         </div>
 
-        {/* Saved Game Tag */}
-        {savedGameName && (
-          <div
-            onClick={onOpenDetails}
-            title={`Saved/Last game: ${savedGameName} (Click for details)`}
-            style={{
-              fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 5,
-              background: "rgba(167,139,250,0.12)", color: "#C4B5FD", border: "1px solid rgba(167,139,250,0.25)",
-              cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "90%",
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            }}
-          >
-            🎮 {savedGameName}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 26, borderTop: "1px solid var(--g04)", paddingTop: 10 }}>
+          <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t3)" }}>
+            {account.group && (
+              <span style={{ flexShrink: 0, color: "var(--t2)", fontWeight: 700 }}>{account.group}{savedGameName ? " ·" : ""}</span>
+            )}
+            <span
+              onClick={onOpenDetails}
+              title={savedGameName ? `Last game: ${savedGameName}` : undefined}
+              style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer", opacity: savedGameName ? 1 : 0.5 }}
+            >
+              {savedGameName || "No game yet"}
+            </span>
           </div>
-        )}
-
-        {/* Tags */}
-        {!isList && account.tags && account.tags.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, justifyContent: "center", marginTop: 2 }}>
-            {account.tags.map(tag => (
-              <span
-                key={tag}
-                onClick={() => onTagClick(tag)}
-                style={{
-                  fontSize: 8.5, fontWeight: 700, padding: "1px 6px", borderRadius: 4,
-                  background: "rgba(96,165,250,0.1)", color: "#60A5FA", border: "1px solid rgba(96,165,250,0.2)",
-                  cursor: "pointer",
-                }}
-              >
-                #{tag}
-              </span>
-            ))}
+          {favGameIds.length > 0 && (
+            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              {favGameIds.slice(0, 3).map(pid => (
+                <GameThumbnailBadge
+                  key={pid}
+                  placeId={pid}
+                  size={22}
+                  onLaunch={(pId) => {
+                    invoke("launch_account", {
+                      userId: account.user_id,
+                      placeId: pId,
+                      jobId: null, accessCode: null, gameName: null,
+                      useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
+                    });
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", flexShrink: 0 }}>
+            <button
+              onClick={onToggleFav}
+              title={account.is_favorite ? "Remove from favorites" : "Add to favorites"}
+              style={{ ...iconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s" }}
+            >
+              <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
+            </button>
+            <button
+              onClick={onRemove}
+              title="Remove account"
+              style={{ ...iconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s" }}
+            >
+              <TrashIcon size={13} color="var(--red)" />
+            </button>
+            <button className="acct-tool" onClick={onOpenUtilities} title="Account tools" style={{ ...iconBtn, color: "var(--t3)" }}>
+              <SettingsIcon size={13} />
+            </button>
           </div>
-        )}
-
-        {/* Notes preview */}
-        {!isList && account.notes && (
-          <div
-            onClick={onOpenDetails}
-            title={account.notes}
-            style={{
-              fontSize: 9.5, color: "var(--t3)", fontStyle: "italic", marginTop: 4,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "90%",
-              cursor: "pointer",
-            }}
-          >
-            "{account.notes}"
-          </div>
-        )}
+        </div>
       </div>
+    );
+  }
 
-      {/* Card Action Footer */}
-      <div style={{ width: isList ? 260 : "100%", flexShrink: 0, display: "flex", gap: 6, marginTop: isList ? 0 : "auto", marginLeft: isList ? 14 : 0, paddingTop: isList ? 0 : 8, paddingLeft: isList ? 14 : 0, borderTop: isList ? "none" : "1px solid var(--g04)", borderLeft: isList ? "1px solid var(--g04)" : "none" }}>
+  if (isList) {
+    const listIconBtn = {
+      width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center",
+      background: "none", border: "none", cursor: "pointer", padding: 0, borderRadius: 7, flexShrink: 0,
+    } as const;
+    return (
+      <div
+        className="acct-card"
+        draggable={isDraggable}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          display: "flex", alignItems: "center", gap: 14, padding: "8px 12px",
+          background: isSelected ? "rgba(167,139,250,0.08)" : hovered ? "var(--g03)" : "var(--g02)",
+          border: `1px solid ${isSelected ? "rgba(167,139,250,0.35)" : "var(--g04)"}`,
+          borderRadius: 11, transition: "background .12s", cursor: isDraggable ? "grab" : "default",
+          opacity: isValid ? 1 : 0.82,
+        }}
+      >
+        <div
+          onClick={onToggleSelect}
+          title={isSelected ? "Deselect" : "Select"}
+          style={{
+            width: 16, height: 16, borderRadius: 5, flexShrink: 0, cursor: "pointer",
+            border: `2px solid ${isSelected ? "#A78BFA" : "var(--g12)"}`,
+            background: isSelected ? "#A78BFA" : "transparent",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            opacity: hovered || isSelected ? 1 : 0.35, transition: "opacity .12s",
+          }}
+        >
+          {isSelected && <CheckIcon size={10} color="#fff" />}
+        </div>
+
+        <div onClick={onOpenDetails} title="View account details" style={{ position: "relative", width: 38, height: 38, flexShrink: 0, cursor: "pointer" }}>
+          <div style={{ width: 38, height: 38, borderRadius: "50%", overflow: "hidden", background: "var(--g06)" }}>
+            <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={38} />
+          </div>
+          <span
+            title={`Cookie: ${statusLabel}`}
+            style={{ position: "absolute", bottom: -1, right: -1, width: 10, height: 10, borderRadius: "50%", background: statusColor, border: "2px solid var(--bg, #0B0D11)" }}
+          />
+        </div>
+
+        <div style={{ width: 220, minWidth: 0, flexShrink: 0 }}>
+          <div onClick={onOpenDetails} style={{ fontSize: 13, fontWeight: 800, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}>
+            {account.display_name || account.username}
+          </div>
+          <div
+            onClick={onCopyUsername}
+            title={isCopied ? "Copied" : `Copy @${account.username} · ID ${account.user_id}`}
+            style={{ fontSize: 10.5, color: isCopied ? "var(--green)" : "var(--t3)", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}
+          >
+            {isCopied ? "Copied" : `@${account.username}`}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--t3)" }}>
+          {!isValid && (
+            <span style={{ color: statusColor, fontWeight: 800, fontSize: 10, letterSpacing: "0.04em", flexShrink: 0 }}>{statusLabel.toUpperCase()}</span>
+          )}
+          {account.group && <span style={{ flexShrink: 0, color: "var(--t2)", fontWeight: 700 }}>{account.group}</span>}
+          {savedGameName && (
+            <span onClick={onOpenDetails} title={`Last game: ${savedGameName}`} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}>
+              {(!isValid || account.group ? "· " : "") + savedGameName}
+            </span>
+          )}
+        </div>
+
+        <button onClick={onToggleFav} title={account.is_favorite ? "Remove from favorites" : "Add to favorites"} style={{ ...listIconBtn, opacity: hovered || account.is_favorite ? 1 : 0, transition: "opacity .12s" }}>
+          <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
+        </button>
+        <button onClick={onRemove} title="Remove account" style={{ ...listIconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s" }}>
+          <TrashIcon size={13} color="var(--red)" />
+        </button>
+
         <button
+          className="acct-launch"
           onClick={onLaunch}
           disabled={isLaunching || !isValid}
           style={{
-            flex: 2, height: 32, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-            borderRadius: 9, border: "none",
-            background: isLaunching ? "var(--g04)" : isValid ? "var(--accent)" : "var(--g04)",
-            color: isLaunching ? "var(--t3)" : isValid ? "#000" : "var(--t3)",
-            fontSize: 11, fontWeight: 800,
-            cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
-            transition: "all .12s",
+            width: 112, height: 30, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            borderRadius: 8, border: "none",
+            background: isLaunching || !isValid ? "var(--g04)" : "var(--accent)",
+            color: isLaunching || !isValid ? "var(--t3)" : "#000",
+            fontSize: 11, fontWeight: 800, cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
           }}
         >
           <ZapIcon size={11} color={isValid && !isLaunching ? "#000" : "var(--t3)"} />
-          {isLaunching ? "..." : "Launch"}
+          {isLaunching ? "Launching…" : isValid ? "Launch" : "Expired"}
         </button>
-
         <button
-          onClick={onOpenDetails}
-          title="Account Details & Games"
-          style={{
-            flex: 1, height: 32, display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
-            borderRadius: 9, border: "1px solid var(--g06)", background: "var(--g03)",
-            color: "var(--t2)", fontSize: 10.5, fontWeight: 700, cursor: "pointer",
-          }}
-        >
-          👁️ Info
-        </button>
-
-        {isList && <button onClick={onToggleFav} title="Favorite" style={{ width: 32, height: 32, borderRadius: 9, border: "1px solid var(--g06)", background: "var(--g03)", cursor: "pointer", color: account.is_favorite ? "var(--amber)" : "var(--t3)" }}><StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} /></button>}
-
-        <button
+          className="acct-tool"
           onClick={onOpenUtilities}
-          title="Utilities"
-          style={{
-            width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
-            borderRadius: 9, border: "1px solid var(--g06)", background: "var(--g03)",
-            color: "var(--t3)", cursor: "pointer", flexShrink: 0,
-          }}
+          title="Account tools"
+          style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid var(--g06)", background: "transparent", color: "var(--t3)", cursor: "pointer", flexShrink: 0 }}
         >
           <SettingsIcon size={13} />
         </button>
       </div>
-    </div>
-  );
+    );
+  }
 }
 
 /* â"€â"€ Modal wrapper â"€â"€ */

@@ -85,19 +85,31 @@ jobs:
           echo "path=$EXE" >> $GITHUB_OUTPUT
           echo "name=$(basename "$EXE")" >> $GITHUB_OUTPUT
 
+      - name: Sign installer for the in-app updater
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "UPDATE_SIGNING_KEY secret is not set; refusing to publish an unsigned release." >&2
+            exit 1
+          fi
+          EXE="${{ steps.installer.outputs.path }}"
+          DEST="ReiyaAccountManager-$VERSION-setup.exe"
+          cp "$EXE" "$DEST"
+          node scripts/sign-update.cjs "$DEST"
+
       - name: Publish release to Key-System (public repo)
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.KEY_SYSTEM_PAT }}
         run: |
-          EXE="${{ steps.installer.outputs.path }}"
           DEST="ReiyaAccountManager-$VERSION-setup.exe"
-          cp "$EXE" "$DEST"
 
           gh release delete "v$VERSION" --repo Seisen-z/Key-System --yes 2>/dev/null || true
           gh api --method DELETE /repos/Seisen-z/Key-System/git/refs/tags/v$VERSION 2>/dev/null || true
 
-          gh release create "v$VERSION" "$DEST" \
+          gh release create "v$VERSION" "$DEST" "$DEST.sig" \
             --repo Seisen-z/Key-System \
             --title "Reiya Account Manager v$VERSION" \
             --notes "Version $VERSION — download and run the installer to update." \

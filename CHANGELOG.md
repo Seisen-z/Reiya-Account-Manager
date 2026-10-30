@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.2.0 - 2026-10-31
+
+### Added
+- Favorite-games filter: pick a game icon above the accounts to show only the accounts that have it as a favorite.
+- Bulk edit: select several accounts and set their game, launcher, startup delay, favorite games, notes and tags in one step. Blank fields stay unchanged.
+
+### Improved
+- Safer updates: Reiya now only installs updates published by the official release channel and checks each installer's digital signature before running it.
+- Stronger account protection: cookies are encrypted with a key that is protected by your Windows login instead of one derived from the computer name. Existing accounts are upgraded automatically.
+- Saved passwords never leave the app's secure side. Copy password now places it on the clipboard and clears it after 30 seconds.
+- Backups use a password you choose (at least 8 characters) with a much stronger key derivation, and they restore on a fresh Windows install. Older backups still import.
+- Vault password lock now requires 8 or more characters, slows down repeated wrong attempts, and can only be reset from the lock screen. Switching lock modes can no longer leave accounts half-converted.
+- Cleaner Accounts tab: compact account cards and list rows, one-line header stats, and a Launch button that no longer dominates the screen.
+- Easier to read and use: brighter secondary text, visible keyboard focus everywhere, labelled window buttons, and a tidier sidebar.
+
+### Fixed
+- A damaged accounts file is now set aside instead of being treated as empty and overwritten, and a rolling backup of the last good file is kept.
+- The sidebar's online count now shows only the real number of users, and the two social icons that linked to generic home pages were removed.
+- Favorite-game icons now show on accounts with expired cookies too.
+
 ## v1.1.19 - 2026-10-10
 
 ### Improved

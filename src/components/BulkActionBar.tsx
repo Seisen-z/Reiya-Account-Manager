@@ -54,7 +54,7 @@ export const BulkActionBar: FC<{
       <BulkBtn label="Launch All" onClick={onLaunchAll} disabled={bulkLaunching} accent="#34D399" />
       <BulkBtn label="Validate All" onClick={onValidateAll} disabled={bulkLaunching} />
       <BulkBtn label="Move to Group" onClick={onMoveToGroup} disabled={bulkLaunching} />
-      <BulkBtn label="Apply Launch Preset" onClick={onApplyLaunchPreset} disabled={bulkLaunching} accent="#A78BFA" />
+      <BulkBtn label="Edit Games & Tags" onClick={onApplyLaunchPreset} disabled={bulkLaunching} accent="#A78BFA" />
       <BulkBtn label="Select All" onClick={onSelectAll} disabled={bulkLaunching} />
       <BulkBtn label="Delete All" onClick={onDeleteAll} disabled={bulkLaunching} danger />
       {bulkStatus && (

@@ -458,7 +458,7 @@ function DataSecurityCard() {
   const reset = () => { setExpanded(false); setPwd1(""); setPwd2(""); setErr(""); };
 
   const handleEnable = async () => {
-    if (pwd1.length < 4) { setErr("Password must be at least 4 characters."); return; }
+    if (pwd1.length < 8) { setErr("Password must be at least 8 characters."); return; }
     if (pwd1 !== pwd2) { setErr("Passwords don't match."); return; }
     setBusy(true); setErr("");
     try {

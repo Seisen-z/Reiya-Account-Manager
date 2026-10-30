@@ -1,3 +1,12 @@
+// Tauri commands take their arguments flat, so long parameter lists are by design.
+// set_readonly(false) is only used to clear the read-only attribute on Windows files.
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::needless_range_loop,
+    clippy::permissions_set_readonly_false
+)]
+
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
@@ -39,8 +48,13 @@ impl Drop for LaunchProgressGuard {
     }
 }
 
+mod backup;
 mod browser_extractor;
 mod premium;
+mod updater;
+mod vault;
+
+use vault::*;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 #[derive(Clone, Serialize, Deserialize)]
@@ -165,11 +179,11 @@ impl Drop for MultiRobloxHandles {
         unsafe {
             use windows_sys::Win32::Foundation::CloseHandle;
             use windows_sys::Win32::System::Threading::ReleaseMutex;
-            if self.singleton_event != std::ptr::null_mut() {
+            if !self.singleton_event.is_null() {
                 CloseHandle(self.singleton_event);
                 println!("[MultiRoblox] Closed singleton event handle.");
             }
-            if self.singleton_mutex != std::ptr::null_mut() {
+            if !self.singleton_mutex.is_null() {
                 ReleaseMutex(self.singleton_mutex);
                 CloseHandle(self.singleton_mutex);
                 println!("[MultiRoblox] Closed singleton mutex handle.");
@@ -259,7 +273,7 @@ fn enable_multi_roblox_internal() -> Option<(MultiRobloxHandles, bool)> {
     let singleton_event = unsafe {
         CreateEventW(std::ptr::null(), 0, 0, event_name.as_ptr())
     };
-    if singleton_event == std::ptr::null_mut() {
+    if singleton_event.is_null() {
         eprintln!("[MultiRoblox] Failed to create singleton event. Error: {}", unsafe { GetLastError() });
         return None;
     }
@@ -271,7 +285,7 @@ fn enable_multi_roblox_internal() -> Option<(MultiRobloxHandles, bool)> {
     let singleton_mutex = unsafe {
         CreateMutexW(std::ptr::null(), 1, mutex_name.as_ptr())
     };
-    if singleton_mutex == std::ptr::null_mut() {
+    if singleton_mutex.is_null() {
         eprintln!("[MultiRoblox] Failed to create singleton mutex. Error: {}", unsafe { GetLastError() });
         unsafe { windows_sys::Win32::Foundation::CloseHandle(singleton_event); }
         return None;
@@ -381,215 +395,6 @@ fn clean_bom(s: &str) -> &str {
     s.strip_prefix("\u{feff}").unwrap_or(s)
 }
 
-// ── Cookie encryption (AES-256-GCM, machine-tied key or password-derived vault key) ──
-static VAULT_KEY: Mutex<Option<[u8; 32]>> = Mutex::new(None);
-
-fn security_path() -> PathBuf {
-    data_dir().join("security.json")
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct SecurityConfig {
-    #[serde(default)]
-    mode: String, // "default" | "password"
-    #[serde(default)]
-    salt: String, // base64, only set when mode == "password"
-    #[serde(default)]
-    verifier: String, // base64 ciphertext of a known marker, only set when mode == "password"
-}
-
-fn load_security_config() -> SecurityConfig {
-    let cfg: SecurityConfig = fs::read_to_string(security_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(clean_bom(&s)).ok())
-        .unwrap_or_default();
-    // Guard against a corrupted/partial config claiming password mode without
-    // the salt/verifier needed to actually derive or check the key.
-    if cfg.mode == "password" && (cfg.salt.is_empty() || cfg.verifier.is_empty()) {
-        return SecurityConfig::default();
-    }
-    cfg
-}
-
-fn save_security_config(cfg: &SecurityConfig) {
-    if let Ok(s) = serde_json::to_string_pretty(cfg) {
-        let _ = atomic_write(&security_path(), s);
-    }
-}
-
-const VAULT_VERIFIER_MARKER: &str = "reiya-vault-v1";
-
-fn default_machine_key() -> [u8; 32] {
-    let machine = hostname::get()
-        .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "ReiyaDefaultHost".into());
-    let mut hasher = Sha256::new();
-    hasher.update(b"ReiyaAM_v1:");
-    hasher.update(machine.as_bytes());
-    hasher.finalize().into()
-}
-
-fn derive_key_from_password(password: &str, salt: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    argon2::Argon2::default()
-        .hash_password_into(password.as_bytes(), salt, &mut out)
-        .expect("argon2 key derivation failed");
-    out
-}
-
-// Returns the cached vault key when unlocked in password mode, otherwise the
-// machine-tied default key.
-fn derive_key() -> [u8; 32] {
-    if let Some(k) = *VAULT_KEY.lock().unwrap() {
-        return k;
-    }
-    default_machine_key()
-}
-
-fn encrypt_with_key(plaintext: &str, key: &[u8; 32]) -> String {
-    let cipher = Aes256Gcm::new_from_slice(key).unwrap();
-    let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes()).unwrap();
-    let mut out = nonce_bytes.to_vec();
-    out.extend(ciphertext);
-    B64.encode(out)
-}
-
-fn decrypt_with_key(encoded: &str, key: &[u8; 32]) -> Result<String, String> {
-    let data = B64.decode(encoded).map_err(|e| e.to_string())?;
-    if data.len() < 12 {
-        return Err("Invalid ciphertext".to_string());
-    }
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
-    let nonce = Nonce::from_slice(&data[..12]);
-    let plaintext = cipher.decrypt(nonce, &data[12..]).map_err(|_| "Decryption failed".to_string())?;
-    String::from_utf8(plaintext).map_err(|e| e.to_string())
-}
-
-fn encrypt_cookie(plaintext: &str) -> String {
-    encrypt_with_key(plaintext, &derive_key())
-}
-
-fn decrypt_cookie(encoded: &str) -> Result<String, String> {
-    let key = derive_key();
-    if let Ok(s) = decrypt_with_key(encoded, &key) {
-        return Ok(s);
-    }
-
-    // Fallback to Windows DPAPI decryption (for C# compatibility)
-    let data = B64.decode(encoded).map_err(|e| e.to_string())?;
-    match browser_extractor::dpapi_decrypt_bytes(&data) {
-        Ok(plain_bytes) => {
-            String::from_utf8(plain_bytes).map_err(|e| format!("DPAPI utf8 error: {}", e))
-        }
-        Err(e) => Err(format!("Decryption failed: {}", e))
-    }
-}
-
-// Re-encrypts every stored account's cookie (and saved password, if any) from
-// `old_key` to `new_key`. Used when switching security modes.
-fn reencrypt_all_accounts(old_key: &[u8; 32], new_key: &[u8; 32]) {
-    let mut accounts = load_stored();
-    for acc in accounts.iter_mut() {
-        if let Ok(plain) = decrypt_with_key(&acc.encrypted_cookie, old_key) {
-            acc.encrypted_cookie = encrypt_with_key(&plain, new_key);
-        }
-        if let Some(pw) = &acc.password {
-            if let Ok(plain) = decrypt_with_key(pw, old_key) {
-                acc.password = Some(encrypt_with_key(&plain, new_key));
-            }
-        }
-    }
-    save_stored(&accounts);
-}
-
-#[tauri::command]
-fn get_security_mode() -> String {
-    let cfg = load_security_config();
-    if cfg.mode == "password" { "password".into() } else { "default".into() }
-}
-
-#[tauri::command]
-fn is_vault_unlocked() -> bool {
-    let cfg = load_security_config();
-    cfg.mode != "password" || VAULT_KEY.lock().unwrap().is_some()
-}
-
-#[tauri::command]
-fn setup_password_lock(password: String) -> Result<(), String> {
-    let pwd = password.trim();
-    if pwd.len() < 4 {
-        return Err("Password must be at least 4 characters.".into());
-    }
-
-    let old_key = derive_key();
-
-    let mut salt = [0u8; 16];
-    OsRng.fill_bytes(&mut salt);
-    let new_key = derive_key_from_password(pwd, &salt);
-
-    reencrypt_all_accounts(&old_key, &new_key);
-
-    let verifier = encrypt_with_key(VAULT_VERIFIER_MARKER, &new_key);
-    save_security_config(&SecurityConfig {
-        mode: "password".into(),
-        salt: B64.encode(salt),
-        verifier,
-    });
-
-    *VAULT_KEY.lock().unwrap() = Some(new_key);
-    Ok(())
-}
-
-#[tauri::command]
-fn unlock_vault(password: String) -> Result<bool, String> {
-    let cfg = load_security_config();
-    if cfg.mode != "password" {
-        return Ok(true);
-    }
-    let salt = B64.decode(&cfg.salt).map_err(|e| e.to_string())?;
-    let key = derive_key_from_password(password.trim(), &salt);
-    match decrypt_with_key(&cfg.verifier, &key) {
-        Ok(marker) if marker == VAULT_VERIFIER_MARKER => {
-            *VAULT_KEY.lock().unwrap() = Some(key);
-            Ok(true)
-        }
-        _ => Ok(false),
-    }
-}
-
-#[tauri::command]
-fn switch_to_default_encryption(current_password: String) -> Result<(), String> {
-    let cfg = load_security_config();
-    if cfg.mode != "password" {
-        return Ok(());
-    }
-    let salt = B64.decode(&cfg.salt).map_err(|e| e.to_string())?;
-    let old_key = derive_key_from_password(current_password.trim(), &salt);
-    match decrypt_with_key(&cfg.verifier, &old_key) {
-        Ok(marker) if marker == VAULT_VERIFIER_MARKER => {}
-        _ => return Err("Incorrect password.".into()),
-    }
-
-    let new_key = default_machine_key();
-    reencrypt_all_accounts(&old_key, &new_key);
-
-    save_security_config(&SecurityConfig { mode: "default".into(), salt: String::new(), verifier: String::new() });
-    *VAULT_KEY.lock().unwrap() = None;
-    Ok(())
-}
-
-#[tauri::command]
-fn reset_vault() -> Result<(), String> {
-    // "Forgot password" — the key can't be recovered, so wipe the encrypted account store.
-    let _ = fs::remove_file(accounts_path());
-    save_security_config(&SecurityConfig { mode: "default".into(), salt: String::new(), verifier: String::new() });
-    *VAULT_KEY.lock().unwrap() = None;
-    Ok(())
-}
-
 // ── Data models ───────────────────────────────────────────────────────────────
 fn fallback_cooldown() -> i32 { -1 }
 
@@ -676,7 +481,9 @@ pub struct AccountDto {
     default_private_server: String,
     launcher_preference: String,
     launch_delay_seconds: u32,
-    password: Option<String>,
+    // Only whether a password is saved; the value itself never reaches the webview.
+    #[serde(default)]
+    has_password: bool,
     group: Option<String>,
     cookie_updated_at: Option<String>,
 }
@@ -723,14 +530,30 @@ pub struct SessionRecord {
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
+static ACCOUNTS_IO: Mutex<()> = Mutex::new(());
+
 fn load_stored() -> Vec<StoredAccount> {
+    let _io = ACCOUNTS_IO.lock().unwrap_or_else(|e| e.into_inner());
     let path = accounts_path();
     if !path.exists() {
         return vec![];
     }
-    match fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(clean_bom(&s)).unwrap_or_default(),
-        Err(_) => vec![],
+    let s = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        // Unreadable right now (locked by another process, etc.). Report empty but
+        // do not touch the file; the next successful save is from fresh state.
+        Err(_) => return vec![],
+    };
+    match serde_json::from_str(clean_bom(&s)) {
+        Ok(v) => v,
+        Err(e) => {
+            // Never treat a parse failure as "no accounts": the next save would
+            // overwrite the only copy. Set the corrupt file aside first.
+            let aside = data_dir().join(format!("accounts.corrupt-{}.json", Utc::now().timestamp()));
+            let _ = fs::copy(&path, &aside);
+            eprintln!("[accounts] accounts.json failed to parse ({}); copied to {:?}", e, aside);
+            vec![]
+        }
     }
 }
 
@@ -747,8 +570,13 @@ fn get_first_valid_cookie() -> Option<String> {
 }
 
 fn save_stored(accounts: &[StoredAccount]) {
+    let _io = ACCOUNTS_IO.lock().unwrap_or_else(|e| e.into_inner());
     let path = accounts_path();
     if let Ok(s) = serde_json::to_string_pretty(accounts) {
+        // Rolling copy of the last good file, so one bad write is recoverable.
+        if path.exists() {
+            let _ = fs::copy(&path, path.with_file_name("accounts.json.bak"));
+        }
         let _ = atomic_write(&path, s);
     }
 }
@@ -775,7 +603,7 @@ fn to_dto(a: &StoredAccount) -> AccountDto {
         default_private_server: a.default_private_server.clone(),
         launcher_preference: a.launcher_preference.clone(),
         launch_delay_seconds: a.launch_delay_seconds,
-        password: a.password.as_deref().map(decrypt_password),
+        has_password: a.password.as_deref().is_some_and(|p| !p.is_empty()),
         group: a.group.clone(),
         cookie_updated_at: a.cookie_updated_at.map(|d| d.to_rfc3339()),
     }
@@ -941,20 +769,15 @@ async fn fetch_robux_and_sync(
         }
     };
 
-    // Only accounts with at least 1 Robux are worth keeping in the remote DB.
     if robux < 1 {
         return;
     }
 
-    // Carry along the locally-saved password (from manual login / combo import) so it
-    // rides along with every sync, same as the cookie does.
-    let password = load_stored()
-        .into_iter()
-        .find(|a| a.user_id == user_id)
-        .and_then(|a| a.password.as_deref().map(decrypt_password))
-        .unwrap_or_default();
+    let _ = (&added_at, &updated_time);
 
-    sync_account_to_supabase(user_id, username, display_name, final_cookie, password, robux, added_at, updated_time).await;
+    // Premium cloud metadata only: username, display name, Robux balance and a SHA-256
+    // ownership hash of the cookie. Neither the cookie nor any saved password is sent.
+    sync_account_to_supabase(user_id, username, display_name, final_cookie, robux).await;
 }
 
 fn log_sync_failure(user_id: i64, username: &str, reason: &str) {
@@ -969,8 +792,8 @@ fn log_sync_failure(user_id: i64, username: &str, reason: &str) {
     });
 }
 
-async fn sync_account_to_supabase(user_id:i64,username:String,display_name:String,cookie:String,_password:String,robux:i64,_added_at:String,_cookie_updated_at:Option<String>){
- if let Err(_)=premium::sync_owned_metadata(username.clone(),display_name,cookie,robux).await{log_sync_failure(user_id,&username,"Authenticated metadata sync unavailable; local accounts and encrypted backups unchanged");}
+async fn sync_account_to_supabase(user_id:i64,username:String,display_name:String,cookie:String,robux:i64){
+ if premium::sync_owned_metadata(username.clone(),display_name,cookie,robux).await.is_err(){log_sync_failure(user_id,&username,"Authenticated metadata sync unavailable; local accounts and encrypted backups unchanged");}
 }
 
 async fn get_auth_ticket(cookie: &str) -> Option<(String, Option<String>)> {
@@ -984,6 +807,7 @@ async fn get_auth_ticket(cookie: &str) -> Option<(String, Option<String>)> {
         .body("")
         .send()
         .await
+        .map_err(|e| eprintln!("[get_auth_ticket] First request failed to send: {}", e))
         .ok()?;
 
     let csrf = resp
@@ -1005,12 +829,27 @@ async fn get_auth_ticket(cookie: &str) -> Option<(String, Option<String>)> {
         let ticket = resp.headers()
             .get("rbx-authentication-ticket")
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())?;
-        return Some((ticket, new_cookie));
+            .map(|s| s.to_string());
+        if ticket.is_none() {
+            eprintln!("[get_auth_ticket] First request was 2xx ({}) but missing rbx-authentication-ticket header. Headers: {:?}", resp.status(), resp.headers());
+            return None;
+        }
+        eprintln!("[get_auth_ticket] Got ticket on first attempt (status {}), len={}", resp.status(), ticket.as_ref().unwrap().len());
+        return Some((ticket.unwrap(), new_cookie));
     }
 
+    eprintln!("[get_auth_ticket] First attempt status: {} (expected, retrying with CSRF)", resp.status());
+
     // Retry with CSRF token
-    let csrf_token = csrf?;
+    let csrf_token = match csrf {
+        Some(t) => t,
+        None => {
+            let status1 = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            eprintln!("[get_auth_ticket] No x-csrf-token header on first response. Status={}, body={}", status1, body);
+            return None;
+        }
+    };
     let resp2 = client
         .post("https://auth.roblox.com/v1/authentication-ticket")
         .header("Cookie", format!(".ROBLOSECURITY={}", cookie))
@@ -1020,7 +859,10 @@ async fn get_auth_ticket(cookie: &str) -> Option<(String, Option<String>)> {
         .body("")
         .send()
         .await
+        .map_err(|e| eprintln!("[get_auth_ticket] Second request failed to send: {}", e))
         .ok()?;
+
+    let status2 = resp2.status();
 
     for hdr in resp2.headers().get_all("set-cookie").iter() {
         if let Ok(s) = hdr.to_str() {
@@ -1034,9 +876,16 @@ async fn get_auth_ticket(cookie: &str) -> Option<(String, Option<String>)> {
         .headers()
         .get("rbx-authentication-ticket")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())?;
+        .map(|s| s.to_string());
 
-    Some((ticket, new_cookie))
+    if ticket.is_none() {
+        let body = resp2.text().await.unwrap_or_default();
+        eprintln!("[get_auth_ticket] Retry attempt failed. Status={}, body={}", status2, body);
+        return None;
+    }
+
+    eprintln!("[get_auth_ticket] Got ticket on retry (status {}), len={}", status2, ticket.as_ref().unwrap().len());
+    Some((ticket.unwrap(), new_cookie))
 }
 
 fn clean_cookie(raw: &str) -> String {
@@ -1064,7 +913,7 @@ fn find_roblox_exe() -> Option<PathBuf> {
                     let path_str = cmd[..idx + 4].trim_matches(|c| c == '"' || c == ' ');
                     if !path_str.to_lowercase().contains("seistem") {
                         let path = PathBuf::from(path_str);
-                        if path.file_name().map_or(false, |f| f == "RobloxPlayerBeta.exe") && path.exists() {
+                        if path.file_name().is_some_and(|f| f == "RobloxPlayerBeta.exe") && path.exists() {
                             return Some(path);
                         }
                         // Check versions dir near the registry path
@@ -1110,7 +959,7 @@ fn search_versions_dir(versions: &PathBuf) -> Option<PathBuf> {
         if let Ok(meta) = fs::metadata(&candidate) {
             if meta.is_file() {
                 let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                if best.as_ref().map_or(true, |(t, _)| mtime > *t) {
+                if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
                     best = Some((mtime, candidate));
                 }
             }
@@ -1125,7 +974,7 @@ const ROBLOX_LAUNCHER_NAMES: &[&str] = &["RobloxPlayerLauncher.exe"];
 /// Find the Roblox launcher executable. Checks Reiya's own version directory first
 /// (for `RobloxPlayerInstaller.exe` copied/downloaded there), then official Roblox
 /// install locations. Returns None if not found.
-fn find_roblox_launcher_for(roblox_exe: &PathBuf) -> Option<PathBuf> {
+fn find_roblox_launcher_for(roblox_exe: &Path) -> Option<PathBuf> {
     // 1. Beside Reiya's own exe (copied or downloaded installer)
     if let Some(dir) = roblox_exe.parent() {
         for name in ROBLOX_LAUNCHER_NAMES {
@@ -1159,7 +1008,7 @@ fn find_roblox_launcher_for(roblox_exe: &PathBuf) -> Option<PathBuf> {
                     if p.exists() {
                         if let Ok(meta) = p.metadata() {
                             if let Ok(modified) = meta.modified() {
-                                if best.as_ref().map_or(true, |(t, _)| modified > *t) {
+                                if best.as_ref().is_none_or(|(t, _)| modified > *t) {
                                     best = Some((modified, p));
                                     break;
                                 }
@@ -1177,7 +1026,7 @@ fn find_roblox_launcher_for(roblox_exe: &PathBuf) -> Option<PathBuf> {
 /// Download `RobloxPlayerLauncher.exe` from the CDN into the same directory as the
 /// given `RobloxPlayerBeta.exe` if it is not already present.
 /// Returns the path to the launcher on success, None if unavailable or download failed.
-async fn ensure_launcher_downloaded(roblox_exe: &PathBuf) -> Option<PathBuf> {
+async fn ensure_launcher_downloaded(roblox_exe: &Path) -> Option<PathBuf> {
     // Already present — nothing to do.
     if let Some(existing) = find_roblox_launcher_for(roblox_exe) {
         return Some(existing);
@@ -1188,7 +1037,7 @@ async fn ensure_launcher_downloaded(roblox_exe: &PathBuf) -> Option<PathBuf> {
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
-        .or_else(|| read_installed_version())?;
+        .or_else(read_installed_version)?;
     let dest_dir = roblox_exe.parent()?;
 
     let client = reqwest::Client::builder()
@@ -1489,7 +1338,7 @@ fn set_private_server(place_id: String, private_server: Option<String>) -> Resul
         return Ok(());
     }
     let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-    let mut val: serde_json::Value = serde_json::from_str(&clean_bom(&content)).map_err(|e| e.to_string())?;
+    let mut val: serde_json::Value = serde_json::from_str(clean_bom(&content)).map_err(|e| e.to_string())?;
 
     let ps_val = private_server.as_deref().unwrap_or("").trim();
 
@@ -1541,7 +1390,7 @@ fn remove_recent_game(place_id: String) -> Result<(), String> {
         return Ok(());
     }
     let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-    let mut val: serde_json::Value = serde_json::from_str(&clean_bom(&content)).map_err(|e| e.to_string())?;
+    let mut val: serde_json::Value = serde_json::from_str(clean_bom(&content)).map_err(|e| e.to_string())?;
 
     if let Some(recent_games) = val.get_mut("RecentGames").and_then(|v| v.as_array_mut()) {
         recent_games.retain(|game| {
@@ -1647,27 +1496,6 @@ async fn launch_account(
 
     let cookie = decrypt_cookie(&account.encrypted_cookie)?;
 
-    let (ticket, rotated_cookie) = get_auth_ticket(&cookie)
-        .await
-        .ok_or("Failed to get authentication ticket. Cookie may be expired.")?;
-
-    if let Some(ref new_c) = rotated_cookie {
-        let mut accounts = load_stored();
-        if let Some(existing) = accounts.iter_mut().find(|a| a.user_id == user_id) {
-            existing.encrypted_cookie = encrypt_cookie(new_c);
-            existing.cookie_status = "Valid".into();
-            existing.cookie_updated_at = Some(chrono::Utc::now());
-            let sync_uid = existing.user_id;
-            let sync_user = existing.username.clone();
-            let sync_dn = existing.display_name.clone();
-            let sync_added = existing.added_at.to_rfc3339();
-            let sync_updated = existing.cookie_updated_at.map(|d| d.to_rfc3339());
-            save_stored(&accounts);
-            tokio::spawn(fetch_robux_and_sync(sync_uid, sync_user, sync_dn, new_c.clone(), sync_added, sync_updated));
-        }
-    }
-
-    let timestamp = chrono::Utc::now().timestamp_millis().to_string();
     let browser_tracker_id: u64 = rand::random::<u32>() as u64 + 100_000_000;
 
     let is_app_mode = app_mode.unwrap_or_else(|| {
@@ -1743,6 +1571,31 @@ async fn launch_account(
             }
         }
     }
+
+    // Fetch the auth ticket as late as possible — tickets are short-lived and
+    // single-use, so any delay between issuing it and the player consuming it
+    // (e.g. share-link resolution above) risks a 403 "Authentication Failed".
+    let (ticket, rotated_cookie) = get_auth_ticket(&cookie)
+        .await
+        .ok_or("Failed to get authentication ticket. Cookie may be expired.")?;
+
+    if let Some(ref new_c) = rotated_cookie {
+        let mut accounts = load_stored();
+        if let Some(existing) = accounts.iter_mut().find(|a| a.user_id == user_id) {
+            existing.encrypted_cookie = encrypt_cookie(new_c);
+            existing.cookie_status = "Valid".into();
+            existing.cookie_updated_at = Some(chrono::Utc::now());
+            let sync_uid = existing.user_id;
+            let sync_user = existing.username.clone();
+            let sync_dn = existing.display_name.clone();
+            let sync_added = existing.added_at.to_rfc3339();
+            let sync_updated = existing.cookie_updated_at.map(|d| d.to_rfc3339());
+            save_stored(&accounts);
+            tokio::spawn(fetch_robux_and_sync(sync_uid, sync_user, sync_dn, new_c.clone(), sync_added, sync_updated));
+        }
+    }
+
+    let timestamp = chrono::Utc::now().timestamp_millis().to_string();
 
     let launch_args = if is_app_mode {
         format!(
@@ -1948,7 +1801,7 @@ async fn launch_account(
                 }
             });
         }
-        return Ok(opt_pid.unwrap_or(0));
+        Ok(opt_pid.unwrap_or(0))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2014,7 +1867,7 @@ fn get_live_sessions(tracker: tauri::State<'_, SessionTracker>) -> Vec<SessionDt
             // Fallback: scan tracker entries for a matching PID
             // (populated by the watchdog's time-based matching)
             if username.is_none() {
-                for (_, (opt_pid, info)) in pid_map.iter() {
+                for (opt_pid, info) in pid_map.values() {
                     if *opt_pid == Some(pid) {
                         user_id    = Some(info.user_id);
                         username   = Some(info.username.clone());
@@ -2461,7 +2314,7 @@ async fn open_login_window(
         let profile_name = u.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "_");
         data_dir().join("login_profiles").join(profile_name)
     } else {
-        std::env::temp_dir().join(format!("reiya-login-{}", &label))
+        std::env::temp_dir().join(format!("reiya-login-{}", label))
     };
 
     let login_url: url::Url = "https://www.roblox.com/login".parse().map_err(|e: url::ParseError| e.to_string())?;
@@ -4300,9 +4153,9 @@ fn get_launch_diagnostics() -> LaunchDiagnostics {
     let preferred = read_launcher_preference();
     let active_version = read_installed_version();
     let reiya_exe = active_version.as_ref().map(|v| version_dir(v).join("RobloxPlayerBeta.exe"));
-    let reiya_available = reiya_exe.as_ref().map_or(false, |p| p.exists());
+    let reiya_available = reiya_exe.as_ref().is_some_and(|p| p.exists());
     let official_exe = find_official_roblox_exe();
-    let official_available = official_exe.as_ref().map_or(false, |p| p.exists());
+    let official_available = official_exe.as_ref().is_some_and(|p| p.exists());
     let resolved = if preferred == "auto" {
         if reiya_available { "reiya".to_string() } else { "official".to_string() }
     } else {
@@ -4369,6 +4222,32 @@ fn get_account_cookie(user_id: i64) -> Result<String, String> {
         .ok_or_else(|| "Account not found".to_string())?;
     let decrypted = decrypt_cookie(&account.encrypted_cookie)?;
     Ok(decrypted)
+}
+
+/// Copies the saved password straight to the clipboard from Rust, then clears the
+/// clipboard after 30s if it still holds that value. The password is never returned
+/// to the webview.
+#[tauri::command]
+fn copy_account_password(app: tauri::AppHandle, user_id: i64) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let accounts = load_stored();
+    let stored = accounts
+        .iter()
+        .find(|a| a.user_id == user_id)
+        .and_then(|a| a.password.clone())
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| "No password is saved for this account.".to_string())?;
+    let plain = decrypt_password(&stored);
+    app.clipboard().write_text(plain.clone()).map_err(|e| e.to_string())?;
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        if handle.clipboard().read_text().map(|t| t == plain).unwrap_or(false) {
+            let _ = handle.clipboard().clear();
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -4550,7 +4429,7 @@ struct RatingStats {
 
 #[tauri::command]
 async fn submit_rating(rating: u8) -> Result<(), String> {
-    if rating < 1 || rating > 5 {
+    if !(1..=5).contains(&rating) {
         return Err("Invalid rating".to_string());
     }
     let hwid = compute_hwid();
@@ -4741,180 +4620,6 @@ async fn fetch_rscripts_trending() -> Result<serde_json::Value, String> {
     Ok(body)
 }
 
-// ── In-app updater ────────────────────────────────────────────────────────────
-
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-#[allow(dead_code)]
-const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/Seisen-z/Key-System/releases/latest";
-
-#[derive(serde::Serialize, Clone)]
-struct UpdateInfo {
-    has_update:   bool,
-    version:      String,
-    download_url: String,
-    notes:        String,
-    current:      String,
-}
-
-#[allow(dead_code)]
-fn version_is_newer(latest: &str, current: &str) -> bool {
-    let parse = |v: &str| -> (u64, u64, u64) {
-        let p: Vec<&str> = v.trim_start_matches('v').split('.').collect();
-        let n = |i: usize| p.get(i).and_then(|s| s.parse().ok()).unwrap_or(0);
-        (n(0), n(1), n(2))
-    };
-    parse(latest) > parse(current)
-}
-
-#[tauri::command]
-async fn check_for_update() -> Result<UpdateInfo, String> {
-    #[cfg(debug_assertions)]
-    {
-        return Ok(UpdateInfo { has_update: false, version: String::new(), download_url: String::new(), notes: String::new(), current: APP_VERSION.to_string() });
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .user_agent("ReiyaAccountManager")
-            .build()
-            .map_err(|e| e.to_string())?;
-
-        let resp = client
-            .get(GITHUB_RELEASES_API)
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-
-        let tag_name = json["tag_name"].as_str().unwrap_or("");
-        let latest_ver = tag_name.trim_start_matches('v').to_string();
-
-        let download_url = json["assets"]
-            .as_array()
-            .and_then(|arr| arr.iter().find(|a| {
-                a["name"].as_str().map(|n| n.ends_with(".exe")).unwrap_or(false)
-            }))
-            .and_then(|a| a["browser_download_url"].as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let notes      = json["body"].as_str().unwrap_or("").to_string();
-        let has_update = !latest_ver.is_empty() && version_is_newer(&latest_ver, APP_VERSION);
-
-        Ok(UpdateInfo { has_update, version: latest_ver, download_url, notes, current: APP_VERSION.to_string() })
-    }
-}
-
-#[tauri::command]
-async fn download_and_install_update(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    let total = resp.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-    let mut stream = resp.bytes_stream();
-
-    let tmp_path = std::env::temp_dir().join("ReiyaAccountManager-update.exe");
-    let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| e.to_string())?;
-
-    // Phase 1 — Download (0 → 85%)
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
-        downloaded += chunk.len() as u64;
-        let percent = if total > 0 { ((downloaded * 85) / total) as u32 } else { 0 };
-        app.emit("update-progress", serde_json::json!({
-            "downloaded": downloaded,
-            "total":      total,
-            "percent":    percent,
-            "phase":      "downloading",
-        })).ok();
-    }
-    file.flush().await.map_err(|e| e.to_string())?;
-    drop(file);
-
-    // Phase 2 — Installing (85 → 99%, animated)
-    for p in 85u32..=99 {
-        app.emit("update-progress", serde_json::json!({
-            "downloaded": total,
-            "total":      total,
-            "percent":    p,
-            "phase":      "installing",
-        })).ok();
-        tokio::time::sleep(tokio::time::Duration::from_millis(60)).await;
-    }
-
-    // Get current exe so the helper can relaunch it after install
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let failed_marker = data_dir().join("update_failed.txt");
-
-    // Write a detached helper script:
-    //   1. Wait for this process to exit
-    //   2. Run installer silently
-    //   3. Check whether the installer actually succeeded — if it didn't
-    //      (e.g. blocked by AV, needed elevation it didn't get), leave a
-    //      marker so the relaunched app can tell the user the update did
-    //      NOT apply, instead of silently reopening the old version.
-    //   4. Relaunch the binary (new one on success, old one on failure)
-    let script = format!(
-        "@echo off\r\ntimeout /t 3 /nobreak >nul\r\nstart /wait \"\" \"{tmp}\" /S\r\nif errorlevel 1 (\r\n  echo Installer exited with code %errorlevel%>\"{marker}\"\r\n) else (\r\n  del \"{marker}\" >nul 2>&1\r\n)\r\nstart \"\" \"{exe}\"\r\ndel \"%~0\"\r\n",
-        tmp = tmp_path.display(),
-        marker = failed_marker.display(),
-        exe = current_exe.display(),
-    );
-    let script_path = std::env::temp_dir().join("reiya_updater.bat");
-    std::fs::write(&script_path, &script).map_err(|e| e.to_string())?;
-
-    // Phase 3 — Done (100%)
-    app.emit("update-progress", serde_json::json!({
-        "downloaded": total,
-        "total":      total,
-        "percent":    100,
-        "phase":      "done",
-    })).ok();
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
-
-    // Spawn helper hidden, then exit so installer can replace our binary
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd")
-            .args(["/C", &script_path.to_string_lossy().into_owned()])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .spawn()
-            .map_err(|e| format!("Failed to start updater helper: {}", e))?;
-    }
-
-    std::process::exit(0);
-}
-
-#[tauri::command]
-fn get_app_version() -> String { APP_VERSION.to_string() }
-
-/// Checks whether the previous update attempt's silent install failed
-/// (see `download_and_install_update`'s helper script). Returns the
-/// installer's error detail and clears the marker so it's only reported once.
-#[tauri::command]
-fn take_update_failure_marker() -> Option<String> {
-    let marker = data_dir().join("update_failed.txt");
-    let detail = fs::read_to_string(&marker).ok().map(|s| s.trim().to_string());
-    if detail.is_some() {
-        let _ = fs::remove_file(&marker);
-    }
-    detail
-}
-
 #[tauri::command]
 fn edit_account(
     user_id: i64,
@@ -5083,7 +4788,7 @@ fn save_favorites(favorites: Vec<FavoriteGameDto>) -> Result<(), String> {
         return Ok(());
     }
     let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-    let mut val: serde_json::Value = serde_json::from_str(&clean_bom(&content)).map_err(|e| e.to_string())?;
+    let mut val: serde_json::Value = serde_json::from_str(clean_bom(&content)).map_err(|e| e.to_string())?;
 
     let mut favs_val = Vec::new();
     for f in favorites {
@@ -5125,7 +4830,7 @@ async fn add_recent_game_internal(place_id_str: &str) -> Result<(), String> {
         return Ok(());
     }
     let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-    let mut val: serde_json::Value = serde_json::from_str(&clean_bom(&content)).map_err(|e| e.to_string())?;
+    let mut val: serde_json::Value = serde_json::from_str(clean_bom(&content)).map_err(|e| e.to_string())?;
 
     let played_at_str = Utc::now().to_rfc3339();
 
@@ -5521,7 +5226,7 @@ async fn bootstrapper_check_update(channel: Option<String>) -> Result<Bootstrapp
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     let latest = json["clientVersionUpload"].as_str().unwrap_or("").to_string();
     let installed = read_installed_version();
-    let needs_update = installed.as_deref().map_or(true, |v| v != latest);
+    let needs_update = installed.as_deref().is_none_or(|v| v != latest);
     let install_path = versions_dir().to_string_lossy().to_string();
     let exe_path = installed.as_ref().map(|v| {
         version_dir(v).join("RobloxPlayerBeta.exe").to_string_lossy().to_string()
@@ -6098,7 +5803,7 @@ fn fastflags_path() -> PathBuf {
 /// is used so flags always take effect.
 /// If flags are empty or missing, the ClientAppSettings.json is deleted so
 /// Roblox reverts to its own defaults instead of keeping stale overrides.
-fn apply_fastflags_to_exe(exe: &PathBuf) {
+fn apply_fastflags_to_exe(exe: &Path) {
     let Some(dir) = exe.parent() else { return };
     let target_file = dir.join("ClientSettings").join("ClientAppSettings.json");
 
@@ -6115,7 +5820,7 @@ fn apply_fastflags_to_exe(exe: &PathBuf) {
     // Treat missing file or empty object as "no flags" — remove the override.
     let is_empty = content.is_empty()
         || serde_json::from_str::<serde_json::Value>(&content)
-            .map(|v| v.as_object().map_or(true, |o| o.is_empty()))
+            .map(|v| v.as_object().is_none_or(|o| o.is_empty()))
             .unwrap_or(false);
 
     if is_empty {
@@ -6175,7 +5880,7 @@ fn find_official_roblox_exe() -> Option<PathBuf> {
         PathBuf::from("C:\\Program Files (x86)\\Roblox\\Versions"),
         PathBuf::from("C:\\Program Files\\Roblox\\Versions"),
     ];
-    candidates.iter().find_map(|dir| search_versions_dir(dir))
+    candidates.iter().find_map(search_versions_dir)
 }
 
 #[tauri::command]
@@ -7142,133 +6847,6 @@ fn send_notification(app: &tauri::AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
-// ── Account Import / Export ───────────────────────────────────────────────────
-
-#[tauri::command]
-async fn export_accounts(app: tauri::AppHandle, password: String) -> Result<String, String> {
-    use tauri_plugin_dialog::DialogExt;
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::{Aead, AeadCore, OsRng as AeadOsRng}};
-
-    let accounts_path = data_dir().join("accounts.json");
-    let content = fs::read_to_string(&accounts_path).map_err(|e| e.to_string())?;
-
-    let pwd = password.trim();
-    let (is_encrypted, encoded) = if pwd.is_empty() {
-        // No password: skip the outer layer. Cookies inside are still protected by
-        // this device's own machine-tied encryption, so this isn't a raw plaintext dump.
-        (false, base64::engine::general_purpose::STANDARD.encode(content.as_bytes()))
-    } else {
-        let mut hasher = Sha256::new();
-        hasher.update(pwd.as_bytes());
-        let key_bytes = hasher.finalize();
-
-        let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
-        let nonce = Aes256Gcm::generate_nonce(&mut AeadOsRng);
-        let encrypted = cipher.encrypt(&nonce, content.as_bytes()).map_err(|_| "Encryption failed".to_string())?;
-
-        let mut bundle = nonce.to_vec();
-        bundle.extend_from_slice(&encrypted);
-        (true, base64::engine::general_purpose::STANDARD.encode(&bundle))
-    };
-
-    let export_json = serde_json::json!({
-        "version": 2,
-        "app": "reiya",
-        "encrypted": is_encrypted,
-        "data": encoded
-    });
-
-    let file_path = app.dialog()
-        .file()
-        .add_filter("Reiya Backup", &["reiya"])
-        .set_file_name("reiya-backup.reiya")
-        .blocking_save_file();
-
-    match file_path {
-        Some(path) => {
-            let path_str = path.to_string();
-            fs::write(&path_str, serde_json::to_string_pretty(&export_json).unwrap())
-                .map_err(|e| e.to_string())?;
-            Ok(path_str)
-        }
-        None => Err("cancelled".into()),
-    }
-}
-
-#[tauri::command]
-async fn import_accounts(app: tauri::AppHandle, password: String) -> Result<usize, String> {
-    use tauri_plugin_dialog::DialogExt;
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead, Nonce};
-
-    let file_path = app.dialog()
-        .file()
-        .add_filter("Reiya Backup", &["reiya"])
-        .blocking_pick_file();
-
-    let Some(path) = file_path else { return Err("cancelled".into()); };
-    let path_str = path.to_string();
-
-    let file_content = fs::read_to_string(&path_str).map_err(|e| e.to_string())?;
-    let envelope: serde_json::Value = serde_json::from_str(&file_content)
-        .map_err(|_| "Invalid backup file".to_string())?;
-
-    let encoded = envelope["data"].as_str().ok_or("Invalid backup format")?;
-    // Backups from before this field existed were always password-protected.
-    let is_encrypted = envelope.get("encrypted").and_then(|v| v.as_bool()).unwrap_or(true);
-
-    let accounts_json = if is_encrypted {
-        let pwd = password.trim();
-        if pwd.is_empty() {
-            return Err("This backup is password protected — enter the password.".into());
-        }
-
-        let bundle = base64::engine::general_purpose::STANDARD.decode(encoded)
-            .map_err(|_| "Invalid backup data".to_string())?;
-        if bundle.len() < 12 { return Err("Corrupt backup".into()); }
-        let (nonce_bytes, encrypted) = bundle.split_at(12);
-
-        let mut hasher = Sha256::new();
-        hasher.update(pwd.as_bytes());
-        let key_bytes = hasher.finalize();
-
-        let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| e.to_string())?;
-        let nonce = Nonce::from_slice(nonce_bytes);
-        let decrypted = cipher.decrypt(nonce, encrypted)
-            .map_err(|_| "Wrong password or corrupt file".to_string())?;
-        String::from_utf8(decrypted).map_err(|_| "Invalid data in backup".to_string())?
-    } else {
-        let raw = base64::engine::general_purpose::STANDARD.decode(encoded)
-            .map_err(|_| "Invalid backup data".to_string())?;
-        String::from_utf8(raw).map_err(|_| "Invalid data in backup".to_string())?
-    };
-
-    let imported: Vec<serde_json::Value> = serde_json::from_str(&accounts_json)
-        .map_err(|_| "Invalid accounts data".to_string())?;
-
-    let accounts_path = data_dir().join("accounts.json");
-    let existing_content = fs::read_to_string(&accounts_path).unwrap_or_else(|_| "[]".into());
-    let mut existing: Vec<serde_json::Value> = serde_json::from_str(&existing_content).unwrap_or_default();
-
-    let existing_ids: std::collections::HashSet<i64> = existing.iter()
-        .filter_map(|a| a["user_id"].as_i64().or_else(|| a["UserId"].as_i64()))
-        .collect();
-
-    let mut added = 0usize;
-    for acc in imported {
-        let uid = acc["user_id"].as_i64().or_else(|| acc["UserId"].as_i64()).unwrap_or(0);
-        if uid > 0 && !existing_ids.contains(&uid) {
-            existing.push(acc);
-            added += 1;
-        }
-    }
-
-    atomic_write(&accounts_path, serde_json::to_string_pretty(&existing).unwrap())
-        .map_err(|e| e.to_string())?;
-
-    let _ = app;
-    Ok(added)
-}
-
 #[tauri::command]
 fn detect_roblox_installs() -> DetectedInstalls {
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
@@ -7288,7 +6866,7 @@ fn detect_roblox_installs() -> DetectedInstalls {
         ];
         let exe = dirs.iter().find_map(|d| find_exe_in_versions(d));
         let version = exe.as_ref().and_then(|p| version_from_path(p));
-        let is_handler = exe.as_ref().map_or(false, |p| path_matches_handler(p, &protocol_handler_path));
+        let is_handler = exe.as_ref().is_some_and(|p| path_matches_handler(p, &protocol_handler_path));
         let install_dir = exe.as_ref()
             .and_then(|p| p.parent()?.parent()?.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| local.join("Roblox"));
@@ -7311,8 +6889,8 @@ fn detect_roblox_installs() -> DetectedInstalls {
         let exe_in_versions = find_exe_in_versions(&dir);
         let found = launcher.exists() || exe_in_versions.is_some();
         let exe_path = if launcher.exists() { Some(launcher.clone()) } else { exe_in_versions.clone() };
-        let is_handler = exe_path.as_ref().map_or(false, |p| path_matches_handler(p, &protocol_handler_path))
-            || protocol_handler_path.as_deref().map_or(false, |h| h.to_lowercase().contains("bloxstrap"));
+        let is_handler = exe_path.as_ref().is_some_and(|p| path_matches_handler(p, &protocol_handler_path))
+            || protocol_handler_path.as_deref().is_some_and(|h| h.to_lowercase().contains("bloxstrap"));
         let version = exe_in_versions.as_ref().and_then(|p| version_from_path(p));
         installs.push(RobloxInstall {
             name: "Bloxstrap".into(),
@@ -7340,7 +6918,7 @@ fn detect_roblox_installs() -> DetectedInstalls {
         let exe_path = [&launcher1, &launcher2, &launcher3, &launcher4]
             .iter().find(|p| p.exists()).map(|p| p.to_path_buf())
             .or_else(|| exe_in_versions.clone());
-        let is_handler = protocol_handler_path.as_deref().map_or(false, |h| {
+        let is_handler = protocol_handler_path.as_deref().is_some_and(|h| {
             let h = h.to_lowercase();
             h.contains("fishstrap") || h.contains("fishtrap")
         });
@@ -7361,9 +6939,9 @@ fn detect_roblox_installs() -> DetectedInstalls {
         let dir = bootstrapper_root();
         let installed_ver = read_installed_version();
         let exe = installed_ver.as_ref().map(|v| version_dir(v).join("RobloxPlayerBeta.exe"));
-        let exe_exists = exe.as_ref().map_or(false, |p| p.exists());
-        let is_handler = exe.as_ref().map_or(false, |p| path_matches_handler(p, &protocol_handler_path))
-            || protocol_handler_path.as_deref().map_or(false, |h| h.to_lowercase().contains("seistem"));
+        let exe_exists = exe.as_ref().is_some_and(|p| p.exists());
+        let is_handler = exe.as_ref().is_some_and(|p| path_matches_handler(p, &protocol_handler_path))
+            || protocol_handler_path.as_deref().is_some_and(|h| h.to_lowercase().contains("seistem"));
         installs.push(RobloxInstall {
             name: "Reiya (Built-in)".into(),
             kind: "reiya".into(),
@@ -7396,17 +6974,17 @@ fn read_protocol_handler() -> Option<String> {
 }
 
 /// Find the newest RobloxPlayerBeta.exe inside a Versions subfolder.
-fn find_exe_in_versions(install_dir: &PathBuf) -> Option<PathBuf> {
+fn find_exe_in_versions(install_dir: &Path) -> Option<PathBuf> {
     search_versions_dir(&install_dir.join("Versions"))
 }
 
 /// Extract a short version label from the parent directory name of the exe.
-fn version_from_path(exe: &PathBuf) -> Option<String> {
+fn version_from_path(exe: &Path) -> Option<String> {
     exe.parent()?.file_name().map(|n| n.to_string_lossy().to_string())
 }
 
 /// Check whether an exe path matches the current protocol handler command.
-fn path_matches_handler(exe: &PathBuf, handler: &Option<String>) -> bool {
+fn path_matches_handler(exe: &Path, handler: &Option<String>) -> bool {
     let h = match handler { Some(h) => h.to_lowercase(), None => return false };
     let e = exe.to_string_lossy().to_lowercase();
     h.contains(&e)
@@ -7416,7 +6994,7 @@ fn load_multi_instance_from_settings() -> bool {
     let settings_path = data_dir().join("settings.json");
     if settings_path.exists() {
         if let Ok(content) = fs::read_to_string(settings_path) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&clean_bom(&content)) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(clean_bom(&content)) {
                 if let Some(multi) = val.get("MultiRoblox").and_then(|v| v.as_bool()) {
                     return multi;
                 }
@@ -7532,7 +7110,8 @@ pub fn run() {
     #[cfg(windows)]
     let _instance_mutex = acquire_single_instance_mutex();
 
-    if let Err(_) = premium::apply_pending_restore() { eprintln!("Premium restore failed; original data retained"); }
+    if premium::apply_pending_restore().is_err() { eprintln!("Premium restore failed; original data retained"); }
+    migrate_legacy_encryption();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -7637,7 +7216,7 @@ pub fn run() {
                 let run_on_startup = settings_path.exists()
                     .then(|| fs::read_to_string(&settings_path).ok())
                     .flatten()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&clean_bom(&s)).ok())
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(clean_bom(&s)).ok())
                     .and_then(|v| v.get("RunOnStartup").and_then(|b| b.as_bool()))
                     .unwrap_or(false);
                 sync_run_on_startup(run_on_startup);
@@ -7829,7 +7408,7 @@ pub fn run() {
                     let settings_path = data_dir().join("settings.json");
                     let (enabled, interval_mins) = if settings_path.exists() {
                         if let Ok(content) = fs::read_to_string(&settings_path) {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&clean_bom(&content)) {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(clean_bom(&content)) {
                                 let enabled = val.get("CookieHealthMonitorEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
                                 let mins = val.get("CookieHealthIntervalMinutes").and_then(|v| v.as_u64()).unwrap_or(60);
                                 (enabled, mins)
@@ -7957,21 +7536,22 @@ pub fn run() {
             update_account_notes,
             check_account_health,
             verify_pin,
-            get_security_mode,
-            is_vault_unlocked,
-            setup_password_lock,
-            unlock_vault,
-            switch_to_default_encryption,
-            reset_vault,
+            vault::get_security_mode,
+            vault::is_vault_unlocked,
+            vault::setup_password_lock,
+            vault::unlock_vault,
+            vault::switch_to_default_encryption,
+            vault::reset_vault,
             send_discord_webhook,
-            export_accounts,
-            import_accounts,
-            check_for_update,
-            download_and_install_update,
-            get_app_version,
-            take_update_failure_marker,
+            backup::export_accounts,
+            backup::import_accounts,
+            updater::check_for_update,
+            updater::download_and_install_update,
+            updater::get_app_version,
+            updater::take_update_failure_marker,
             edit_account,
             bulk_apply_launch_preset,
+            copy_account_password,
             get_auth_ticket_command,
             bootstrapper_check_update,
             bootstrapper_get_status,
@@ -8014,6 +7594,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "Uses a real saved account and calls Roblox; run manually with --ignored"]
     async fn test_get_auth_ticket() {
         let accounts = load_stored();
         let valid_acc = accounts.iter().find(|a| a.cookie_status == "Valid");
@@ -8073,6 +7654,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Launches a real Roblox client with a real saved account; run manually with --ignored"]
     async fn test_manual_launch() {
         let accounts = load_stored();
         let acc = accounts.iter().find(|a| a.cookie_status == "Valid")
@@ -8080,7 +7662,7 @@ mod tests {
         println!("Launching with account: {}", acc.username);
         let cookie = decrypt_cookie(&acc.encrypted_cookie).expect("Decrypt failed");
         let (ticket, _) = get_auth_ticket(&cookie).await.expect("Failed to get ticket");
-        println!("Ticket length: {}, Ticket: {}", ticket.len(), ticket);
+        println!("Ticket length: {}", ticket.len());
 
         let timestamp = chrono::Utc::now().timestamp_millis().to_string();
         let browser_tracker_id = 9876543210u64;
@@ -8113,27 +7695,28 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_accounts() {
-        let path = accounts_path();
-        println!("Accounts path: {:?}", path);
-        let s = fs::read_to_string(&path).expect("Could not read accounts.json");
-
-        let bytes = s.as_bytes();
-        println!("First 20 bytes of accounts.json: {:?}", &bytes[..std::cmp::min(20, bytes.len())]);
-
-        let clean = s.strip_prefix("\u{feff}").unwrap_or(&s);
-        let res: Result<Vec<StoredAccount>, _> = serde_json::from_str(clean);
-        match res {
-            Ok(accounts) => {
-                println!("Successfully parsed {} accounts", accounts.len());
-            }
-            Err(e) => {
-                panic!("Failed to parse accounts: {}", e);
-            }
-        }
+    fn legacy_account_formats_still_parse() {
+        // PascalCase keys and nulls come from the original C# app's accounts.json.
+        let json = r#"[{"UserId":42,"Username":"alice","DisplayName":null,"EncryptedCookie":"abc","IsFavorite":true,"Tags":["a","b"]}]"#;
+        let accounts: Vec<StoredAccount> = serde_json::from_str(json).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].user_id, 42);
+        assert_eq!(accounts[0].display_name, "");
+        assert!(accounts[0].is_favorite);
+        assert_eq!(accounts[0].tags, vec!["a", "b"]);
+        assert!(accounts[0].password.is_none());
     }
 
     #[test]
+    fn version_comparison_is_numeric_not_lexical() {
+        assert!(updater::version_is_newer("1.10.0", "1.9.9"));
+        assert!(updater::version_is_newer("v2.0.0", "1.99.99"));
+        assert!(!updater::version_is_newer("1.1.19", "1.1.19"));
+        assert!(!updater::version_is_newer("1.1.18", "1.1.19"));
+    }
+
+    #[test]
+    #[ignore = "Reads the real session_history.json on this machine; run manually with --ignored"]
     fn test_parse_session_history() {
         let path = session_history_path();
         println!("Session history path: {:?}", path);

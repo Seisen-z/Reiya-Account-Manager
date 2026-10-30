@@ -55,7 +55,7 @@ export interface Account {
   default_private_server: string;
   launcher_preference: string;
   launch_delay_seconds: number;
-  password?: string;
+  has_password?: boolean;
   group?: string;
 }
 
@@ -809,7 +809,7 @@ export default function Home() {
     if (!savePasswordPrompt) return;
     if (savePasswordInput.trim()) {
       await invoke("save_account_password", { userId: savePasswordPrompt.userId, password: savePasswordInput.trim() }).catch(() => {});
-      setAccounts(prev => prev.map(a => a.user_id === savePasswordPrompt.userId ? { ...a, password: savePasswordInput.trim() } : a));
+      setAccounts(prev => prev.map(a => a.user_id === savePasswordPrompt.userId ? { ...a, has_password: true } : a));
       showToast("Password saved.", "success");
     }
     setSavePasswordPrompt(null);
@@ -1590,7 +1590,7 @@ export default function Home() {
               await navigator.clipboard.writeText(String(acc.user_id));
             }}
           />
-          {accountMenu.account.password && (
+          {accountMenu.account.has_password && (
             <DropdownItem
               icon={<IconSvg><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></IconSvg>}
               label={t("copy_password_menu")}
@@ -1599,8 +1599,8 @@ export default function Home() {
                 const acc = accountMenu.account;
                 setAccountMenu(null);
                 try {
-                  await navigator.clipboard.writeText(acc.password!);
-                  showToast("Password copied.", "success");
+                  await invoke("copy_account_password", { userId: acc.user_id });
+                  showToast("Password copied. The clipboard clears in 30 seconds.", "success");
                 } catch (err) {
                   showToast("Failed to copy password: " + err, "error");
                 }

@@ -171,13 +171,13 @@ export const AccountConfigSidebarModal: FC<{
   };
 
   const handleCopySavedPassword = async () => {
-    if (!account.password) {
+    if (!account.has_password) {
       toast.error("No password is saved for this account.");
       return;
     }
     try {
-      await navigator.clipboard.writeText(account.password);
-      toast.success("Password copied.");
+      await invoke("copy_account_password", { userId: account.user_id });
+      toast.success("Password copied. The clipboard clears in 30 seconds.");
     } catch (e) {
       toast.error("Failed to copy password: " + e);
     }
@@ -675,10 +675,10 @@ export const AccountConfigSidebarModal: FC<{
                 <div>
                   <div style={{ fontSize: 10, fontWeight: 800, color: "var(--t2)", marginBottom: 3 }}>SAVED LOGIN PASSWORD</div>
                   <div style={{ fontSize: 9.5, color: "var(--t3)" }}>
-                    {account.password ? "A saved password is available for this account." : "No password was saved when this account was imported."}
+                    {account.has_password ? "A saved password is available for this account." : "No password was saved when this account was imported."}
                   </div>
                 </div>
-                <button onClick={handleCopySavedPassword} disabled={!account.password} className="btn btn-ghost" style={{ flexShrink: 0, fontSize: 10.5, opacity: account.password ? 1 : 0.45 }}>
+                <button onClick={handleCopySavedPassword} disabled={!account.has_password} className="btn btn-ghost" style={{ flexShrink: 0, fontSize: 10.5, opacity: account.has_password ? 1 : 0.45 }}>
                   Copy Password
                 </button>
               </div>

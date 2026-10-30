@@ -40,6 +40,23 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.2.0", date: "2026-10-31", title: "Security, bulk editing and a cleaner Accounts tab",
+    changes: [
+      { kind: "improved", text: "Safer updates: Reiya now only installs updates published by the official release channel and checks each installer's digital signature before running it." },
+      { kind: "improved", text: "Stronger account protection: cookies are encrypted with a key that is protected by your Windows login instead of one derived from the computer name. Existing accounts are upgraded automatically." },
+      { kind: "improved", text: "Saved passwords never leave the app's secure side. Copy password now places it on the clipboard and clears it after 30 seconds." },
+      { kind: "improved", text: "Backups use a password you choose (at least 8 characters) with a much stronger key derivation, and they restore on a fresh Windows install. Older backups still import." },
+      { kind: "improved", text: "Vault password lock now requires 8 or more characters, slows down repeated wrong attempts, and can only be reset from the lock screen. Switching lock modes can no longer leave accounts half-converted." },
+      { kind: "fixed", text: "A damaged accounts file is now set aside instead of being treated as empty and overwritten, and a rolling backup of the last good file is kept." },
+      { kind: "improved", text: "Cleaner Accounts tab: compact account cards and list rows, one-line header stats, and a Launch button that no longer dominates the screen." },
+      { kind: "new", text: "Favorite-games filter: pick a game icon above the accounts to show only the accounts that have it as a favorite." },
+      { kind: "new", text: "Bulk edit: select several accounts and set their game, launcher, startup delay, favorite games, notes and tags in one step. Blank fields stay unchanged." },
+      { kind: "improved", text: "Easier to read and use: brighter secondary text, visible keyboard focus everywhere, labelled window buttons, and a tidier sidebar." },
+      { kind: "fixed", text: "The sidebar's online count now shows only the real number of users, and the two social icons that linked to generic home pages were removed." },
+      { kind: "fixed", text: "Favorite-game icons now show on accounts with expired cookies too." }
+    ]
+  },
+  {
     version: "1.1.19", date: "2026-10-10", title: "Seasonal colors and St. Patrick's Day",
     changes: [
       { kind: "improved", text: "Refined all eight seasonal palettes with distinct holiday accents, readable text and consistent button/input colors; Halloween now uses warm charcoal instead of purple." },

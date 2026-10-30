@@ -21,7 +21,7 @@ export default function SecuritySetup({ onDone }: Props) {
   };
 
   const finishWithPassword = async () => {
-    if (password.length < 4) { setError("Password must be at least 4 characters."); return; }
+    if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
     if (password !== confirm) { setError("Passwords don't match."); return; }
     setLoading(true); setError("");
     try {

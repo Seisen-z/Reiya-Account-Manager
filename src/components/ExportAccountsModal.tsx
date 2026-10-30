@@ -16,9 +16,9 @@ export const ExportAccountsModal: FC<{
     <AccountModal title="Export Backup" onClose={onClose}>
       <p style={{ fontSize: 11, color: "var(--t2)", marginBottom: 16, lineHeight: 1.7 }}>
         All accounts will be exported to a <code style={{ color: "var(--amber)", fontFamily: "monospace" }}>.reiya</code> backup file.
-        Add a password for extra protection, or leave it blank to skip — either way, account cookies stay tied to this device's own encryption.
+        The file holds your account cookies, so it is encrypted with a password you choose. You need this password to restore the backup, and it cannot be recovered if you lose it.
       </p>
-      <FieldLabel>BACKUP PASSWORD (OPTIONAL)</FieldLabel>
+      <FieldLabel>BACKUP PASSWORD (8+ CHARACTERS)</FieldLabel>
       <input
         type="password"
         autoFocus
@@ -26,7 +26,7 @@ export const ExportAccountsModal: FC<{
         value={exportPwd}
         onChange={e => setExportPwd(e.target.value)}
         onKeyDown={e => { if (e.key === "Enter") onExport(); }}
-        placeholder="Leave blank for no password"
+        placeholder="Backup password"
         disabled={exportLoading}
         style={{
           width: "100%", height: 38, padding: "0 13px", borderRadius: 10, outline: "none",
@@ -42,7 +42,7 @@ export const ExportAccountsModal: FC<{
       )}
       <ModalActions>
         <ModalBtn label="Cancel" onClick={onClose} disabled={exportLoading} />
-        <ModalBtn label={exportLoading ? "Exporting..." : "Export Backup"} onClick={onExport} primary disabled={exportLoading} />
+        <ModalBtn label={exportLoading ? "Exporting..." : "Export Backup"} onClick={onExport} primary disabled={exportLoading || exportPwd.trim().length < 8} />
       </ModalActions>
     </AccountModal>
   );

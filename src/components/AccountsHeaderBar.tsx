@@ -39,27 +39,22 @@ export const AccountsHeaderBar: FC<{
   onManualLogin, onUserPass, onOpenCookieMenu, onCookiesFile,
 }) => {
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
       <div>
-        <h1 style={{ fontSize: 14, fontWeight: 900, letterSpacing: "0.06em", color: "var(--t1)", margin: 0 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em", color: "var(--t1)", margin: 0 }}>
           {t("accounts_manager_title")}
         </h1>
-        <p style={{ fontSize: 10, fontWeight: 700, color: "var(--t3)", letterSpacing: "0.1em", marginTop: 3 }}>
-          MANAGE · LAUNCH · VALIDATE ROBLOX ACCOUNTS
+        <p style={{ fontSize: 11.5, fontWeight: 600, color: "var(--t3)", marginTop: 4, display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <span><b style={{ color: "var(--t1)" }}>{totalCount}</b> {t("total").toLowerCase()}</span>
+          <span>·</span>
+          <span><b style={{ color: "var(--green)" }}>{validCount}</b> valid</span>
+          {favCount > 0 && <><span>·</span><span><b style={{ color: "var(--amber)" }}>{favCount}</b> {t("favorites").toLowerCase()}</span></>}
+          {online > 0 && <><span>·</span><span><b style={{ color: "var(--green)" }}>{online}</b> {t("active").toLowerCase()}</span></>}
+          {selectedCount > 0 && <><span>·</span><span><b style={{ color: "#A78BFA" }}>{selectedCount}</b> selected</span></>}
         </p>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        {/* Stat pills */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <AccountStatPill value={totalCount} label={t("total").toUpperCase()} color="var(--t1)" />
-          <AccountStatPill value={validCount} label="VALID" color="var(--green)" />
-          <AccountStatPill value={favCount} label={t("favorites").toUpperCase()} color="var(--amber)" />
-          <AccountStatPill value={online} label={t("active").toUpperCase()} color="var(--green)" />
-          {selectedCount > 0 && (
-            <AccountStatPill value={selectedCount} label="SELECTED" color="#A78BFA" />
-          )}
-        </div>
 
         {/* Import / Export */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -68,34 +63,32 @@ export const AccountsHeaderBar: FC<{
             title="Import Backup"
             style={{
               display: "flex", alignItems: "center", gap: 6,
-              padding: "8px 14px", borderRadius: 10, fontSize: 11.5, fontWeight: 700,
-              border: "1px solid var(--g08)", background: "var(--g04)",
+              padding: 0, width: 34, height: 34, justifyContent: "center", borderRadius: 10, fontSize: 11.5, fontWeight: 700,
+              border: "1px solid var(--g06)", background: "transparent",
               color: "var(--t2)", cursor: "pointer", transition: "all .12s",
             }}
             onMouseEnter={e => { e.currentTarget.style.background = "var(--g08)"; e.currentTarget.style.color = "var(--t1)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "var(--g04)"; e.currentTarget.style.color = "var(--t2)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--t2)"; }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
             </svg>
-            Import
           </button>
           <button
             onClick={onExportClick}
             title="Export Backup"
             style={{
               display: "flex", alignItems: "center", gap: 6,
-              padding: "8px 14px", borderRadius: 10, fontSize: 11.5, fontWeight: 700,
-              border: "1px solid var(--g08)", background: "var(--g04)",
+              padding: 0, width: 34, height: 34, justifyContent: "center", borderRadius: 10, fontSize: 11.5, fontWeight: 700,
+              border: "1px solid var(--g06)", background: "transparent",
               color: "var(--t2)", cursor: "pointer", transition: "all .12s",
             }}
             onMouseEnter={e => { e.currentTarget.style.background = "var(--g08)"; e.currentTarget.style.color = "var(--t1)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "var(--g04)"; e.currentTarget.style.color = "var(--t2)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--t2)"; }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
             </svg>
-            Export
           </button>
         </div>
 

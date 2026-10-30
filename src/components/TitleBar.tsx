@@ -38,17 +38,17 @@ export default function TitleBar() {
         style={{ display: "flex", gap: 4 }}
         onMouseDown={e => e.stopPropagation()}
       >
-        <WinBtn onClick={() => win.minimize()}>
+        <WinBtn label="Minimize" onClick={() => win.minimize()}>
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
             <line x1="1" y1="5" x2="9" y2="5" />
           </svg>
         </WinBtn>
-        <WinBtn onClick={() => win.toggleMaximize()}>
+        <WinBtn label="Maximize" onClick={() => win.toggleMaximize()}>
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
             <rect x="1.5" y="1.5" width="7" height="7" />
           </svg>
         </WinBtn>
-        <WinBtn onClick={() => win.close()} danger>
+        <WinBtn label="Close" onClick={() => win.close()} danger>
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
             <line x1="2" y1="2" x2="8" y2="8" />
             <line x1="8" y1="2" x2="2" y2="8" />
@@ -59,14 +59,17 @@ export default function TitleBar() {
   );
 }
 
-function WinBtn({ onClick, danger, children }: {
+function WinBtn({ onClick, danger, label, children }: {
   onClick: () => void;
+  label: string;
   danger?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
+      aria-label={label}
+      title={label}
       onMouseEnter={e => {
         const b = e.currentTarget as HTMLButtonElement;
         b.style.background = danger ? "var(--red)" : "var(--surface-3)";

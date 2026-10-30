@@ -57,14 +57,14 @@ export const AccountsToolbar: FC<{
       )}
 
       {/* Search + Sub-filter */}
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <div style={{ position: "relative", flex: 1 }}>
           <SearchIcon size={13} color="var(--t3)" style={{
             position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none",
           }} />
           <input
             ref={searchInputRef}
-            placeholder={`${t("search_accounts_placeholder")} (Ctrl+F)`}
+            placeholder={t("search_accounts_placeholder")}
             value={search}
             onChange={e => setSearch(e.target.value)}
             style={{
@@ -76,6 +76,13 @@ export const AccountsToolbar: FC<{
             onFocus={e => e.currentTarget.style.borderColor = "var(--g35)"}
             onBlur={e => e.currentTarget.style.borderColor = "var(--g05)"}
           />
+          {!search && (
+            <kbd style={{
+              position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none",
+              fontSize: 9.5, fontWeight: 700, color: "var(--t3)", border: "1px solid var(--g06)",
+              borderRadius: 5, padding: "1px 5px", fontFamily: "inherit",
+            }}>Ctrl F</kbd>
+          )}
         </div>
 
         {/* Sub-filter tabs: All / Favorites / Valid */}
@@ -113,19 +120,19 @@ export const AccountsToolbar: FC<{
             fontSize: 11, fontWeight: 700, cursor: "pointer", outline: "none",
           }}
         >
-          <option value="last_launched">↓ Last Launched</option>
-          <option value="name_asc">A → Z</option>
-          <option value="name_desc">Z → A</option>
-          <option value="status">Cookie Status</option>
-          <option value="added">Recently Added</option>
-          <option value="custom">✦ Custom Order</option>
+          <option value="last_launched">Last launched</option>
+          <option value="name_asc">Name A–Z</option>
+          <option value="name_desc">Name Z–A</option>
+          <option value="status">Cookie status</option>
+          <option value="added">Recently added</option>
+          <option value="custom">Custom order</option>
         </select>
 
         <div className="premium-tab-track" style={{ flexShrink: 0 }} title="Account layout">
           {([[
-            "card", "▦", "Card view",
+            "card", "grid", "Card view",
           ], [
-            "list", "☰", "List view",
+            "list", "list", "List view",
           ]] as [ViewMode, string, string][]).map(([mode, icon, label]) => (
             <button
               key={mode}
@@ -135,7 +142,11 @@ export const AccountsToolbar: FC<{
               aria-label={label}
               style={{ width: 34, height: 32, display: "flex", alignItems: "center", justifyContent: "center", padding: 0, fontSize: 14, fontWeight: 900 }}
             >
-              {icon}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                {icon === "grid"
+                  ? <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>
+                  : <><line x1="4" y1="6" x2="20" y2="6" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="18" x2="20" y2="18" /></>}
+              </svg>
             </button>
           ))}
         </div>

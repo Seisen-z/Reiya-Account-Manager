@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Type-check and build
+        run: npm run build
+      - name: Audit shipped dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - name: Stub the frontend bundle (the Tauri build script needs the folder to exist)
+        shell: bash
+        run: mkdir -p dist && echo '<!doctype html>' > dist/index.html
+      - name: Clippy (warnings are errors)
+        working-directory: src-tauri
+        run: cargo clippy --lib --all-targets -- -D warnings
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+  rust-advisories:
+    runs-on: ubuntu-latest
+    # Advisory lookups can flag unfixable issues in upstream crates, so this reports without blocking merges.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+        working-directory: src-tauri

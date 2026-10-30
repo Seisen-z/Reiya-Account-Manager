@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useUpdate } from "../context/UpdateContext";
@@ -19,7 +19,7 @@ const NAV_GROUPS = [
     { to: "/utilities",    id: "utilities",    Icon: IcGrid },
   ],
   [
-    { to: "/premium", id: "premium", Icon: IcTheme },
+    { to: "/premium", id: "premium", Icon: IcPremium },
     { to: "/theme",        id: "theme",        Icon: IcTheme },
     { to: "/settings",     id: "settings",     Icon: IcSettings },
   ],
@@ -55,45 +55,16 @@ export default function Sidebar() {
   }, []);
 
   const [liveCount, setLiveCount] = useState<number | null>(null);
-  // Displayed value drifts between 10 and 50, anchored to the real count as a floor.
-  const displayed = useRef<number>(Math.floor(Math.random() * 20) + 15);
-
   useEffect(() => {
     let cancelled = false;
-
-    // Keep the real count as a floor so genuine growth is always reflected.
     const fetchCount = () => {
       invoke<number>("get_live_count")
-        .then(count => {
-          if (cancelled) return;
-          if (count > displayed.current) displayed.current = Math.min(count, 50);
-        })
+        .then(count => { if (!cancelled) setLiveCount(count); })
         .catch(() => {});
     };
     fetchCount();
-    const fetchId = setInterval(fetchCount, 30000);
-
-    // Every 1–2 minutes, add or remove a random amount to simulate users joining/leaving.
-    const tick = () => {
-      if (cancelled) return;
-      const cur = displayed.current;
-      const atMax = cur >= 50;
-      const atMin = cur <= 10;
-      // Pick direction: if at ceiling force decrease, if at floor force increase, else 50/50
-      const adding = atMax ? false : atMin ? true : Math.random() < 0.5;
-      if (adding) {
-        const amount = Math.floor(Math.random() * 3) + 2; // 2, 3, or 4
-        displayed.current = Math.min(50, cur + amount);
-      } else {
-        const amount = Math.floor(Math.random() * 2) + 2; // 2 or 3
-        displayed.current = Math.max(10, cur - amount);
-      }
-      setLiveCount(displayed.current);
-      tickId = setTimeout(tick, Math.floor(Math.random() * 60000) + 60000);
-    };
-    let tickId = setTimeout(tick, Math.floor(Math.random() * 30000) + 30000);
-
-    return () => { cancelled = true; clearInterval(fetchId); clearTimeout(tickId); };
+    const id = setInterval(fetchCount, 30000);
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
   return (
@@ -129,10 +100,6 @@ export default function Sidebar() {
 
       <div className="divider" style={{ marginBottom: 12 }} />
 
-      <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", color: "var(--t3)", padding: "0 10px", marginBottom: 6 }}>
-        {t("menu")}
-      </p>
-
       {NAV_GROUPS.map((group, i) => (
         <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: i > 0 ? 8 : 0 }}>
           {group.map(({ to, id, Icon }) => (
@@ -154,44 +121,21 @@ export default function Sidebar() {
       <div style={{ flex: 1 }} />
 
       {/* Socials */}
-      <div style={{ marginBottom: 10 }}>
-        <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", color: "var(--t3)", padding: "0 10px", marginBottom: 8 }}>
-          {t("community")}
-        </p>
-        <div style={{ display: "flex", gap: 4, padding: "0 4px", flexWrap: "wrap" }}>
-          {SOCIALS.map(({ label, href, Icon, color }) => (
-            <a
-              key={label}
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={label}
-              style={{
-                width: 30, height: 30,
-                borderRadius: 8,
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                color: "var(--t3)",
-                textDecoration: "none",
-                transition: "all .12s",
-                flexShrink: 0,
-              }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLAnchorElement).style.background = color + "22";
-                (e.currentTarget as HTMLAnchorElement).style.borderColor = color + "55";
-                (e.currentTarget as HTMLAnchorElement).style.color = color;
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLAnchorElement).style.background = "var(--surface-2)";
-                (e.currentTarget as HTMLAnchorElement).style.borderColor = "var(--border)";
-                (e.currentTarget as HTMLAnchorElement).style.color = "var(--t3)";
-              }}
-            >
-              <Icon />
-            </a>
-          ))}
-        </div>
+      <div style={{ display: "flex", gap: 4, padding: "0 2px", marginBottom: 10 }}>
+        {SOCIALS.map(({ label, href, Icon, color }) => (
+          <a
+            key={label}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={label}
+            aria-label={label}
+            className="social-link"
+            style={{ ["--social" as string]: color }}
+          >
+            <Icon />
+          </a>
+        ))}
       </div>
 
       {/* Rate this app */}
@@ -241,34 +185,23 @@ export default function Sidebar() {
         )}
       </div>
 
-      {/* Global app rating */}
-      {ratingStats && (
+      {/* Community stats */}
+      {(ratingStats || liveCount !== null) && (
         <div style={{
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-          fontSize: 9.5, color: "var(--t3)", fontWeight: 600, marginTop: 6,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8, flexWrap: "wrap",
+          fontSize: 10, color: "var(--t3)", fontWeight: 600, marginTop: 8,
         }}>
-          {ratingStats.count > 0 ? (
-            <>
-              <span style={{ color: "var(--amber)" }}>★</span>
-              <span>{ratingStats.average.toFixed(1)} · {ratingStats.count} {t("ratings")}</span>
-            </>
+          {ratingStats && (ratingStats.count > 0 ? (
+            <span><span style={{ color: "var(--amber)" }}>★</span> {ratingStats.average.toFixed(1)} · {ratingStats.count} {t("ratings")}</span>
           ) : (
             <span>{t("no_ratings_yet")}</span>
+          ))}
+          {liveCount !== null && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)" }} />
+              {liveCount} {t("online_now")}
+            </span>
           )}
-        </div>
-      )}
-
-      {/* Live users online */}
-      {liveCount !== null && (
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-          fontSize: 9.5, color: "var(--t3)", fontWeight: 600, marginTop: 4,
-        }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
-            background: "var(--green)", boxShadow: "0 0 5px var(--green)",
-          }} />
-          <span>{liveCount} {t("online_now")}</span>
         </div>
       )}
     </aside>
@@ -320,26 +253,6 @@ const SOCIALS = [
     ),
   },
   {
-    label: "Facebook",
-    href: "https://facebook.com/",
-    color: "#1877F2",
-    Icon: () => (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-      </svg>
-    ),
-  },
-  {
-    label: "Twitter / X",
-    href: "https://x.com/",
-    color: "#E7E9EA",
-    Icon: () => (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.253 5.622zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-      </svg>
-    ),
-  },
-  {
     label: "GitHub",
     href: "https://github.com/Seisen-z",
     color: "#E8E8E8",
@@ -369,6 +282,9 @@ function IcGrid() {
 }
 function IcBootstrapper() {
   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M8 2v8M5 7l3 3 3-3"/><rect x="2" y="12" width="12" height="2" rx="1"/></svg>;
+}
+function IcPremium() {
+  return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M8 1.8l5.6 6.2L8 14.2 2.4 8z"/><path d="M2.4 8h11.2"/></svg>;
 }
 function IcTheme() {
   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 2a6 6 0 0 1 0 12"/><circle cx="8" cy="8" r="2.2" fill="currentColor" stroke="none"/></svg>;
