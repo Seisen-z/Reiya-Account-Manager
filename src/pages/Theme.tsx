@@ -3,18 +3,27 @@ import { invoke } from "@tauri-apps/api/core";
 import { THEMES, useTheme, type Theme } from "../context/ThemeContext";
 import { useToast } from "../components/Toast";
 
-import { getHolidayEvents, getActiveHoliday, lunarNewYearDate } from "../context/seasonalTheme";
+import { getHolidayEvents, getActiveHoliday, lunarNewYearDate, nextLocalDay, type HolidayEvent } from "../context/seasonalTheme";
 
 type Tab = "dark" | "light" | "seasonal";
 
+const holidayDateOptions: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+
+function formatHolidayDates({ start, end }: HolidayEvent) {
+  const first = start.toLocaleDateString(undefined, holidayDateOptions);
+  if (nextLocalDay(start).getTime() === end.getTime()) return first;
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 1);
+  return `${first} – ${last.toLocaleDateString(undefined, holidayDateOptions)}`;
+}
+
 export default function ThemePage() {
-  const { activeTheme, setTheme, automatic, useAutomaticTheme } = useTheme();
+  const { activeTheme, setTheme, automatic, useAutomaticTheme, calendarDate } = useTheme();
   const toast = useToast();
   const [tab, setTab] = useState<Tab>(() =>
     activeTheme.seasonal ? "seasonal" : activeTheme.category
   );
-  const year = new Date().getFullYear();
-  const holiday = getActiveHoliday();
+  const year = calendarDate.getFullYear();
+  const holiday = getActiveHoliday(calendarDate);
   const schedule = getHolidayEvents(year);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -90,8 +99,8 @@ export default function ThemePage() {
         </div>
         <details className="seasonal-calendar">
           <summary>Annual holiday calendar · {year}</summary>
-          <div className="seasonal-calendar-grid">{schedule.map(event => <div key={event.name}><b>{event.name}</b><span>{event.start.toLocaleDateString(undefined,{month:'short',day:'numeric'})}{event.end.getTime()-event.start.getTime()>86400000 ? ' – '+new Date(event.end.getFullYear(),event.end.getMonth(),event.end.getDate()-1).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : ''}</span></div>)}</div>
-          <p>Uses your computer’s local date. Halloween: October 9–November 30. All other holidays use the dates shown. Lunar New Year takes priority over Valentine on a shared date; Easter takes priority over Earth Day. Easter uses the Gregorian calendar. Lunar New Year uses offline Hong Kong Observatory dates (2026–2100).</p>
+          <div className="seasonal-calendar-grid">{schedule.map(event => <div key={event.name}><b>{event.name}</b><span>{formatHolidayDates(event)}</span></div>)}</div>
+          <p>Uses your computer’s local date. Lunar New Year takes priority over Valentine’s Day on a shared date, and Easter takes priority over Earth Day. Easter uses the Gregorian calendar. Lunar New Year uses Hong Kong Observatory dates.</p>
           {!lunarNewYearDate(year)&&<p>Lunar New Year automatic dates cover 2026–2100. Outside that range, its manual theme remains available.</p>}
         </details>
         {/* Tabs */}

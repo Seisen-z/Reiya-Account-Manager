@@ -4,9 +4,8 @@ export const THEME_PREFERENCE_KEY = "reiya_theme_preference_v1";
 export interface ThemePreference { mode: "automatic" | "manual"; themeId?: string; previousId?: string; }
 export interface HolidayEvent { themeId: string; name: string; start: Date; end: Date; }
 export const SEASONAL_IDS = ["halloween", "new-year", "valentine", "christmas", "lunar-new-year", "easter", "earth-day", "st-patrick"];
-const calendarCache = new Map<number, HolidayEvent[]>();
 const localDate = (year: number, month: number, day: number) => new Date(year, month - 1, day);
-const nextDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+export const nextLocalDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
 // Gregorian ecclesiastical Easter (not Orthodox Easter).
 export function easterDate(year: number): Date {
   const a=year%19,b=Math.floor(year/100),c=year%100,d=Math.floor(b/4),e=b%4;
@@ -22,21 +21,19 @@ export function lunarNewYearDate(year: number): Date | null {
 }
 export function getHolidayEvents(year: number): HolidayEvent[] {
   if(!Number.isInteger(year)||year<1583||year>9998)return [];
-  const cached=calendarCache.get(year);if(cached)return cached.map(e=>({...e,start:new Date(e.start),end:new Date(e.end)}));
   const events: HolidayEvent[]=[];
-  const add=(themeId:string,name:string,start:Date,end=nextDay(start))=>events.push({themeId,name,start,end});
+  const add=(themeId:string,name:string,start:Date,end=nextLocalDay(start))=>events.push({themeId,name,start,end});
   add("new-year","New Year's Day",localDate(year,1,1));
   const lunar=lunarNewYearDate(year);if(lunar)add("lunar-new-year","Lunar New Year",lunar);
   add("valentine","Valentine's Day",localDate(year,2,14));
   add("st-patrick","St. Patrick's Day",localDate(year,3,17));
   add("easter","Easter Sunday",easterDate(year));
   add("earth-day","Earth Day",localDate(year,4,22));
-  add("halloween","Halloween season",localDate(year,10,9),localDate(year,12,1));
+  add("halloween","Halloween season",localDate(year,10,1),localDate(year,11,1));
   add("christmas","Christmas Eve & Day",localDate(year,12,24),localDate(year,12,26));
   add("new-year","New Year's Eve",localDate(year,12,31));
   events.sort((a,b)=>a.start.getTime()-b.start.getTime());
-  if(calendarCache.size>4)calendarCache.clear();calendarCache.set(year,events);
-  return events.map(e=>({...e,start:new Date(e.start),end:new Date(e.end)}));
+  return events;
 }
 export function getActiveHoliday(now=new Date()): HolidayEvent | null {
   if(!Number.isFinite(now.getTime()))return null;

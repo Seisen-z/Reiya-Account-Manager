@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 
 import { HOLIDAY_THEMES } from "./holidayThemes";
-import { resolveThemeId, readThemePreference, writeThemePreference, THEME_PREFERENCE_KEY, type ThemePreference } from "./seasonalTheme";
+import { nextLocalDay, resolveThemeId, readThemePreference, writeThemePreference, THEME_PREFERENCE_KEY, type ThemePreference } from "./seasonalTheme";
 
 export interface ThemeVars {
   "--bg": string;
@@ -832,44 +832,58 @@ interface ThemeContextValue {
   hydrateTheme: (savedId?: string) => void;
   useAutomaticTheme: () => void;
   automatic: boolean;
+  calendarDate: Date;
   themes: Theme[];
 }
 const getTheme = (id: string) => THEMES.find(t => t.id === id) || THEMES[0];
+const localDayTime = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 const ThemeContext = createContext<ThemeContextValue>({
-  activeTheme: THEMES[0], setTheme: () => {}, hydrateTheme: () => {}, useAutomaticTheme: () => {}, automatic: true, themes: THEMES,
+  activeTheme: THEMES[0], setTheme: () => {}, hydrateTheme: () => {}, useAutomaticTheme: () => {}, automatic: true, calendarDate: new Date(), themes: THEMES,
 });
 export function useTheme() { return useContext(ThemeContext); }
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [preference, setPreference] = useState<ThemePreference | null>(readThemePreference);
   const [savedId, setSavedId] = useState<string>();
-  const [activeTheme, setActiveThemeState] = useState<Theme>(() => getTheme(resolveThemeId(undefined, readThemePreference())));
-  const activate = (id: string) => { const theme = getTheme(id); setActiveThemeState(theme); applyTheme(theme); };
+  const [dayTime, setDayTime] = useState(() => localDayTime(new Date()));
+  const calendarDate = new Date(dayTime);
+  const activeTheme = getTheme(resolveThemeId(savedId, preference, calendarDate));
+  useLayoutEffect(() => applyTheme(activeTheme), [activeTheme]);
   const setTheme = (t: Theme) => {
     const p: ThemePreference = { mode: "manual", themeId: t.id, previousId: !t.seasonal ? t.id : preference?.previousId || savedId || "reiya-dark" };
-    writeThemePreference(p); setPreference(p); activate(t.id);
+    writeThemePreference(p); setPreference(p);
   };
   const hydrateTheme = (id?: string) => {
     setSavedId(id);
     const p = readThemePreference() || { mode: "automatic" as const, previousId: id || "reiya-dark" };
-    writeThemePreference(p); setPreference(p); activate(resolveThemeId(id, p));
+    writeThemePreference(p); setPreference(p);
   };
   const useAutomaticTheme = () => {
     const p: ThemePreference = { mode: "automatic", previousId: preference?.previousId || savedId || "reiya-dark" };
-    writeThemePreference(p); setPreference(p); activate(resolveThemeId(savedId, p));
+    writeThemePreference(p); setPreference(p);
   };
   useEffect(() => {
-    const refresh = () => activate(resolveThemeId(savedId, preference));
+    let timer: number;
+    const refresh = () => {
+      window.clearTimeout(timer);
+      const now = new Date();
+      setDayTime(localDayTime(now));
+      timer = window.setTimeout(refresh, Math.min(30000, nextLocalDay(now).getTime() - now.getTime()));
+    };
     refresh();
-    const timer = window.setInterval(refresh, 30000);
     window.addEventListener("focus", refresh);
-    return () => { clearInterval(timer); window.removeEventListener("focus", refresh); };
-  }, [savedId, preference]);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
   useEffect(() => {
     const sync = (event: StorageEvent) => { if (event.key === THEME_PREFERENCE_KEY) setPreference(readThemePreference()); };
     window.addEventListener("storage", sync);
     return () => window.removeEventListener("storage", sync);
   }, []);
-  return <ThemeContext.Provider value={{ activeTheme, setTheme, hydrateTheme, useAutomaticTheme, automatic: preference?.mode !== "manual", themes: THEMES }}>{children}</ThemeContext.Provider>;
+  return <ThemeContext.Provider value={{ activeTheme, setTheme, hydrateTheme, useAutomaticTheme, automatic: preference?.mode !== "manual", calendarDate, themes: THEMES }}>{children}</ThemeContext.Provider>;
 }
 
 // Kept for backward-compat with Settings.tsx import
