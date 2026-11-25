@@ -29,7 +29,7 @@ export function getHolidayEvents(year: number): HolidayEvent[] {
   add("st-patrick","St. Patrick's Day",localDate(year,3,17));
   add("easter","Easter Sunday",easterDate(year));
   add("earth-day","Earth Day",localDate(year,4,22));
-  add("halloween","Halloween season",localDate(year,10,1),localDate(year,11,1));
+  add("halloween","Halloween season",localDate(year,10,28),localDate(year,11,4));
   add("christmas","Christmas Eve & Day",localDate(year,12,24),localDate(year,12,26));
   add("new-year","New Year's Eve",localDate(year,12,31));
   events.sort((a,b)=>a.start.getTime()-b.start.getTime());
