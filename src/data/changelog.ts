@@ -40,6 +40,19 @@ export function getChangesSince(fromVersion: string, toVersion: string): Changel
 // Newest first. Dates reflect when each version actually shipped.
 export const CHANGELOG: ChangelogRelease[] = [
   {
+    version: "1.2.1", date: "2026-11-26", title: "Concurrent launches, clearer Premium status, and seasonal fixes",
+    changes: [
+      { kind: "improved", text: "Reiya stays open when you launch Roblox, and you can start another account while the first is launching." },
+      { kind: "new", text: "Each account shows its own launch status and error message, with a retry button when a launch fails." },
+      { kind: "new", text: "The Free plan supports up to 15 saved Roblox accounts. The Accounts page shows your slot usage, and Premium is required to add more." },
+      { kind: "new", text: "Preview account imports and review how many accounts will be added before saving them." },
+      { kind: "fixed", text: "Premium membership status loads independently of cloud backups. A connection error keeps your last confirmed status visible and offers a retry." },
+      { kind: "improved", text: "Premium activation, cloud backups, and signed desktop updates now use Seisen Premium." },
+      { kind: "improved", text: "Removed the Rscripts tab and archived Hub entries no longer in the supported catalog." },
+      { kind: "fixed", text: "Halloween runs from October 28 through November 3. The Theme page and automatic themes use the same local calendar and refresh when the date changes." },
+    ],
+  },
+  {
     version: "1.2.0", date: "2026-10-31", title: "Security, bulk editing and a cleaner Accounts tab",
     changes: [
       { kind: "improved", text: "Safer updates: Reiya now only installs updates published by the official release channel and checks each installer's digital signature before running it." },
