@@ -1,3 +1,4 @@
+import { AccountLimitLink, isFreeAccountLimit } from "./AccountLimitLink";
 import { FC } from "react";
 import { useLanguage } from "../context/LanguageContext";
 import { HomeModal, BulkAddResult } from "../pages/Home";
@@ -35,6 +36,7 @@ export const BulkCookieImportModal: FC<{
             ))}
           </div>
         )}
+        {bulkResults.some(result => isFreeAccountLimit(result.error)) && <AccountLimitLink />}
         <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
           <button onClick={onClose} disabled={bulkAdding} className="btn btn-ghost" style={{ flex: 1 }}>
             {bulkResults.length > 0 ? t("close_btn") : t("cancel")}

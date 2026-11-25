@@ -1,3 +1,4 @@
+import { AccountSlotUsage } from "./AccountSlotUsage";
 import { Dispatch, FC, RefObject, SetStateAction } from "react";
 import { AddAccountDisclosure } from "./AddAccountDisclosure";
 import { KeyIcon, UserIcon, CopyIcon, FileTextIcon } from "./Icons";
@@ -18,6 +19,8 @@ export const AccountStatPill: FC<{ value: number; label: string; color: string }
 export const AccountsHeaderBar: FC<{
   t: (key: string) => string;
   totalCount: number;
+  usedSlots: number;
+  slotPlan: { limit: number | null; premium: boolean | null };
   validCount: number;
   favCount: number;
   online: number;
@@ -33,7 +36,7 @@ export const AccountsHeaderBar: FC<{
   onCookiesFile: () => void;
   onCustomLogin?: () => void;
 }> = ({
-  t, totalCount, validCount, favCount, online, selectedCount,
+  t, totalCount, usedSlots, slotPlan, validCount, favCount, online, selectedCount,
   addMenu, setAddMenu, addMenuRef,
   onImportClick, onExportClick,
   onManualLogin, onUserPass, onOpenCookieMenu, onCookiesFile,
@@ -106,6 +109,7 @@ export const AccountsHeaderBar: FC<{
               { icon: <FileTextIcon size={20} />, label: t("bulk_cookies"), sub: t("cookies_file_sub"), onClick: onCookiesFile },
             ]}
           />
+          <AccountSlotUsage used={usedSlots} {...slotPlan} />
         </div>
       </div>
     </div>

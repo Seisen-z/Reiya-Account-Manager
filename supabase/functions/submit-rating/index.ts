@@ -1,26 +1,26 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const supabase = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-);
+import { installationId, json, supabase } from "../_shared/installation.ts";
 
 Deno.serve(async (req) => {
-  try {
-    const { hwid, rating } = await req.json();
+  if (req.method !== "POST") return json({ success: false }, 405);
 
-    if (typeof hwid !== "string" || !hwid || typeof rating !== "number" || rating < 1 || rating > 5) {
-      return new Response(JSON.stringify({ success: false, message: "Invalid input" }), { status: 400 });
+  try {
+    const id = await installationId(req);
+    if (!id) return json({ success: false, message: "Installation sign-in required" }, 401);
+
+    const body: unknown = await req.json().catch(() => null);
+    const rating = body && typeof body === "object" && "rating" in body ? body.rating : null;
+    if (typeof rating !== "number" || !Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return json({ success: false, message: "Invalid rating" }, 400);
     }
 
     const { error } = await supabase
       .from("app_ratings")
-      .upsert({ hwid, rating, updated_at: new Date().toISOString() }, { onConflict: "hwid" });
+      .upsert({ hwid: `auth:${id}`, auth_user_id: id, rating, updated_at: new Date().toISOString() },
+        { onConflict: "auth_user_id" });
 
-    if (error) throw error;
-
-    return new Response(JSON.stringify({ success: true }), { status: 200 });
-  } catch (e) {
-    return new Response(JSON.stringify({ success: false, message: String(e) }), { status: 500 });
+    if (error) return json({ success: false, message: "Could not save rating" }, 500);
+    return json({ success: true });
+  } catch {
+    return json({ success: false, message: "Could not save rating" }, 500);
   }
 });

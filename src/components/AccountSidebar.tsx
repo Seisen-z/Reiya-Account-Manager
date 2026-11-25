@@ -1,3 +1,5 @@
+import type { LaunchFeedback } from "../lib/useAccountLauncher";
+import { AccountLaunchStatus } from "./AccountLaunchStatus";
 import { FC, Fragment, useState } from "react";
 import { useLanguage } from "../context/LanguageContext";
 import { CheckIcon, PinIcon, PlusIcon } from "./Icons";
@@ -5,8 +7,8 @@ import { PinnedAccountsHero } from "./PinnedAccountsHero";
 import { Account } from "../pages/Home";
 import Tooltip from "./ui/Tooltip";
 
-function CompactAccountRow({ account, isActive, isSelected, isChecked, onToggleCheck, checking, health, onCheck, onSelect, onDoubleClick, onContextMenu, onToggleFav }: {
-  account: Account; isActive: boolean; isSelected: boolean;
+function CompactAccountRow({ account, launchState, onRetryLaunch, isActive, isSelected, isChecked, onToggleCheck, checking, health, onCheck, onSelect, onDoubleClick, onContextMenu, onToggleFav }: {
+  account: Account; launchState?: LaunchFeedback; onRetryLaunch: () => void; isActive: boolean; isSelected: boolean;
   isChecked: boolean; onToggleCheck: () => void;
   checking: boolean; health: "checking" | "valid" | "invalid" | "unknown";
   onCheck: () => void; onSelect: () => void; onDoubleClick: () => void;
@@ -73,6 +75,7 @@ function CompactAccountRow({ account, isActive, isSelected, isChecked, onToggleC
             <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1px 5px", borderRadius: 4, background: "var(--g04)", color: "var(--t3)", flexShrink: 0 }}>{account.group}</span>
           )}
         </div>
+        <AccountLaunchStatus state={launchState} running={isActive} onRetry={onRetryLaunch} />
       </div>
       <Tooltip content={healthTitle} position="left" style={{ flexShrink: 0 }}>
         <button onClick={e => { e.stopPropagation(); onCheck(); }} disabled={checking}
@@ -108,7 +111,9 @@ export const AccountSidebar: FC<{
   accFilter: "all" | "valid" | "favorites";
   setAccFilter: (v: "all" | "valid" | "favorites") => void;
   groupedAccounts: [string, Account[]][];
-  activeUserIds: Set<number | null>;
+  activeUserIds: ReadonlySet<number>;
+  launchFeedback: ReadonlyMap<number, LaunchFeedback>;
+  onRetryLaunch: (userId: number) => void;
   selAccount: number | null;
   multiSelected: Set<number>;
   onToggleCheck: (userId: number) => void;
@@ -122,7 +127,7 @@ export const AccountSidebar: FC<{
   setAddMenu: (fn: (v: boolean) => boolean) => void;
 }> = ({
   accounts, loading, accSearch, setAccSearch, accGroups, accGroup, setAccGroup, accFilter, setAccFilter,
-  groupedAccounts, activeUserIds, selAccount, multiSelected, onToggleCheck,
+  groupedAccounts, activeUserIds, launchFeedback, onRetryLaunch, selAccount, multiSelected, onToggleCheck,
   checkingCookie, healthStatus, onCheckCookie, onSelectAccount, onQuickLaunchAccount,
   onAccountContextMenu, onToggleFavorite, setAddMenu,
 }) => {
@@ -216,6 +221,8 @@ export const AccountSidebar: FC<{
               {accs.map(a => (
                 <CompactAccountRow key={a.user_id} account={a}
                   isActive={activeUserIds.has(a.user_id)}
+                  launchState={launchFeedback.get(a.user_id)}
+                  onRetryLaunch={() => onRetryLaunch(a.user_id)}
                   isSelected={selAccount === a.user_id}
                   isChecked={multiSelected.has(a.user_id)}
                   onToggleCheck={() => onToggleCheck(a.user_id)}

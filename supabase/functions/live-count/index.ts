@@ -15,6 +15,7 @@ Deno.serve(async () => {
   const { count, error } = await supabase
     .from("app_presence")
     .select("*", { count: "exact", head: true })
+    .not("auth_user_id", "is", null)
     .gte("last_seen", cutoff);
 
   if (error) {

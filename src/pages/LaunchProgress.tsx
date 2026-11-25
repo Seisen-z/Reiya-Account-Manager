@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { listen, emit } from "@tauri-apps/api/event";
+import { emitTo } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useLanguage } from "../context/LanguageContext";
 
@@ -19,22 +20,26 @@ export default function LaunchProgress() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unlistenProgress = listen<LaunchProgressEvent>("launch-progress", (event) => {
+    const win = getCurrentWebviewWindow();
+    let active = true;
+    const unlistenProgress = win.listen<LaunchProgressEvent>("launch-progress", (event) => {
       setError(null);
       setStatus(event.payload.status);
       setPercent(event.payload.percent);
     });
 
-    const unlistenError = listen<LaunchProgressErrorEvent>("launch-progress-error", (event) => {
+    const unlistenError = win.listen<LaunchProgressErrorEvent>("launch-progress-error", (event) => {
       setError(event.payload.message);
     });
 
-    // Tell the backend the listener is registered — it's waiting for this before emitting
-    emit("launch-progress-ready", {}).catch(() => {});
+    Promise.all([unlistenProgress, unlistenError]).then(() => {
+      if (active) return emitTo(win.label, "launch-progress-ready");
+    }).catch(() => {});
 
     return () => {
-      unlistenProgress.then((u) => u());
-      unlistenError.then((u) => u());
+      active = false;
+      unlistenProgress.then(unlisten => unlisten()).catch(() => {});
+      unlistenError.then(unlisten => unlisten()).catch(() => {});
     };
   }, []);
 

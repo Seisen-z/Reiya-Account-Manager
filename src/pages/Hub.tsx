@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { CATALOG, SEISEN_LOADER_SCRIPT } from "../data/catalog";
+import { CATALOG, SEISEN_LOADER_SCRIPT, type GameEntry } from "../data/catalog";
 import { useLanguage } from "../context/LanguageContext";
 import { useToast } from "../components/Toast";
 import {
@@ -11,12 +11,7 @@ import {
 } from "../components/Icons";
 
 /* ── Types ── */
-interface Game {
-  placeId: string;
-  name: string;
-  category: string;
-  description: string;
-  status: "Supported" | "Discontinued";
+interface Game extends GameEntry {
   isFavorite: boolean;
 }
 
@@ -32,7 +27,7 @@ const CAT_COLOR: Record<string, string> = {
 };
 
 const CATEGORIES = ["All", "Anime", "RPG", "Shooter", "Simulator", "Strategy", "Tycoon"];
-type StatusFilter = "All" | "Supported" | "Discontinued";
+type StatusFilter = "All" | "Supported" | "Archived";
 
 /* ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 export default function Hub() {
@@ -47,7 +42,7 @@ export default function Hub() {
 
   const [search,          setSearch]          = useState("");
   const [category,        setCategory]        = useState("All");
-  const [statusFilter,    setStatusFilter]    = useState<StatusFilter>("All");
+  const [statusFilter,    setStatusFilter]    = useState<StatusFilter>("Supported");
   const [favOnly,         setFavOnly]         = useState(false);
   const [execCopied,      setExecCopied]      = useState(false);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string>(() => localStorage.getItem("reiya_last_place_id") || "");
@@ -65,7 +60,7 @@ export default function Hub() {
     return (
       (!q || g.name.toLowerCase().includes(q) || g.description.toLowerCase().includes(q)) &&
       (category === "All" || g.category === category) &&
-      (statusFilter === "All" || g.status === statusFilter) &&
+      (statusFilter === "All" || (statusFilter === "Supported" ? g.status === "Supported" : g.status !== "Supported")) &&
       (!favOnly || g.isFavorite)
     );
   }), [games, search, category, statusFilter, favOnly]);
@@ -110,12 +105,6 @@ export default function Hub() {
                 SEISEN HUB
               </h1>
             </div>
-            <span style={{
-              fontSize: 8.5, fontWeight: 800, color: "var(--green)",
-              background: "rgba(52,211,153,0.1)", padding: "2px 8px",
-              borderRadius: 99, letterSpacing: "0.1em",
-              border: "1px solid rgba(52,211,153,0.2)",
-            }}>{t("live").toUpperCase()}</span>
           </div>
 
           {/* Stat pills */}
@@ -126,48 +115,49 @@ export default function Hub() {
           </div>
         </div>
 
-        {/* Executor bar */}
-        <div style={{
-          display: "flex", alignItems: "center", gap: 10,
-          background: "var(--g02)",
-          border: "1px solid var(--g05)",
-          borderRadius: 12, padding: "10px 14px", marginBottom: 14,
-        }}>
+        {statusFilter !== "Archived" && (
           <div style={{
-            width: 26, height: 26, borderRadius: 7, flexShrink: 0,
-            background: "var(--g12)", border: "1px solid var(--g25)",
-            display: "flex", alignItems: "center", justifyContent: "center",
+            display: "flex", alignItems: "center", gap: 10,
+            background: "var(--g02)",
+            border: "1px solid var(--g05)",
+            borderRadius: 12, padding: "10px 14px", marginBottom: 14,
           }}>
-            <TerminalIcon size={12} color="var(--amber)" />
+            <div style={{
+              width: 26, height: 26, borderRadius: 7, flexShrink: 0,
+              background: "var(--g12)", border: "1px solid var(--g25)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <TerminalIcon size={12} color="var(--amber)" />
+            </div>
+            <span style={{
+              fontSize: 9, fontWeight: 800, letterSpacing: "0.1em",
+              color: "var(--amber)", flexShrink: 0,
+            }}>SCRIPT</span>
+            <code style={{
+              flex: 1, fontSize: 10, color: "var(--t3)",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              fontFamily: "'Cascadia Code', 'Fira Code', monospace",
+            }}>{EXECUTOR_SCRIPT}</code>
+            <button
+              onClick={copyExecutor}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 14px", borderRadius: 8, border: "none", flexShrink: 0,
+                background: execCopied ? "rgba(52,211,153,0.12)" : "var(--g04)",
+                color: execCopied ? "var(--green)" : "var(--t1)",
+                fontSize: 11, fontWeight: 700, cursor: "pointer",
+                transition: "all .15s",
+              }}
+              onMouseEnter={e => { if (!execCopied) e.currentTarget.style.background = "var(--g07)"; }}
+              onMouseLeave={e => { if (!execCopied) e.currentTarget.style.background = "var(--g04)"; }}
+            >
+              {execCopied
+                ? <><CheckIcon size={11} color="var(--green)" /><span>{t("copied")}</span></>
+                : <><CopyIcon size={11} color="var(--t2)" /><span>{t("copy")}</span></>
+              }
+            </button>
           </div>
-          <span style={{
-            fontSize: 9, fontWeight: 800, letterSpacing: "0.1em",
-            color: "var(--amber)", flexShrink: 0,
-          }}>SCRIPT</span>
-          <code style={{
-            flex: 1, fontSize: 10, color: "var(--t3)",
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            fontFamily: "'Cascadia Code', 'Fira Code', monospace",
-          }}>{EXECUTOR_SCRIPT}</code>
-          <button
-            onClick={copyExecutor}
-            style={{
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "6px 14px", borderRadius: 8, border: "none", flexShrink: 0,
-              background: execCopied ? "rgba(52,211,153,0.12)" : "var(--g04)",
-              color: execCopied ? "var(--green)" : "var(--t1)",
-              fontSize: 11, fontWeight: 700, cursor: "pointer",
-              transition: "all .15s",
-            }}
-            onMouseEnter={e => { if (!execCopied) e.currentTarget.style.background = "var(--g07)"; }}
-            onMouseLeave={e => { if (!execCopied) e.currentTarget.style.background = "var(--g04)"; }}
-          >
-            {execCopied
-              ? <><CheckIcon size={11} color="var(--green)" /><span>{t("copied")}</span></>
-              : <><CopyIcon size={11} color="var(--t2)" /><span>{t("copy")}</span></>
-            }
-          </button>
-        </div>
+        )}
 
         {/* Search + status filter row */}
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
@@ -215,18 +205,18 @@ export default function Hub() {
             border: "1px solid var(--g05)",
             borderRadius: 10, padding: 3,
           }}>
-            {(["All", "Supported", "Discontinued"] as StatusFilter[]).map(s => {
+            {(["All", "Supported", "Archived"] as StatusFilter[]).map(s => {
               const active = statusFilter === s;
-              const color = s === "Supported" ? "var(--green)" : s === "Discontinued" ? "var(--red)" : "var(--t1)";
+              const color = s === "Supported" ? "var(--green)" : s === "Archived" ? "var(--t2)" : "var(--t1)";
               return (
-                <button key={s} onClick={() => setStatusFilter(s)} style={{
+                <button key={s} aria-pressed={active} onClick={() => setStatusFilter(s)} style={{
                   padding: "5px 12px", borderRadius: 8,
                   background: active ? "var(--g06)" : "transparent",
                   color: active ? color : "var(--t3)",
                   border: "none", fontSize: 11, fontWeight: active ? 700 : 500,
                   cursor: "pointer", transition: "all .1s", whiteSpace: "nowrap",
                 }}>
-                  {s === "Supported" ? t("supported") : s === "Discontinued" ? t("discontinued") : t("all")}
+                  {s === "Supported" ? t("supported") : s === "Archived" ? t("hub_archived") : t("all")}
                 </button>
               );
             })}
@@ -321,6 +311,7 @@ function GameCard({ game, thumbnail, thumbLoading, isSelected, onToggleFav, onSe
   const [copiedScript, setCopiedScript] = useState(false);
   const catColor = CAT_COLOR[game.category] ?? "#888";
   const isActive = game.status === "Supported";
+  const availability = isActive ? t("supported") : game.status === "Not listed" ? t("hub_unlisted") : t("discontinued");
   const layoutId = `expandable-game-card-${game.placeId}`;
 
   const copyScript = async (e: React.MouseEvent) => {
@@ -499,7 +490,7 @@ function GameCard({ game, thumbnail, thumbLoading, isSelected, onToggleFav, onSe
                     color: isActive ? "var(--green)" : "var(--red)",
                     border: `1px solid ${isActive ? "rgba(52,211,153,0.25)" : "rgba(248,113,113,0.25)"}`,
                   }}>
-                    {isActive ? t("supported") : t("discontinued")}
+                    {availability}
                   </span>
                 </div>
 
@@ -519,7 +510,7 @@ function GameCard({ game, thumbnail, thumbLoading, isSelected, onToggleFav, onSe
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", color: "var(--t3)" }}>
                     <span>Script Status:</span>
-                    <span style={{ color: isActive ? "var(--green)" : "var(--red)", fontWeight: 800 }}>{game.status}</span>
+                    <span style={{ color: isActive ? "var(--green)" : "var(--red)", fontWeight: 800 }}>{availability}</span>
                   </div>
                 </div>
 
@@ -557,19 +548,21 @@ function GameCard({ game, thumbnail, thumbLoading, isSelected, onToggleFav, onSe
                     )}
                   </button>
 
-                  <button
-                    onClick={copyScript}
-                    style={{
-                      padding: "10px 16px", borderRadius: 10,
-                      border: "1px solid var(--g08)", background: "var(--g04)",
-                      color: copiedScript ? "var(--green)" : "var(--t1)",
-                      fontSize: 12, fontWeight: 700, cursor: "pointer",
-                      display: "flex", alignItems: "center", gap: 6, transition: "all .12s",
-                    }}
-                  >
-                    {copiedScript ? <CheckIcon size={13} color="var(--green)" /> : <CopyIcon size={13} />}
-                    <span>{copiedScript ? "Copied Script" : "Copy Script"}</span>
-                  </button>
+                  {isActive && (
+                    <button
+                      onClick={copyScript}
+                      style={{
+                        padding: "10px 16px", borderRadius: 10,
+                        border: "1px solid var(--g08)", background: "var(--g04)",
+                        color: copiedScript ? "var(--green)" : "var(--t1)",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer",
+                        display: "flex", alignItems: "center", gap: 6, transition: "all .12s",
+                      }}
+                    >
+                      {copiedScript ? <CheckIcon size={13} color="var(--green)" /> : <CopyIcon size={13} />}
+                      <span>{copiedScript ? "Copied Script" : "Copy Script"}</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </motion.div>

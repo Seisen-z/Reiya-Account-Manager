@@ -4,7 +4,7 @@ use super::*;
 
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[allow(dead_code)]
-pub(crate) const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/Seisen-z/Key-System/releases/latest";
+pub(crate) const REIYA_RELEASE_API: &str = "https://www.seisen.store/api/reiya/release";
 
 #[derive(serde::Serialize, Clone)]
 pub struct UpdateInfo {
@@ -41,29 +41,25 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
             .map_err(|e| e.to_string())?;
 
         let resp = client
-            .get(GITHUB_RELEASES_API)
-            .header("Accept", "application/vnd.github+json")
+            .get(REIYA_RELEASE_API)
+            .header("Accept", "application/json")
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
-        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-
-        let tag_name = json["tag_name"].as_str().unwrap_or("");
-        let latest_ver = tag_name.trim_start_matches('v').to_string();
-
-        let download_url = json["assets"]
-            .as_array()
-            .and_then(|arr| arr.iter().find(|a| {
-                a["name"].as_str().map(|n| n.ends_with(".exe")).unwrap_or(false)
-            }))
-            .and_then(|a| a["browser_download_url"].as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let download_url = if validate_update_url(&download_url, ".exe").is_ok() { download_url } else { String::new() };
-        let notes      = json["body"].as_str().unwrap_or("").to_string();
-        let has_update = !latest_ver.is_empty() && !download_url.is_empty() && version_is_newer(&latest_ver, APP_VERSION);
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(UpdateInfo { has_update: false, version: String::new(), download_url: String::new(), notes: String::new(), current: APP_VERSION.to_string() });
+        }
+        let json: serde_json::Value = resp.error_for_status().map_err(|e| e.to_string())?
+            .json().await.map_err(|e| e.to_string())?;
+        let latest_ver = json["version"].as_str().unwrap_or("").to_string();
+        let download_url = json["download_url"].as_str().unwrap_or("");
+        let expected_path = format!("{UPDATE_PATH_PREFIX}reiya-v{latest_ver}/ReiyaAccountManager-{latest_ver}-setup.exe");
+        let download_url = validate_update_url(download_url, ".exe").ok()
+            .filter(|url| url.path() == expected_path)
+            .map(|url| url.to_string()).unwrap_or_default();
+        let notes = json["notes"].as_str().unwrap_or("").to_string();
+        let has_update = !download_url.is_empty() && version_is_newer(&latest_ver, APP_VERSION);
 
         Ok(UpdateInfo { has_update, version: latest_ver, download_url, notes, current: APP_VERSION.to_string() })
     }
@@ -76,22 +72,37 @@ pub(crate) const UPDATE_PUBLIC_KEY: [u8; 32] = [
     0x77, 0xf3, 0x61, 0x4b, 0x53, 0x33, 0x70, 0x16, 0xf4, 0x9d, 0x97, 0x53, 0xb1, 0x29, 0xa7, 0xdd,
 ];
 pub(crate) const UPDATE_SIGNING_CONTEXT: &[u8] = b"reiya-update-v1:";
-pub(crate) const UPDATE_PATH_PREFIX: &str = "/Seisen-z/Key-System/releases/download/";
+pub(crate) const UPDATE_PATH_PREFIX: &str = "/api/reiya/releases/";
 pub(crate) const MAX_UPDATE_BYTES: u64 = 400 * 1024 * 1024;
 
+fn is_release_version(version: &str) -> bool {
+    let mut parts = version.split('.');
+    parts.clone().count() == 3 && parts.all(|part| {
+        !part.is_empty() && part.len() <= 9 && (part.len() == 1 || !part.starts_with('0'))
+            && part.bytes().all(|digit| digit.is_ascii_digit())
+    })
+}
+
 pub(crate) fn validate_update_url(raw: &str, suffix: &str) -> Result<url::Url, String> {
-    let u = url::Url::parse(raw).map_err(|_| "Invalid update URL".to_string())?;
-    let ok = u.scheme() == "https"
-        && u.host_str() == Some("github.com")
+    let mut u = url::Url::parse(raw).map_err(|_| "Invalid update URL".to_string())?;
+    let error = || "Update URL is not an official Reiya release.".to_string();
+    let relative = u.path().strip_prefix(UPDATE_PATH_PREFIX).ok_or_else(error)?;
+    let (tag, file) = relative.split_once('/').ok_or_else(error)?;
+    let version = tag.strip_prefix("reiya-v").filter(|value| is_release_version(value)).ok_or_else(error)?;
+    let expected = match suffix {
+        ".exe" => format!("ReiyaAccountManager-{version}-setup.exe"),
+        ".sig" => format!("ReiyaAccountManager-{version}-setup.exe.sig"),
+        _ => return Err(error()),
+    };
+    let valid = u.scheme() == "https"
+        && matches!(u.host_str(), Some("seisen.store" | "www.seisen.store"))
         && u.port().is_none()
-        && u.username().is_empty()
-        && u.password().is_none()
-        && u.query().is_none()
-        && u.fragment().is_none()
-        && u.path().starts_with(UPDATE_PATH_PREFIX)
-        && !u.path().contains("..")
-        && u.path().ends_with(suffix);
-    if ok { Ok(u) } else { Err("Update URL is not an official Reiya release.".to_string()) }
+        && u.username().is_empty() && u.password().is_none() && u.query().is_none() && u.fragment().is_none()
+        && file == expected;
+    if !valid { return Err(error()); }
+    // The metadata API returns apex links. Use the canonical host before download.
+    u.set_host(Some("www.seisen.store")).map_err(|_| error())?;
+    Ok(u)
 }
 
 pub(crate) fn update_http_client() -> Result<reqwest::Client, String> {
@@ -200,14 +211,13 @@ pub async fn download_and_install_update(app: tauri::AppHandle, url: String) -> 
         tokio::time::sleep(tokio::time::Duration::from_millis(60)).await;
     }
 
-    // Get current exe so the helper can relaunch it after install
     let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let failed_marker = data_dir().join("update_failed.txt");
 
-    // Detached helper: wait for this process to exit, run the verified installer
-    // silently, record a failure marker if it did not succeed, then relaunch.
+    // The NSIS installer starts the installed executable with /R, even when the
+    // update changes its filename. On failure, reopen the previous executable.
     let script = format!(
-        "@echo off\r\ntimeout /t 3 /nobreak >nul\r\nstart /wait \"\" \"{tmp}\" /S\r\nif errorlevel 1 (\r\n  echo Installer exited with code %errorlevel%>\"{marker}\"\r\n) else (\r\n  del \"{marker}\" >nul 2>&1\r\n)\r\nstart \"\" \"{exe}\"\r\ndel \"%~0\"\r\n",
+        "@echo off\r\ntimeout /t 3 /nobreak >nul\r\nstart /wait \"\" \"{tmp}\" /S /R\r\nif errorlevel 1 (\r\n  echo Installer exited with code %errorlevel%>\"{marker}\"\r\n  if exist \"{exe}\" start \"\" \"{exe}\"\r\n) else (\r\n  del \"{marker}\" >nul 2>&1\r\n)\r\ndel \"%~0\"\r\n",
         tmp = tmp_path.display(),
         marker = failed_marker.display(),
         exe = current_exe.display(),
@@ -272,16 +282,19 @@ mod tests {
 
     #[test]
     fn update_urls_are_restricted_to_official_releases() {
-        let ok = "https://github.com/Seisen-z/Key-System/releases/download/v1.2.0/ReiyaAccountManager-1.2.0-setup.exe";
-        assert!(validate_update_url(ok, ".exe").is_ok());
+        let ok = "https://seisen.store/api/reiya/releases/reiya-v1.2.0/ReiyaAccountManager-1.2.0-setup.exe";
+        let canonical = ok.replace("://seisen.store/", "://www.seisen.store/");
+        assert_eq!(validate_update_url(ok, ".exe").unwrap().as_str(), canonical);
+        assert_eq!(validate_update_url(&canonical, ".exe").unwrap().as_str(), canonical);
+        let signature = format!("{canonical}.sig");
+        assert_eq!(validate_update_url(&format!("{ok}.sig"), ".sig").unwrap().as_str(), signature);
         for bad in [
-            "http://github.com/Seisen-z/Key-System/releases/download/v1/a.exe",
-            "https://evil.example/Seisen-z/Key-System/releases/download/v1/a.exe",
-            "https://github.com/Other/Repo/releases/download/v1/a.exe",
-            "https://github.com/Seisen-z/Key-System/releases/download/v1/../../a.exe",
-            "https://github.com/Seisen-z/Key-System/releases/download/v1/a.exe?x=1",
-            "https://user@github.com/Seisen-z/Key-System/releases/download/v1/a.exe",
-            "https://github.com/Seisen-z/Key-System/releases/download/v1/a.zip",
+            "http://seisen.store/api/reiya/releases/reiya-v1.2.0/ReiyaAccountManager-1.2.0-setup.exe",
+            "https://evil.example/api/reiya/releases/reiya-v1.2.0/ReiyaAccountManager-1.2.0-setup.exe",
+            "https://seisen.store/api/reiya/releases/reiya-v01.2.0/ReiyaAccountManager-01.2.0-setup.exe",
+            "https://seisen.store/api/reiya/releases/reiya-v1.2.0/ReiyaAccountManager-1.1.0-setup.exe",
+            "https://seisen.store/api/reiya/releases/reiya-v1.2.0/../foreign.exe",
+            "https://seisen.store/api/reiya/releases/reiya-v1.2.0/ReiyaAccountManager-1.2.0-setup.exe?x=1",
         ] {
             assert!(validate_update_url(bad, ".exe").is_err(), "{bad}");
         }

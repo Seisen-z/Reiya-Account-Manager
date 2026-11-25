@@ -8,9 +8,9 @@ const API_ORIGIN: &str = match option_env!("REIYA_PREMIUM_API_URL") {
     Some(v) => v,
     None => {
         if cfg!(debug_assertions) {
-            "http://localhost:5173"
+            "http://localhost:3000"
         } else {
-            "https://www.reiyaa.co"
+            "https://www.seisen.store"
         }
     }
 };
@@ -113,31 +113,38 @@ fn endpoint_policy(origin: &url::Url, development: bool) -> Result<bool, String>
     }
     let local = development
         && origin.scheme() == "http"
-        && origin.port() == Some(5173)
+        && origin.port() == Some(3000)
         && matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
     if origin.scheme() != "https" && !local {
         return Err("HTTPS Premium service required; local HTTP is development-only".into());
     }
     Ok(local)
 }
+static PREMIUM_HTTP: std::sync::LazyLock<Result<(url::Url, reqwest::Client), String>> =
+    std::sync::LazyLock::new(|| {
+        let origin = url::Url::parse(API_ORIGIN).map_err(|_| "Invalid Premium service URL")?;
+        let local = endpoint_policy(&origin, cfg!(debug_assertions))?;
+        let client = reqwest::Client::builder()
+            .https_only(!local)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(6))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|_| "Network initialization failed")?;
+        Ok((origin, client))
+    });
+
 async fn api(
     action: &str,
     method: reqwest::Method,
     body: Option<Value>,
     token: Option<&str>,
 ) -> Result<Value, String> {
-    let origin = url::Url::parse(API_ORIGIN).map_err(|_| "Invalid Premium service URL")?;
-    let local = endpoint_policy(&origin, cfg!(debug_assertions))?;
-    let client = reqwest::Client::builder()
-        .https_only(!local)
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Network initialization failed")?;
+    let (origin, client) = PREMIUM_HTTP.as_ref().map_err(|error| error.clone())?;
     let mut request = client.request(
         method,
         format!(
-            "{}/api/premium?{}",
+            "{}/api/reiya/premium?{}",
             origin.as_str().trim_end_matches('/'),
             action
         ),
@@ -159,7 +166,12 @@ async fn api(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.contains("application/json"));
     if !is_json {
-        return Err(format!("Premium API did not return JSON (HTTP {}). For local tests, keep the website dev server running on port 5173.",status.as_u16()));
+        let help = if origin.scheme() == "http" {
+            " Check that the local Premium service is running on port 3000."
+        } else {
+            ""
+        };
+        return Err(format!("Premium service returned HTTP {} without a status response.{}", status.as_u16(), help));
     }
     let bytes = response
         .bytes()
@@ -180,7 +192,7 @@ async fn api(
 }
 
 fn refund_marker() -> PathBuf {
-    data_dir().join("premium-refund-erasure.pending")
+    data_dir().join("seisen-premium-refund-erasure.pending")
 }
 fn reparse(meta: &fs::Metadata) -> bool {
     #[cfg(windows)]
@@ -194,7 +206,10 @@ fn reparse(meta: &fs::Metadata) -> bool {
     }
 }
 fn verified_erasure_root(root: &PathBuf) -> Result<(), String> {
-    if !root.is_absolute() || root.file_name().and_then(|n| n.to_str()) != Some("Seistem") {
+    let named_root = root.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        [storage_paths::DATA_FOLDER, storage_paths::LEGACY_DATA_FOLDER].contains(&name)
+    });
+    if !root.is_absolute() || !named_root {
         return Err("Refund erasure root is invalid".into());
     }
     let parent = root.parent().ok_or("Refund erasure root has no parent")?;
@@ -253,13 +268,17 @@ fn remove_managed_entry(path: &PathBuf, root: &PathBuf) -> Result<(), String> {
     }
 }
 fn erase_managed_roots(app: &PathBuf, boot: &PathBuf) -> Result<(), String> {
-    verified_erasure_root(app)?;
-    verified_erasure_root(boot)?;
-    if app == boot || app.starts_with(boot) || boot.starts_with(app) {
-        return Err("Refund erasure roots overlap".into());
+    let legacy_app = app.with_file_name(storage_paths::LEGACY_DATA_FOLDER);
+    let legacy_boot = boot.with_file_name(storage_paths::LEGACY_DATA_FOLDER);
+    let roots = [app, boot, &legacy_app, &legacy_boot];
+    for (index, root) in roots.iter().enumerate() {
+        verified_erasure_root(root)?;
+        if roots[..index].iter().any(|other| root.starts_with(other) || other.starts_with(root)) {
+            return Err("Refund erasure roots overlap".into());
+        }
     }
-    // Preserve the retry journal and protected key until every other managed entry is removed.
-    for root in [app, boot] {
+    // Preserve the active retry journal and key until every other managed entry is removed.
+    for root in roots {
         if !root.exists() {
             continue;
         }
@@ -268,7 +287,7 @@ fn erase_managed_roots(app: &PathBuf, boot: &PathBuf) -> Result<(), String> {
             if root == app
                 && matches!(
                     path.file_name().and_then(|n| n.to_str()),
-                    Some("premium-refund-erasure.pending" | "premium-credentials.dpapi")
+                    Some("seisen-premium-refund-erasure.pending" | "premium-credentials.dpapi")
                 )
             {
                 continue;
@@ -318,8 +337,8 @@ pub async fn premium_refund_check() -> Result<Value, String> {
     let local =
         std::env::var("LOCALAPPDATA").map_err(|_| "Refund erasure requires LOCALAPPDATA")?;
     erase_managed_roots(
-        &PathBuf::from(roaming).join("Seistem"),
-        &PathBuf::from(local).join("Seistem"),
+        &PathBuf::from(roaming).join(storage_paths::DATA_FOLDER),
+        &PathBuf::from(local).join(storage_paths::DATA_FOLDER),
     )?;
     *VAULT_KEY.lock().map_err(|_| "Vault state lock failed")? = None;
     atomic_write(&marker, b"completed")
@@ -607,7 +626,7 @@ pub async fn premium_restore(backup_id: String) -> Result<Value, String> {
         *v = serde_json::to_value(accounts).map_err(|_| "Account conversion failed")?;
     }
     let protected = protect(&serde_json::to_vec(&s).map_err(|_| "Restore staging failed")?)?;
-    atomic_write(&data_dir().join("premium-restore-pending.dpapi"), protected)
+    atomic_write(&data_dir().join("seisen-premium-restore-pending.dpapi"), protected)
         .map_err(|_| "Restore staging failed")?;
     Ok(json!({"staged":true,"preferences":s.preferences,"restart_required":true}))
 }
@@ -615,7 +634,7 @@ pub async fn premium_restore(backup_id: String) -> Result<Value, String> {
 #[cfg(test)]
 static RESTORE_FAIL_AFTER: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(-1);
 fn restore_preferences_path() -> PathBuf {
-    data_dir().join("premium-restore-preferences.json")
+    data_dir().join("seisen-premium-restore-preferences.json")
 }
 #[tauri::command]
 pub fn premium_restore_preferences(
@@ -638,7 +657,7 @@ pub fn premium_restore_preferences(
     Ok(Some(preferences))
 }
 pub fn apply_pending_restore() -> Result<(), String> {
-    let pending = data_dir().join("premium-restore-pending.dpapi");
+    let pending = data_dir().join("seisen-premium-restore-pending.dpapi");
     if !pending.exists() {
         return Ok(());
     }
@@ -939,10 +958,12 @@ mod tests {
     #[test]
     fn premium_refund_erasure_fixture() {
         let fixture = std::env::temp_dir().join(format!("reiya-refund-erasure-{}", random_hex()));
-        let app = fixture.join("app").join("Seistem");
-        let boot = fixture.join("boot").join("Seistem");
+        let app = fixture.join("app").join(storage_paths::DATA_FOLDER);
+        let boot = fixture.join("boot").join(storage_paths::DATA_FOLDER);
+        let legacy_app = app.with_file_name(storage_paths::LEGACY_DATA_FOLDER);
+        let legacy_boot = boot.with_file_name(storage_paths::LEGACY_DATA_FOLDER);
         let outside = fixture.join("outside");
-        for p in [&app, &boot, &outside] {
+        for p in [&app, &boot, &legacy_app, &legacy_boot, &outside] {
             fs::create_dir_all(p).unwrap();
         }
         fs::write(app.join("accounts.json"), b"synthetic account").unwrap();
@@ -952,10 +973,12 @@ mod tests {
             b"fixture credentials",
         )
         .unwrap();
-        fs::write(app.join("premium-refund-erasure.pending"), b"pending").unwrap();
+        fs::write(app.join("seisen-premium-refund-erasure.pending"), b"pending").unwrap();
         fs::create_dir_all(app.join("login_profiles/test")).unwrap();
         fs::write(app.join("login_profiles/test/cookie"), b"fixture profile").unwrap();
         fs::write(boot.join("fastflags.json"), b"{}").unwrap();
+        fs::write(legacy_app.join("accounts.json"), b"legacy account").unwrap();
+        fs::write(legacy_boot.join("fastflags.json"), b"{}").unwrap();
         fs::write(outside.join("keep.txt"), b"unrelated data").unwrap();
         #[cfg(windows)]
         {
@@ -979,8 +1002,10 @@ mod tests {
             b"unrelated data"
         );
         assert_eq!(fs::read_dir(&app).unwrap().count(), 1);
-        assert!(app.join("premium-refund-erasure.pending").exists());
+        assert!(app.join("seisen-premium-refund-erasure.pending").exists());
         assert_eq!(fs::read_dir(&boot).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&legacy_app).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&legacy_boot).unwrap().count(), 0);
         erase_managed_roots(&app, &boot).unwrap();
         assert!(verified_erasure_root(&fixture).is_err());
         assert!(erase_managed_roots(&app, &app).is_err());
@@ -991,23 +1016,23 @@ mod tests {
 
     #[test]
     fn premium_endpoint_development_only() {
-        let local = url::Url::parse("http://localhost:5173").unwrap();
+        let local = url::Url::parse("http://localhost:3000").unwrap();
         assert!(endpoint_policy(&local, true).unwrap());
         assert!(endpoint_policy(&local, false).is_err());
         for s in [
-            "http://example.com:5173",
+            "http://example.com:3000",
             "http://localhost:9999",
-            "http://localhost:5173/path",
-            "http://user@localhost:5173",
+            "http://localhost:3000/path",
+            "http://user@localhost:3000",
         ] {
             assert!(endpoint_policy(&url::Url::parse(s).unwrap(), true).is_err());
         }
-        assert!(!endpoint_policy(&url::Url::parse("https://www.reiyaa.co").unwrap(), false).unwrap());
+        assert!(!endpoint_policy(&url::Url::parse("https://seisen.store").unwrap(), false).unwrap());
     }
     #[tokio::test]
-    #[ignore = "Needs the website dev server running on localhost:5173"]
+    #[ignore = "Needs the website dev server running on localhost:3000"]
     async fn premium_local_api_json_response() {
-        assert_eq!(API_ORIGIN, "http://localhost:5173");
+        assert_eq!(API_ORIGIN, "http://localhost:3000");
         let v = api("action=config", reqwest::Method::GET, None, None)
             .await
             .unwrap();
@@ -1200,7 +1225,7 @@ mod tests {
                 .unwrap(),
             expected.preferences
         );
-        assert!(target.join("premium-restore-pending.dpapi").exists());
+        assert!(target.join("seisen-premium-restore-pending.dpapi").exists());
         assert!(!restore_preferences_path().exists());
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(target.join("settings.json")).unwrap())
@@ -1245,7 +1270,7 @@ mod tests {
             "Restart helper failed: {}",
             String::from_utf8_lossy(&child.stderr)
         );
-        assert!(!target.join("premium-restore-pending.dpapi").exists());
+        assert!(!target.join("seisen-premium-restore-pending.dpapi").exists());
         assert!(!target.join("stale_only.json").exists());
         let got = collect(profile, expected.preferences.clone()).unwrap();
         assert_eq!(got.files, expected.files);
@@ -1260,7 +1285,7 @@ mod tests {
             b"[]"
         );
         assert_eq!(
-            fs::read(source_app.join("Seistem/accounts.json")).unwrap(),
+            fs::read(source_app.join(storage_paths::DATA_FOLDER).join("accounts.json")).unwrap(),
             source_accounts
         );
         let restored_accounts: Vec<StoredAccount> =
@@ -1307,13 +1332,13 @@ mod tests {
             preferences: BTreeMap::new(),
         };
         atomic_write(
-            &target.join("premium-restore-pending.dpapi"),
+            &target.join("seisen-premium-restore-pending.dpapi"),
             protect(&serde_json::to_vec(&malformed).unwrap()).unwrap(),
         )
         .unwrap();
         assert!(apply_pending_restore().is_err());
         assert_eq!(fs::read(accounts_path()).unwrap(), previous);
-        fs::remove_file(target.join("premium-restore-pending.dpapi")).unwrap();
+        fs::remove_file(target.join("seisen-premium-restore-pending.dpapi")).unwrap();
         api(
             &format!("action=backup&id={}", id),
             reqwest::Method::DELETE,
@@ -1336,7 +1361,7 @@ mod tests {
             .contains("restore-verification-20261010"));
         assert!(data_dir().starts_with(root));
         assert!(VAULT_KEY.lock().unwrap().is_none());
-        assert!(data_dir().join("premium-restore-pending.dpapi").exists());
+        assert!(data_dir().join("seisen-premium-restore-pending.dpapi").exists());
         apply_pending_restore().unwrap();
         assert!(restore_preferences_path().exists());
         println!("PASS separate Windows process: DPAPI staged restore applied with no cached vault state; preferences queued only after file commit");

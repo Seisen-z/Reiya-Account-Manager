@@ -65,8 +65,7 @@ pub async fn export_accounts(app: tauri::AppHandle, password: String) -> Result<
     }
 }
 
-#[tauri::command]
-pub async fn import_accounts(app: tauri::AppHandle, password: String) -> Result<usize, String> {
+fn read_account_backup(app: tauri::AppHandle, password: &str) -> Result<Vec<StoredAccount>, String> {
     use tauri_plugin_dialog::DialogExt;
     use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead, Nonce};
 
@@ -125,34 +124,125 @@ pub async fn import_accounts(app: tauri::AppHandle, password: String) -> Result<
         (false, parsed.as_array().cloned().ok_or("Invalid accounts data")?)
     };
 
-    let mut existing = load_stored();
-    let existing_ids: std::collections::HashSet<i64> = existing.iter().map(|a| a.user_id).collect();
-
-    let mut added = 0usize;
-    for value in imported {
-        let Ok(mut acc) = serde_json::from_value::<StoredAccount>(value) else { continue };
-        if acc.user_id <= 0 || existing_ids.contains(&acc.user_id) { continue; }
-        if plaintext_secrets {
-            acc.encrypted_cookie = encrypt_cookie(&acc.encrypted_cookie);
-            acc.password = acc.password.as_deref().filter(|p| !p.is_empty()).map(encrypt_cookie);
-        } else {
-            // Legacy backups hold secrets sealed with the exporting machine's key. Re-seal
-            // them for this machine when they can be read; otherwise keep them unchanged.
-            if let Ok(plain) = decrypt_cookie(&acc.encrypted_cookie) {
-                acc.encrypted_cookie = encrypt_cookie(&plain);
-            }
-            if let Some(p) = acc.password.clone().filter(|p| !p.is_empty()) {
-                if let Ok(plain) = decrypt_cookie(&p) {
-                    acc.password = Some(encrypt_cookie(&plain));
+    Ok(imported.into_iter()
+        .filter_map(|value| serde_json::from_value::<StoredAccount>(value).ok())
+        .filter(|account| account.user_id > 0)
+        .map(|mut account| {
+            if plaintext_secrets {
+                account.encrypted_cookie = encrypt_cookie(&account.encrypted_cookie);
+                account.password = account.password.as_deref().filter(|value| !value.is_empty()).map(encrypt_cookie);
+            } else {
+                // Re-seal legacy secrets for this machine when readable.
+                if let Ok(plain) = decrypt_cookie(&account.encrypted_cookie) {
+                    account.encrypted_cookie = encrypt_cookie(&plain);
+                }
+                if let Some(password) = account.password.as_ref().filter(|value| !value.is_empty()) {
+                    if let Ok(plain) = decrypt_cookie(password) {
+                        account.password = Some(encrypt_cookie(&plain));
+                    }
                 }
             }
-        }
-        existing.push(acc);
-        added += 1;
-    }
+            account
+        })
+        .collect())
+}
 
-    if added > 0 {
-        save_stored(&existing);
-    }
+async fn merge_imported_accounts(imported: Vec<StoredAccount>) -> Result<usize, String> {
+    let incoming: Vec<_> = imported.iter().map(|account| account.user_id).collect();
+    let mut entitlement = None;
+    with_account_capacity(&incoming, &mut entitlement, |mut existing| {
+        let mut ids: std::collections::HashSet<_> = existing.iter().map(|account| account.user_id).collect();
+        let previous = existing.len();
+        existing.extend(imported.into_iter().filter(|account| ids.insert(account.user_id)));
+        let added = existing.len() - previous;
+        if added > 0 {
+            write_stored_unlocked(&existing)?;
+        }
+        Ok(added)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn import_accounts(app: tauri::AppHandle, password: String) -> Result<usize, String> {
+    merge_imported_accounts(read_account_backup(app, &password)?).await
+}
+
+#[derive(Serialize)]
+pub struct ImportCandidate {
+    user_id: i64,
+    username: String,
+}
+
+#[derive(Serialize)]
+pub struct AccountImportPreview {
+    token: String,
+    accounts: Vec<ImportCandidate>,
+    duplicates: usize,
+    saved_accounts: usize,
+    free_limit: usize,
+}
+
+struct PendingImport {
+    token: String,
+    created: std::time::Instant,
+    accounts: Vec<StoredAccount>,
+}
+
+static PENDING_IMPORT: Mutex<Option<PendingImport>> = Mutex::new(None);
+const IMPORT_PREVIEW_LIFETIME: std::time::Duration = std::time::Duration::from_secs(900);
+
+#[tauri::command]
+pub async fn preview_account_import(app: tauri::AppHandle, password: String) -> Result<AccountImportPreview, String> {
+    let mut imported = read_account_backup(app, &password)?;
+    let (saved_accounts, duplicates) = {
+        let _io = ACCOUNTS_IO.lock().unwrap_or_else(|error| error.into_inner());
+        let existing = read_stored_for_write_unlocked()?;
+        let mut ids: std::collections::HashSet<_> = existing.iter().map(|account| account.user_id).collect();
+        let saved_accounts = ids.len();
+        let previous = imported.len();
+        imported.retain(|account| ids.insert(account.user_id));
+        (saved_accounts, previous - imported.len())
+    };
+    let mut token = [0; 16];
+    OsRng.fill_bytes(&mut token);
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token);
+    let accounts = imported.iter().map(|account| ImportCandidate {
+        user_id: account.user_id,
+        username: account.username.clone(),
+    }).collect();
+
+    let mut pending = PENDING_IMPORT.lock().unwrap_or_else(|error| error.into_inner());
+    *pending = Some(PendingImport { token: token.clone(), created: std::time::Instant::now(), accounts: imported });
+    Ok(AccountImportPreview { token, accounts, duplicates, saved_accounts, free_limit: FREE_ACCOUNT_LIMIT })
+}
+
+#[tauri::command]
+pub async fn commit_account_import(token: String, user_ids: Vec<i64>) -> Result<usize, String> {
+    let imported = {
+        let mut pending = PENDING_IMPORT.lock().unwrap_or_else(|error| error.into_inner());
+        if pending.as_ref().is_some_and(|preview| preview.created.elapsed() >= IMPORT_PREVIEW_LIFETIME) {
+            *pending = None;
+        }
+        let preview = pending.as_ref().filter(|preview| preview.token == token)
+            .ok_or("This backup preview expired. Choose the file again.")?;
+        let selected: std::collections::HashSet<_> = user_ids.into_iter().collect();
+        let imported: Vec<_> = preview.accounts.iter()
+            .filter(|account| selected.contains(&account.user_id)).cloned().collect();
+        if imported.is_empty() || imported.len() != selected.len() {
+            return Err("Select accounts from the current backup preview.".into());
+        }
+        imported
+    };
+    let added = merge_imported_accounts(imported).await?;
+    discard_account_import(token);
     Ok(added)
+}
+
+#[tauri::command]
+pub fn discard_account_import(token: String) {
+    let mut pending = PENDING_IMPORT.lock().unwrap_or_else(|error| error.into_inner());
+    if pending.as_ref().is_some_and(|preview| preview.token == token) {
+        *pending = None;
+    }
 }

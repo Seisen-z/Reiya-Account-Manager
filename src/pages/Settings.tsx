@@ -32,7 +32,6 @@ const APP_SECTIONS = [
       <SettingRow label={t("check_for_updates")} desc={t("check_for_updates_desc")}><ToggleSwitch value={s.CheckForUpdates} onChange={v => u("CheckForUpdates", v)} /></SettingRow>
       <SettingRow label={t("run_on_startup")} desc={t("run_on_startup_desc")}><ToggleSwitch value={s.RunOnStartup} onChange={v => u("RunOnStartup", v)} /></SettingRow>
       <SettingRow label={t("minimize_to_tray")} desc={t("minimize_to_tray_desc")}><ToggleSwitch value={s.MinimizeToTray} onChange={v => u("MinimizeToTray", v)} /></SettingRow>
-      <SettingRow label={t("minimize_on_launch")} desc={t("minimize_on_launch_desc")}><ToggleSwitch value={s.MinimizeOnLaunch} onChange={v => u("MinimizeOnLaunch", v)} /></SettingRow>
       <SettingRow label={t("show_presence")} desc={t("show_presence_desc")}><ToggleSwitch value={s.ShowAccountPresence} onChange={v => u("ShowAccountPresence", v)} /></SettingRow>
     </>),
   },
@@ -47,8 +46,6 @@ const APP_SECTIONS = [
   {
     id: "limits", Icon: ClockIcon, title: "limits_delays", accent: "#FBBF24",
     fields: (s: any, u: (k: string, v: any) => void, t: any) => (<>
-      <SettingRow label={t("launch_delay")} desc={t("launch_delay_desc")}><NumberInput value={s.LaunchDelay} onChange={v => u("LaunchDelay", v)} /></SettingRow>
-      <SettingRow label={t("global_cooldown")} desc={t("global_cooldown_desc")}><NumberInput value={s.GlobalLaunchCooldownSeconds} onChange={v => u("GlobalLaunchCooldownSeconds", v)} /></SettingRow>
       <SettingRow label={t("daily_play_goal")} desc={t("daily_play_goal_desc")}><NumberInput value={s.DailyPlayGoalMinutes} onChange={v => u("DailyPlayGoalMinutes", v)} /></SettingRow>
     </>),
   },
@@ -188,10 +185,10 @@ export default function Settings() {
 
   const DEFAULTS = {
     CheckForUpdates: true, SavePasswords: true, DisableAgingAlert: false,
-    HideMultiRobloxAlert: false, RunOnStartup: false, MinimizeToTray: true, MinimizeOnLaunch: true,
+    HideMultiRobloxAlert: false, RunOnStartup: false, MinimizeToTray: true,
     AutoRefreshCookies: true, MultiRoblox: true, ShuffleLowestServer: false,
     UseCustomSettings: false, UseBootstrapperLaunch: true, UnlockFps: false,
-    MaxFps: 120, LaunchDelay: 3.0, MaxRecentGames: 8,
+    MaxFps: 120, MaxRecentGames: 8,
     RegionFormat: "<city>, <countryCode>", ShowAccountPresence: true,
     PresenceRefreshInterval: 30, CookieHealthMonitorEnabled: true,
     CookieHealthIntervalMinutes: 60, AutoRejoinEnabled: false,
@@ -201,7 +198,7 @@ export default function Settings() {
     ToastNotificationsEnabled: true, DisconnectAlertEnabled: true,
     LaunchSuccessAlert: false, SoundAlertsEnabled: false,
     AppLockEnabled: false, AppLockOnMinimize: false, AppLockPinHash: "",
-    AutoDailyBackup: true, GlobalLaunchCooldownSeconds: 0,
+    AutoDailyBackup: true,
     DailyPlayGoalMinutes: 0, ClipboardCookieDetect: false,
     DiscordWebhookUrl: "", DiscordRpcEnabled: true,
     DeveloperModeEnabled: false,

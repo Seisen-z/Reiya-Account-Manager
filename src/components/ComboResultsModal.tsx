@@ -1,3 +1,4 @@
+import { AccountLimitLink, isFreeAccountLimit } from "./AccountLimitLink";
 import { FC } from "react";
 import { AccountModal, ModalBtn, ModalActions, ComboResult } from "../pages/Accounts";
 
@@ -43,6 +44,7 @@ export const ComboResultsModal: FC<{
       <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 14, lineHeight: 1.6 }}>
         Copy the details below and share them when reporting the issue.
       </div>
+      {comboResults.some(result => isFreeAccountLimit(result.reason)) && <AccountLimitLink />}
       <ModalActions>
         <ModalBtn label="Close" onClick={onClose} />
         <ModalBtn

@@ -1,5 +1,8 @@
+import { AccountLaunchStatus } from "../components/AccountLaunchStatus";
+import { AccountLimitLink, isFreeAccountLimit } from "../components/AccountLimitLink";
 import { useLanguage } from "../context/LanguageContext";
 import { useToast } from "../components/Toast";
+import { forgetAccountLaunch, useAccountLauncher, useObservedLaunchSessions, type LaunchFeedback } from "../lib/useAccountLauncher";
 import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode, type DragEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -16,7 +19,8 @@ import { AccComboImportModal } from "../components/AccComboImportModal";
 import { ComboResultsModal } from "../components/ComboResultsModal";
 import { AccountConfigSidebarModal } from "../components/AccountConfigSidebarModal";
 import { ExportAccountsModal } from "../components/ExportAccountsModal";
-import { ImportAccountsModal } from "../components/ImportAccountsModal";
+import { ImportAccountsModal, type BackupImportPreview } from "../components/ImportAccountsModal";
+import { useAccountPlan } from "../lib/useAccountPlan";
 import { MoveToGroupModal } from "../components/MoveToGroupModal";
 import { BulkEditModal, type BulkEditValue } from "../components/BulkEditModal";
 import { AccountsHeaderBar } from "../components/AccountsHeaderBar";
@@ -108,7 +112,7 @@ export default function Accounts() {
   const [search,      setSearch]      = useState("");
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [loading,     setLoading]     = useState<boolean>(() => accounts.length === 0);
-  const [launching,   setLaunching]   = useState<number | null>(null);
+  const { launchAccount, launchingAccounts, launchFeedback, retryLaunch } = useAccountLauncher();
   const [sortBy,      setSortBy]      = useState<SortBy>("last_launched");
   const [gameFilter,  setGameFilter]  = useState<string | null>(null);
   const [viewMode, setViewModeState] = useState<"card" | "list">(() =>
@@ -178,6 +182,10 @@ export default function Accounts() {
   const [exportLoading, setExportLoading] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
   const [exportErr, setExportErr] = useState("");
+  const [importPreview, setImportPreview] = useState<BackupImportPreview | null>(null);
+  const [importSelection, setImportSelection] = useState<ReadonlySet<number>>(new Set());
+  const importPending = useRef(false);
+  const accountPlan = useAccountPlan();
   const [importErr, setImportErr] = useState("");
   const [exportOk,  setExportOk]  = useState("");
   const [importOk,  setImportOk]  = useState("");
@@ -195,17 +203,42 @@ export default function Accounts() {
     } finally { setExportLoading(false); }
   };
 
+  const resetImportPreview = () => {
+    if (importPreview) void invoke("discard_account_import", { token: importPreview.token }).catch(() => {});
+    setImportPreview(null);
+    setImportSelection(new Set());
+    setImportErr("");
+    setImportOk("");
+  };
+
   const handleImport = async () => {
-    const pwd = importPwd.trim();
-    setImportLoading(true); setImportErr(""); setImportOk("");
+    if (importPending.current) return;
+    importPending.current = true;
+    setImportLoading(true);
+    setImportErr("");
+    setImportOk("");
     try {
-      const added = await invoke<number>("import_accounts", { password: pwd });
-      setImportOk(`Imported ${added} new account${added !== 1 ? "s" : ""}.`);
-      setImportPwd("");
-      await loadAccounts();
-    } catch (e) {
-      if (String(e) !== "cancelled") setImportErr(String(e));
-    } finally { setImportLoading(false); }
+      if (importPreview) {
+        const added = await invoke<number>("commit_account_import", {
+          token: importPreview.token, userIds: [...importSelection],
+        });
+        setImportPreview(null);
+        setImportSelection(new Set());
+        setImportOk("Imported " + added + (added === 1 ? " new account." : " new accounts."));
+        await loadAccounts();
+      } else {
+        const preview = await invoke<BackupImportPreview>("preview_account_import", { password: importPwd.trim() });
+        const slots = Math.max(0, preview.free_limit - preview.saved_accounts);
+        setImportPreview(preview);
+        setImportPwd("");
+        setImportSelection(new Set((accountPlan.premium ? preview.accounts : preview.accounts.slice(0, slots)).map(account => account.user_id)));
+      }
+    } catch (error) {
+      if (String(error) !== "cancelled") setImportErr(String(error));
+    } finally {
+      importPending.current = false;
+      setImportLoading(false);
+    }
   };
 
   const [selectedUtilAccount, setSelectedUtilAccount] = useState<Account | null>(null);
@@ -298,6 +331,10 @@ export default function Accounts() {
     };
   }, []);
 
+  const activeUserIds = useMemo(() => new Set(
+    sessions.map(session => session.user_id).filter((id): id is number => id !== null),
+  ), [sessions]);
+  useObservedLaunchSessions(activeUserIds, launchFeedback);
   const online     = sessions.length;
   const favCount   = accounts.filter(a => a.is_favorite).length;
   const validCount = accounts.filter(a => a.cookie_status === "Valid").length;
@@ -385,30 +422,27 @@ export default function Accounts() {
     if (!confirm(`${t("remove_account_confirm")}${username}?`)) return;
     try {
       await invoke("remove_account", { userId });
+      forgetAccountLaunch(userId);
       setAccounts(prev => prev.filter(a => a.user_id !== userId));
-    } catch (e) { console.error(e); }
+    } catch (error) { toast.error(String(error)); }
   };
 
   const handleLaunch = async (userId: number) => {
-    setLaunching(userId);
     try {
-      await invoke("launch_account", {
+      await launchAccount({
         userId, placeId: null, jobId: null, accessCode: null,
         useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
       });
     } catch (e) { toast.error(`Launch failed: ${e}`); }
-    finally { setLaunching(null); }
   };
 
   const handleReplayLaunch = async (userId: number, placeId: string) => {
-    setLaunching(userId);
     try {
-      await invoke("launch_account", {
+      await launchAccount({
         userId, placeId, jobId: null, accessCode: null,
         useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
       });
     } catch (e) { toast.error(`Launch failed: ${e}`); }
-    finally { setLaunching(null); }
   };
 
   const handleCopyUsername = (userId: number, username: string) => {
@@ -434,17 +468,15 @@ export default function Accounts() {
   const handleQuickLaunch = async () => {
     if (!quickLaunchAccount) return;
     const placeId = quickPlaceId.trim();
-    setLaunching(quickLaunchAccount.user_id);
     setQuickLaunchAccount(null);
     try {
-      await invoke("launch_account", {
+      await launchAccount({
         userId: quickLaunchAccount.user_id,
         placeId: placeId || null,
         jobId: null, accessCode: null,
         useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
       });
     } catch (e) { toast.error(`Launch failed: ${e}`); }
-    finally { setLaunching(null); }
   };
 
   const handleDragStart = (e: DragEvent, userId: number) => {
@@ -513,7 +545,12 @@ export default function Accounts() {
               return idx >= 0 ? prev.map((a, i) => i === idx ? acc : a) : [...prev, acc];
             });
             return;
-          } catch (e) { setAddError(String(e)); }
+          } catch (e) {
+            setAddCookie("");
+            setAddError(String(e));
+            setShowSingle(true);
+            return;
+          }
           finally { setAdding(false); }
         }
       }
@@ -682,29 +719,18 @@ export default function Accounts() {
   const clearSelection = () => setSelected(new Set());
 
   const handleBulkLaunch = async () => {
-    const targets = accounts.filter(a => selected.has(a.user_id) && a.cookie_status === "Valid");
-    if (targets.length === 0) return;
+    const targets = accounts.filter(a => selected.has(a.user_id) && a.cookie_status === "Valid" && !launchingAccounts.has(a.user_id));
+    if (bulkLaunching || targets.length === 0) return;
     setBulkLaunching(true);
-    const DELAY = 1500;
-    for (let i = 0; i < targets.length; i++) {
-      const acc = targets[i];
-      setBulkStatus(`Launching ${i + 1}/${targets.length}: @${acc.username}`);
-      try {
-        await invoke("launch_account", {
-          userId: acc.user_id, placeId: null, jobId: null, accessCode: null,
-          useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
-        });
-      } catch { }
-      if (i < targets.length - 1) {
-        // Countdown display between launches
-        for (let s = Math.ceil(DELAY / 1000); s > 0; s--) {
-          setBulkStatus(`Launched @${acc.username} — next in ${s}s…`);
-          await new Promise(r => setTimeout(r, 1000));
-        }
-      }
-    }
-    setBulkLaunching(false); setBulkStatus(`✓ Launched ${targets.length} accounts`);
-    setTimeout(() => setBulkStatus(""), 3000);
+    setBulkStatus(`Launching ${targets.length} accounts...`);
+    const results = await Promise.allSettled(targets.map(acc => launchAccount({
+      userId: acc.user_id, placeId: null, jobId: null, accessCode: null,
+      useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
+    })));
+    const failed = targets.filter((_, index) => results[index].status === "rejected");
+    setBulkLaunching(false);
+    setBulkStatus(`Launched ${targets.length - failed.length} of ${targets.length} accounts`);
+    if (failed.length) toast.error(`Failed to launch: ${failed.map(acc => acc.username).join(", ")}`);
   };
 
   const handleBulkValidate = async () => {
@@ -724,7 +750,9 @@ export default function Accounts() {
   };
 
   const [deleteConfirmPending, setDeleteConfirmPending] = useState(false);
+  const deletingAccounts = useRef(false);
   const handleBulkDelete = async () => {
+    if (deletingAccounts.current) return;
     const targets = accounts.filter(a => selected.has(a.user_id));
     if (targets.length === 0) return;
     if (!deleteConfirmPending) {
@@ -734,13 +762,27 @@ export default function Accounts() {
       return;
     }
     setDeleteConfirmPending(false);
-    for (const acc of targets) {
-      try { await invoke("remove_account", { userId: acc.user_id }); } catch { }
+    deletingAccounts.current = true;
+    const removed = new Set<number>();
+    let firstError = "";
+    try {
+      for (const account of targets) {
+        try {
+          await invoke("remove_account", { userId: account.user_id });
+          forgetAccountLaunch(account.user_id);
+          removed.add(account.user_id);
+        } catch (error) {
+          if (!firstError) firstError = String(error);
+        }
+      }
+      setAccounts(current => current.filter(account => !removed.has(account.user_id)));
+      setSelected(current => new Set([...current].filter(id => !removed.has(id))));
+      setBulkStatus("");
+      if (firstError) toast.error("Removed " + removed.size + " of " + targets.length + " accounts. " + firstError);
+      else toast.success("Removed " + removed.size + " account(s).");
+    } finally {
+      deletingAccounts.current = false;
     }
-    setAccounts(prev => prev.filter(a => !selected.has(a.user_id)));
-    setSelected(new Set());
-    setBulkStatus("");
-    toast.success(`Removed ${targets.length} account(s).`);
   };
 
   const handleBulkMoveGroup = async () => {
@@ -818,6 +860,8 @@ export default function Accounts() {
         <AccountsHeaderBar
           t={t}
           totalCount={accounts.length}
+          slotPlan={accountPlan}
+          usedSlots={new Set(accounts.map(account => account.user_id)).size}
           validCount={validCount}
           favCount={favCount}
           online={online}
@@ -915,7 +959,10 @@ export default function Accounts() {
             <AccountCard
               account={account}
               viewMode={viewMode}
-              isLaunching={launching === account.user_id}
+              isLaunching={launchingAccounts.has(account.user_id)}
+              launchState={launchFeedback.get(account.user_id)}
+              isRunning={activeUserIds.has(account.user_id)}
+              onRetryLaunch={() => void retryLaunch(account.user_id)}
               isSelected={selected.has(account.user_id)}
               isCopied={copiedId === account.user_id}
               isCopiedUid={copiedUid === account.user_id}
@@ -930,6 +977,7 @@ export default function Accounts() {
               onRelogin={() => handleRelogin(account.username)}
               onCopyUsername={() => handleCopyUsername(account.user_id, account.username)}
               onCopyUserId={() => handleCopyUserId(account.user_id)}
+              onLaunchGame={(placeId) => handleReplayLaunch(account.user_id, placeId)}
               onReplayGame={account.default_place_id ? () => handleReplayLaunch(account.user_id, account.default_place_id!) : undefined}
               onQuickLaunch={() => { setQuickLaunchAccount(account); setQuickPlaceId(""); }}
               onTagClick={(tag) => setSearch(tag)}
@@ -1016,6 +1064,7 @@ export default function Accounts() {
         onRemoveAccount={async (userId) => {
           try {
             await invoke("remove_account", { userId });
+            forgetAccountLaunch(userId);
             setAccounts(prev => prev.filter(a => a.user_id !== userId));
             setSelectedUtilAccount(null);
           } catch (e) {
@@ -1042,7 +1091,17 @@ export default function Accounts() {
         importLoading={importLoading}
         importErr={importErr}
         importOk={importOk}
-        onClose={() => { if (!importLoading) setShowImport(false); }}
+        preview={importPreview}
+        selected={importSelection}
+        premium={accountPlan.premium}
+        onToggleAccount={id => setImportSelection(current => {
+          const next = new Set(current);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        })}
+        onResetPreview={resetImportPreview}
+        onClose={() => { resetImportPreview(); setShowImport(false); setImportPwd(""); }}
         onImport={handleImport}
       />
 
@@ -1395,19 +1454,21 @@ export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: 
 
 /* ── Account Card (Team 4 Inspired Layout) ── */
 function AccountCard({
-  account, viewMode, isLaunching, isSelected, isCopied,
+  account, viewMode, isLaunching, launchState, isRunning, onRetryLaunch, isSelected, isCopied,
   isDraggable,
-  onToggleSelect, onToggleFav, onRemove, onLaunch, onOpenUtilities,
+  onToggleSelect, onToggleFav, onRemove, onLaunch, onLaunchGame, onOpenUtilities,
   onCopyUsername,
   onDragStart, onDragOver, onDrop, onOpenDetails,
 }: {
   account: Account; viewMode: "card" | "list"; isLaunching: boolean; isSelected: boolean;
+  launchState?: LaunchFeedback; isRunning: boolean; onRetryLaunch: () => void;
   isCopied: boolean; isCopiedUid: boolean;
   isEditingNotes?: boolean; editingNotesText?: string; isDraggable: boolean;
   onToggleSelect: () => void;
   onToggleFav: () => void; onRemove: () => void;
   onLaunch: () => void; onValidate?: () => void; onRelogin?: () => void; onOpenUtilities: () => void;
   onCopyUsername: () => void; onCopyUserId: () => void;
+  onLaunchGame: (placeId: string) => void;
   onReplayGame?: () => void; onQuickLaunch?: () => void;
   onTagClick: (tag: string) => void;
   onStartEditNotes?: () => void; onNotesChange?: (t: string) => void;
@@ -1528,6 +1589,7 @@ function AccountCard({
           )}
         </div>
 
+        <AccountLaunchStatus state={launchState} running={isRunning} onRetry={onRetryLaunch} />
         <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 26, borderTop: "1px solid var(--g04)", paddingTop: 10 }}>
           <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t3)" }}>
             {account.group && (
@@ -1548,14 +1610,7 @@ function AccountCard({
                   key={pid}
                   placeId={pid}
                   size={22}
-                  onLaunch={(pId) => {
-                    invoke("launch_account", {
-                      userId: account.user_id,
-                      placeId: pId,
-                      jobId: null, accessCode: null, gameName: null,
-                      useBootstrapper: localStorage.getItem("reiya_use_bootstrapper") === "true",
-                    });
-                  }}
+                  onLaunch={isValid && !isLaunching ? onLaunchGame : undefined}
                 />
               ))}
             </div>
@@ -1643,6 +1698,7 @@ function AccountCard({
           </div>
         </div>
 
+        <AccountLaunchStatus state={launchState} running={isRunning} onRetry={onRetryLaunch} />
         <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--t3)" }}>
           {!isValid && (
             <span style={{ color: statusColor, fontWeight: 800, fontSize: 10, letterSpacing: "0.04em", flexShrink: 0 }}>{statusLabel.toUpperCase()}</span>
@@ -1765,7 +1821,10 @@ export function ErrorMsg({ msg }: { msg: string }) {
       fontSize: 11.5, color: "var(--red)", marginBottom: 10, padding: "8px 12px",
       background: "rgba(248,113,113,0.08)", borderRadius: 9,
       border: "1px solid rgba(248,113,113,0.2)",
-    }}>{msg}</div>
+    }}>
+      {msg}
+      {isFreeAccountLimit(msg) && <AccountLimitLink />}
+    </div>
   );
 }
 

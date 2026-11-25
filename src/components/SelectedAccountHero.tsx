@@ -38,6 +38,7 @@ export const SelectedAccountHero: FC<{
   multiSelected: Set<number>;
   onLaunchMultiple: () => void;
   launching: boolean;
+  bulkLaunching: boolean;
   onLaunchApp: () => void;
   onLaunch: () => void;
 }> = ({
@@ -46,7 +47,7 @@ export const SelectedAccountHero: FC<{
   accessCode, setAccessCode, setLaunchError, onPastePlaceId, jobId, setJobId, onAccessCodeChange,
   launchHistory, accounts, setSelAccount,
   selectedAccountIsActive, reValidating, onReValidate,
-  launchError, multiSelected, onLaunchMultiple, launching, onLaunchApp, onLaunch,
+  launchError, multiSelected, onLaunchMultiple, launching, bulkLaunching, onLaunchApp, onLaunch,
 }) => {
   const { t } = useLanguage();
 
@@ -645,7 +646,7 @@ export const SelectedAccountHero: FC<{
             {multiSelected.size > 0 && (
               <button
                 onClick={onLaunchMultiple}
-                disabled={launching}
+                disabled={bulkLaunching}
                 className="btn glow-btn"
                 title={`Launch ${multiSelected.size} selected accounts into the same game`}
                 style={{
@@ -659,8 +660,8 @@ export const SelectedAccountHero: FC<{
                   background: "rgba(167,139,250,0.15)",
                   color: "#A78BFA",
                   border: "1px solid rgba(167,139,250,0.3)",
-                  cursor: launching ? "not-allowed" : "pointer",
-                  opacity: launching ? 0.5 : 1,
+                  cursor: bulkLaunching ? "not-allowed" : "pointer",
+                  opacity: bulkLaunching ? 0.5 : 1,
                 }}
               >
                 <PlayIcon size={11} color="#A78BFA" /> Launch {multiSelected.size} Selected

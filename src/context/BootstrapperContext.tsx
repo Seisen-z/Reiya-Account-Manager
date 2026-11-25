@@ -223,9 +223,9 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
             name: "Reiya (Built-in)",
             kind: "reiya",
             found: true,
-            exe_path: "C:\\Users\\Mock\\AppData\\Local\\Seistem\\Versions\\version-mock3\\RobloxPlayerBeta.exe",
+            exe_path: "C:\\Users\\Mock\\AppData\\Local\\Reiya\\Versions\\version-mock3\\RobloxPlayerBeta.exe",
             version: "version-mock3",
-            install_dir: "C:\\Users\\Mock\\AppData\\Local\\Seistem",
+            install_dir: "C:\\Users\\Mock\\AppData\\Local\\Reiya",
             is_protocol_handler: false,
           }
         ],
@@ -234,9 +234,9 @@ export function BootstrapperProvider({ children }: { children: ReactNode }) {
       setStatus({
         installed_version: "version-mock3",
         latest_version: "version-mock3",
-        install_path: "C:\\Users\\Mock\\AppData\\Local\\Seistem\\Versions",
+        install_path: "C:\\Users\\Mock\\AppData\\Local\\Reiya\\Versions",
         needs_update: false,
-        exe_path: "C:\\Users\\Mock\\AppData\\Local\\Seistem\\Versions\\version-mock3\\RobloxPlayerBeta.exe"
+        exe_path: "C:\\Users\\Mock\\AppData\\Local\\Reiya\\Versions\\version-mock3\\RobloxPlayerBeta.exe"
       });
       setPreferredLauncher("auto");
     }

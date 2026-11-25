@@ -1,0 +1,17 @@
+project_id = "reiya-account-manager"
+
+[auth]
+enable_anonymous_sign_ins = true
+
+# These functions verify Supabase user tokens with Auth inside the handler.
+[functions.heartbeat]
+verify_jwt = false
+
+[functions.submit-rating]
+verify_jwt = false
+
+[functions.live-count]
+verify_jwt = false
+
+[functions.rating-stats]
+verify_jwt = false

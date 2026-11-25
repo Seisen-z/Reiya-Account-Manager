@@ -1,3 +1,5 @@
+import { AccountSlotUsage } from "./AccountSlotUsage";
+import { useAccountPlan } from "../lib/useAccountPlan";
 import { FC, RefObject } from "react";
 import { useLanguage } from "../context/LanguageContext";
 import {
@@ -42,6 +44,7 @@ export const HomeHeaderBar: FC<{
   onPlayStats, bulkChecking, cookieCheckError, onBulkCookieCheck, onUtilities,
 }) => {
   const { t, language } = useLanguage();
+  const accountPlan = useAccountPlan();
   return (
     <div className="home-header" style={{ display: "flex", alignItems: "center", padding: "0 24px", height: 66, borderBottom: "1px solid var(--glass-line)", flexShrink: 0, gap: 20 }}>
       <div style={{ flexShrink: 0 }}>
@@ -80,6 +83,7 @@ export const HomeHeaderBar: FC<{
               { icon: <FileTextIcon size={20} />, label: t("bulk_cookies"), sub: t("cookies_file_sub"), onClick: onBulkCookies },
             ]}
           />
+          <AccountSlotUsage used={new Set(accounts.map(account => account.user_id)).size} {...accountPlan} />
         </div>
         <button onClick={onPlayStats} className="btn btn-ghost glow-btn" style={{ padding: "7px 12px", borderRadius: 8, fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", gap: 5 }}>
           <BarChartIcon size={11} /> {t("play_stats")}

@@ -1,3 +1,5 @@
+import { AccountLimitLink, isFreeAccountLimit } from "../components/AccountLimitLink";
+import { forgetAccountLaunch, useAccountLauncher, useObservedLaunchSessions } from "../lib/useAccountLauncher";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -245,11 +247,6 @@ export default function Home() {
     }
   };
 
-  // Discord RPC playing state — tracks active game session (refs, no re-render needed)
-  const playingUserIdRef = useRef<number | null>(null);
-  const setPlayingUserId = (v: number | null) => { playingUserIdRef.current = v; };
-  const setPlayingGame   = (_v: string) => {};
-
   // Launch state
   const [selAccount,      setSelAccount]      = useState<number | null>(null);
   const [multiSelected,   setMultiSelected]   = useState<Set<number>>(new Set());
@@ -266,7 +263,8 @@ export default function Home() {
   const [useBootstrapper, setUseBootstrapper] = useState<boolean>(() => {
     return localStorage.getItem("reiya_use_bootstrapper") === "true";
   });
-  const [launching,       setLaunching]       = useState(false);
+  const { launchAccount, launchingAccounts, launchFeedback, retryLaunch } = useAccountLauncher();
+  const [bulkLaunching, setBulkLaunching] = useState(false);
   const [accountMenu, setAccountMenu] = useState<{
     x: number;
     y: number;
@@ -428,12 +426,6 @@ export default function Home() {
           setEvents(evts);
           setSessionHistory(hist);
           setRecentGames(recents);
-          // If the playing session ended, reset presence to current page
-          const uid = playingUserIdRef.current;
-          if (uid !== null && !sess.some((s: Session) => s.user_id === uid)) {
-            playingUserIdRef.current = null;
-            invoke("clear_game_rpc").catch(() => {});
-          }
         });
       });
       unlistenAccounts = await listen("accounts-updated", () => {
@@ -602,7 +594,10 @@ export default function Home() {
   const validCookies = accounts.filter(a => a.cookie_status === "Valid").length;
   const favorites    = accounts.filter(a => a.is_favorite).length;
 
-  const activeUserIds = new Set(sessions.map(s => s.user_id).filter(Boolean));
+  const activeUserIds = useMemo(() => new Set(
+    sessions.map(session => session.user_id).filter((id): id is number => id !== null),
+  ), [sessions]);
+  useObservedLaunchSessions(activeUserIds, launchFeedback);
 
   // Weekly stats from session history (last 7 days)
   const weekStats = useMemo(() => {
@@ -867,7 +862,10 @@ export default function Home() {
             await refreshAccounts();
             return;
           } catch (e) {
+            setAddCookie("");
             setAddError(String(e));
+            setShowSingle(true);
+            return;
           } finally {
             setAdding(false);
           }
@@ -1065,7 +1063,7 @@ export default function Home() {
   });
 
   const handleLaunch = async () => {
-    if (selAccount === null) return;
+    if (selAccount === null || launchingAccounts.has(selAccount)) return;
     const account = accounts.find(a => a.user_id === selAccount);
     if (!account) return;
 
@@ -1074,12 +1072,9 @@ export default function Home() {
       return;
     }
 
-    setLaunching(true);
     setLaunchError("");
-    const rpcLabel = effectiveGameName ? `Launching ${effectiveGameName}` : "Launching Roblox";
-    invoke("update_discord_rpc", { page: rpcLabel }).catch(() => {});
     try {
-      await invoke("launch_account", {
+      await launchAccount({
         userId:         selAccount,
         placeId:        effectivePlaceId,
         jobId:          jobId    || null,
@@ -1093,11 +1088,6 @@ export default function Home() {
       }
       // Feature 8: Push launch history
       pushLaunchHistory(selAccount, account.username, effectivePlaceId || "", effectiveGameName || "");
-      // Mark as playing — presence stays until session closes
-      const gameName = effectiveGameName || "Roblox";
-      setPlayingUserId(selAccount);
-      setPlayingGame(gameName);
-      invoke("update_discord_rpc", { page: `Playing ${gameName}` }).catch(() => {});
       setTimeout(async () => {
         const [sess, evts, hist, recents] = await Promise.all([
           invoke<Session[]>("get_live_sessions").catch(() => []),
@@ -1112,52 +1102,42 @@ export default function Home() {
       }, 3000);
     } catch (e) {
       setLaunchError(String(e));
-      invoke("clear_game_rpc").catch(() => {});
-    } finally {
-      setLaunching(false);
     }
   };
 
   const handleLaunchMultiple = async () => {
-    const ids = Array.from(multiSelected);
-    if (ids.length === 0) return;
+    const targets = accounts.filter(account => multiSelected.has(account.user_id) && !launchingAccounts.has(account.user_id));
+    if (bulkLaunching || targets.length === 0) return;
+    setBulkLaunching(true);
 
-    setLaunching(true);
     setLaunchError("");
-    const rpcLabel = effectiveGameName ? `Launching ${effectiveGameName}` : "Launching Roblox";
-    invoke("update_discord_rpc", { page: rpcLabel }).catch(() => {});
 
-    const failed: string[] = [];
-    for (const userId of ids) {
-      const account = accounts.find(a => a.user_id === userId);
-      if (!account) continue;
-      if (account.cookie_status !== "Valid") { failed.push(account.username); continue; }
+    const failed = (await Promise.all(targets.map(async account => {
+      const userId = account.user_id;
+      if (account.cookie_status !== "Valid") return account.username;
       try {
-        await invoke("launch_account", {
+        await launchAccount({
           userId,
           placeId:        effectivePlaceId,
-          jobId:          jobId    || null,
+          jobId:          jobId || null,
           accessCode:     accessCode || null,
           gameName:       effectiveGameName,
           useBootstrapper,
         });
         if (effectivePlaceId && launchGame) pushAccGameHistory(userId, launchGame);
         pushLaunchHistory(userId, account.username, effectivePlaceId || "", effectiveGameName || "");
-        setPlayingUserId(userId);
-        setPlayingGame(effectiveGameName || "Roblox");
-      } catch (e) {
-        failed.push(account.username);
+        return null;
+      } catch {
+        return account.username;
       }
-      // Stagger launches so Roblox auth-ticket requests don't collide.
-      await new Promise(res => setTimeout(res, 1500));
-    }
+    }))).filter(Boolean);
 
-    const gameName = effectiveGameName || "Roblox";
-    invoke("update_discord_rpc", { page: `Playing ${gameName}` }).catch(() => {});
-    if (failed.length > 0) {
-      setLaunchError(`Failed to launch: ${failed.join(", ")}`);
-    }
-    setMultiSelected(new Set());
+    if (failed.length > 0) setLaunchError(`Failed to launch: ${failed.join(", ")}`);
+    setMultiSelected(current => {
+      const next = new Set(current);
+      for (const account of targets) next.delete(account.user_id);
+      return next;
+    });
     setTimeout(async () => {
       const [sess, evts, hist, recents] = await Promise.all([
         invoke<Session[]>("get_live_sessions").catch(() => []),
@@ -1170,11 +1150,11 @@ export default function Home() {
       setSessionHistory(hist);
       setRecentGames(recents);
     }, 3000);
-    setLaunching(false);
+    setBulkLaunching(false);
   };
 
   const handleLaunchApp = async () => {
-    if (selAccount === null) return;
+    if (selAccount === null || launchingAccounts.has(selAccount)) return;
     const account = accounts.find(a => a.user_id === selAccount);
     if (!account) return;
 
@@ -1183,11 +1163,9 @@ export default function Home() {
       return;
     }
 
-    setLaunching(true);
     setLaunchError("");
-    invoke("update_discord_rpc", { page: "Launching Roblox App" }).catch(() => {});
     try {
-      await invoke("launch_account", {
+      await launchAccount({
         userId:         selAccount,
         placeId:        null,
         jobId:          null,
@@ -1196,9 +1174,6 @@ export default function Home() {
         useBootstrapper,
         appMode:        true,
       });
-      setPlayingUserId(selAccount);
-      setPlayingGame("Roblox App");
-      invoke("update_discord_rpc", { page: "Playing Roblox App" }).catch(() => {});
       setTimeout(async () => {
         const [sess, evts, hist, recents] = await Promise.all([
           invoke<Session[]>("get_live_sessions").catch(() => []),
@@ -1213,9 +1188,6 @@ export default function Home() {
       }, 3000);
     } catch (e) {
       setLaunchError(String(e));
-      invoke("clear_game_rpc").catch(() => {});
-    } finally {
-      setLaunching(false);
     }
   };
 
@@ -1321,6 +1293,8 @@ export default function Home() {
         setAccFilter={setAccFilter}
         groupedAccounts={groupedAccounts}
         activeUserIds={activeUserIds}
+        launchFeedback={launchFeedback}
+        onRetryLaunch={id => void retryLaunch(id)}
         selAccount={selAccount}
         multiSelected={multiSelected}
         onToggleCheck={toggleMultiSelect}
@@ -1389,7 +1363,8 @@ export default function Home() {
         launchError={launchError}
         multiSelected={multiSelected}
         onLaunchMultiple={handleLaunchMultiple}
-        launching={launching}
+        launching={selAccount !== null && launchingAccounts.has(selAccount)}
+        bulkLaunching={bulkLaunching}
         onLaunchApp={handleLaunchApp}
         onLaunch={handleLaunch}
       />
@@ -1522,10 +1497,10 @@ export default function Home() {
                 showToast("Cookie is not valid. Validate the cookie first.", "error");
                 return;
               }
-              setLaunching(true);
+              if (launchingAccounts.has(acc.user_id)) return;
               setLaunchError("");
               try {
-                await invoke("launch_account", {
+                await launchAccount({
                   userId: acc.user_id,
                   placeId: effectivePlaceId,
                   jobId: jobId || null,
@@ -1535,8 +1510,6 @@ export default function Home() {
                 });
               } catch (err) {
                 setLaunchError(String(err));
-              } finally {
-                setLaunching(false);
               }
             }}
           />
@@ -1628,6 +1601,7 @@ export default function Home() {
               if (confirm(`${t("remove_account_confirm")}${acc.username}?`)) {
                 try {
                   await invoke("remove_account", { userId: acc.user_id });
+                  forgetAccountLaunch(acc.user_id);
                   setAccounts(prev => prev.filter(a => a.user_id !== acc.user_id));
                   if (selAccount === acc.user_id) {
                     setSelAccount(null);
@@ -1651,6 +1625,7 @@ export default function Home() {
           if (confirm(`${t("remove_account_confirm")}${username}?`)) {
             try {
               await invoke("remove_account", { userId });
+              forgetAccountLaunch(userId);
               setAccounts(prev => prev.filter(a => a.user_id !== userId));
               if (selAccount === userId) {
                 setSelAccount(null);
@@ -1960,7 +1935,10 @@ export function ErrorMsg({ msg }: { msg: string }) {
       fontSize: 11.5, color: "var(--red)", marginBottom: 10, padding: "8px 12px",
       background: "rgba(248, 113, 113, 0.08)", borderRadius: 9,
       border: "1px solid rgba(248, 113, 113, 0.2)",
-    }}>{msg}</div>
+    }}>
+      {msg}
+      {isFreeAccountLimit(msg) && <AccountLimitLink />}
+    </div>
   );
 }
 

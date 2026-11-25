@@ -14,7 +14,6 @@ const NAV_GROUPS = [
   ],
   [
     { to: "/hub",          id: "hub",          Icon: IcHub },
-    { to: "/rscript",      id: "rscript",      Icon: IcRscript },
     { to: "/bootstrapper", id: "bootstrapper", Icon: IcBootstrapper },
     { to: "/utilities",    id: "utilities",    Icon: IcGrid },
   ],
@@ -273,9 +272,6 @@ function IcAccounts() {
 }
 function IcHub() {
   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polygon points="8,1.5 10.2,6 15,6.5 11.5,10 12.5,15 8,12.5 3.5,15 4.5,10 1,6.5 5.8,6"/></svg>;
-}
-function IcRscript() {
-  return <img src="/rscript-icon.svg" alt="" width={14} height={14} style={{ filter: "var(--logo-filter)", display: "block" }} />;
 }
 function IcGrid() {
   return <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.5"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.5"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.5"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.5"/></svg>;

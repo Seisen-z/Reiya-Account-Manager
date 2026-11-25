@@ -1,26 +1,20 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const supabase = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-);
+import { installationId, json, supabase } from "../_shared/installation.ts";
 
 Deno.serve(async (req) => {
-  try {
-    const { hwid } = await req.json();
+  if (req.method !== "POST") return json({ success: false }, 405);
 
-    if (typeof hwid !== "string" || !hwid) {
-      return new Response(JSON.stringify({ success: false, message: "Invalid input" }), { status: 400 });
-    }
+  try {
+    const id = await installationId(req);
+    if (!id) return json({ success: false, message: "Installation sign-in required" }, 401);
 
     const { error } = await supabase
       .from("app_presence")
-      .upsert({ hwid, last_seen: new Date().toISOString() }, { onConflict: "hwid" });
+      .upsert({ hwid: `auth:${id}`, auth_user_id: id, last_seen: new Date().toISOString() },
+        { onConflict: "auth_user_id" });
 
-    if (error) throw error;
-
-    return new Response(JSON.stringify({ success: true }), { status: 200 });
-  } catch (e) {
-    return new Response(JSON.stringify({ success: false, message: String(e) }), { status: 500 });
+    if (error) return json({ success: false, message: "Could not record presence" }, 500);
+    return json({ success: true });
+  } catch {
+    return json({ success: false, message: "Could not record presence" }, 500);
   }
 });

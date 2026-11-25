@@ -9,6 +9,13 @@ on:
       version:
         description: 'Version (e.g. 1.0.1)'
         required: true
+      build_only:
+        description: 'Build and verify the installer without publishing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   build-and-release:
@@ -21,12 +28,15 @@ jobs:
 
       - name: Set version
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
-          else
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          VERSION="${REQUESTED_VERSION:-${GITHUB_REF_NAME#v}}"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
+            echo "Use a stable version like 1.2.1." >&2
+            exit 1
           fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Patch tauri.conf.json version
         shell: bash
@@ -98,20 +108,25 @@ jobs:
           DEST="ReiyaAccountManager-$VERSION-setup.exe"
           cp "$EXE" "$DEST"
           node scripts/sign-update.cjs "$DEST"
+          node scripts/verify-update.cjs "$DEST"
           sha256sum "$DEST" > SHA256SUMS.txt
 
-      - name: Publish release to Key-System (public repo)
+      - name: Publish signed Reiya release to Seisen Premium
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.build_only }}
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.KEY_SYSTEM_PAT }}
+          GH_TOKEN: ${{ secrets.SEISEN_PREMIUM_RELEASE_TOKEN }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "SEISEN_PREMIUM_RELEASE_TOKEN is required to publish to Seisen Premium." >&2
+            exit 1
+          fi
           DEST="ReiyaAccountManager-$VERSION-setup.exe"
+          TAG="reiya-v$VERSION"
 
-          gh release delete "v$VERSION" --repo Seisen-z/Key-System --yes 2>/dev/null || true
-          gh api --method DELETE /repos/Seisen-z/Key-System/git/refs/tags/v$VERSION 2>/dev/null || true
-
-          gh release create "v$VERSION" "$DEST" "$DEST.sig" SHA256SUMS.txt \
-            --repo Seisen-z/Key-System \
+          gh release create "$TAG" "$DEST" "$DEST.sig" SHA256SUMS.txt \
+            --repo Seisen-z/Seisen-Premium \
             --title "Reiya Account Manager v$VERSION" \
-            --notes "Version $VERSION — download and run the installer to update." \
-            --latest
+            --notes "Version $VERSION. Install this update from the Reiya tab on seisen.store." \
+            --draft --latest=false
+          gh release edit "$TAG" --repo Seisen-z/Seisen-Premium --draft=false --latest=false

@@ -1,3 +1,4 @@
+import { AccountLimitLink, isFreeAccountLimit } from "./AccountLimitLink";
 import { FC } from "react";
 import { useLanguage } from "../context/LanguageContext";
 import { AccountModal, ModalBtn, ModalActions, BulkAddResult } from "../pages/Accounts";
@@ -48,6 +49,7 @@ export const AccBulkCookieModal: FC<{
           ))}
         </div>
       )}
+      {bulkResults.some(result => isFreeAccountLimit(result.error)) && <AccountLimitLink />}
       <ModalActions>
         <ModalBtn label={bulkResults.length > 0 ? t("close_btn") : t("cancel")} onClick={onCancel} disabled={bulkAdding} />
         {bulkResults.length === 0 && (

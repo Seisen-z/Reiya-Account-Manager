@@ -2,13 +2,12 @@ import { useState, useEffect, lazy, Suspense } from "react";
 import { applyRestoredPreferences } from "./lib/cloudRestorePreferences";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, Routes, Route, useLocation } from "react-router-dom";
 import TitleBar     from "./components/TitleBar";
 import Sidebar      from "./components/Sidebar";
 import Home         from "./pages/Home";
 import Accounts     from "./pages/Accounts";
 const Hub = lazy(() => import("./pages/Hub"));
-const Rscripts = lazy(() => import("./pages/Rscripts"));
 const Utilities = lazy(() => import("./pages/Utilities"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Bootstrapper = lazy(() => import("./pages/Bootstrapper"));
@@ -31,7 +30,6 @@ const PAGE_LABELS: Record<string, string> = {
   "/":             "On Home",
   "/accounts":     "Managing Accounts",
   "/hub":          "Using Hub",
-  "/rscript":      "Browsing Rscripts",
   "/utilities":    "Using Utilities",
   "/bootstrapper": "Using Bootstrapper",
   "/theme":        "Customizing Themes",
@@ -65,18 +63,18 @@ function AppContent() {
       <div className="app-body">
         <Sidebar />
         <main className="main">
-          <Suspense fallback={null}>
+          <Suspense fallback={<p role="status" style={{ padding: 28, color: "var(--t2)" }}>Loading page…</p>}>
           <Routes>
             <Route path="/"             element={<Home />} />
             <Route path="/accounts"     element={<Accounts />} />
             <Route path="/hub"          element={<Hub />} />
-            <Route path="/rscript"      element={<Rscripts />} />
             <Route path="/utilities"    element={<Utilities />} />
             <Route path="/bootstrapper" element={<Bootstrapper />} />
             <Route path="/premium" element={<Premium />} />
             <Route path="/theme"        element={<ThemePage />} />
             <Route path="/settings"     element={<Settings />} />
             <Route path="/changelog"    element={<Changelog />} />
+            <Route path="*"             element={<Navigate to="/" replace />} />
           </Routes>
           </Suspense>
         </main>

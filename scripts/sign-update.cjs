@@ -1,7 +1,7 @@
 // Signs a release installer for the in-app updater.
 // Usage: UPDATE_SIGNING_KEY=<base64 ed25519 seed> node scripts/sign-update.cjs <installer.exe>
 // Writes <installer.exe>.sig. The app verifies it against the public key embedded in
-// src-tauri/src/lib.rs (UPDATE_PUBLIC_KEY) and refuses to run an installer that fails.
+// src-tauri/src/updater.rs (UPDATE_PUBLIC_KEY) and refuses to run an installer that fails.
 const crypto = require("crypto");
 const fs = require("fs");
 
