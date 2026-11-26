@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
-import { CATALOG } from "../data/catalog";
+import { CATALOG, placeIdForCatalogUniverse } from "../data/catalog";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
 import {
@@ -29,12 +29,16 @@ import { AccountDetailsDumpModal } from "../components/AccountDetailsDumpModal";
 import { SessionDetailsModal } from "../components/SessionDetailsModal";
 import { SavePasswordPromptModal } from "../components/SavePasswordPromptModal";
 import { HomeHeaderBar } from "../components/HomeHeaderBar";
-import { SelectedAccountHero } from "../components/SelectedAccountHero";
+import { LaunchBar } from "../components/LaunchBar";
 import { PinnedGamesSection } from "../components/PinnedGamesSection";
 import { useSavedGames } from "../context/SavedGamesContext";
 import { RecentGamesSection } from "../components/RecentGamesSection";
 import SessionBento from "../components/ui/index";
 import Tooltip from "../components/ui/Tooltip";
+import { useConfirm } from "../components/ConfirmDialog";
+import { GameIcon } from "../components/GameIcon";
+import { GameSearchBox, type GameSearchResult } from "../components/GameSearchBox";
+import { useBootstrapper as useBootstrapperContext } from "../context/BootstrapperContext";
 
 /* â"€â"€ Types â"€â"€ */
 export interface Account {
@@ -145,7 +149,14 @@ export default function Home() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useLanguage();
-  const [accounts,       setAccounts]       = useState<Account[]>(() => homeCache.accounts);
+  const confirmDialog = useConfirm();
+  const { status: bootstrapperStatus } = useBootstrapperContext();
+  // Real multi-instance state for the "System status" card (null = not loaded yet)
+  const [multiInstance, setMultiInstance] = useState<boolean | null>(null);
+  useEffect(() => {
+    invoke<boolean>("get_multi_instance").then(setMultiInstance).catch(() => setMultiInstance(null));
+  }, []);
+  const [accounts,       setAccounts]     = useState<Account[]>(() => homeCache.accounts);
   const [sessions,       setSessions]       = useState<Session[]>(() => homeCache.sessions);
   const [events,         setEvents]         = useState<EventEntry[]>(() => homeCache.events);
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>(() => homeCache.sessionHistory);
@@ -340,7 +351,7 @@ export default function Home() {
   // Feature 9: Pinned games — backed by the shared SavedGamesContext so Home
   // and the Utilities page always agree on what's pinned (they used to keep
   // separate, unsynced localStorage lists).
-  const { savedGames, toggleSaved } = useSavedGames();
+  const { savedGames, toggleSaved, moveSaved } = useSavedGames();
   const pinnedGames = useMemo(() => savedGames.map(g => g.placeId), [savedGames]);
   const togglePinGame = useCallback((g: RecentGame) => {
     toggleSaved({ placeId: g.placeId, name: g.name, creator: g.creator, iconUrl: g.iconUrl, privateServer: g.privateServer });
@@ -358,6 +369,23 @@ export default function Home() {
 
   // Feature 6: Game search state
   const [gameSearch, setGameSearch] = useState("");
+
+  // Main area tab: "games" (default) or "activity" (stats, history, event log)
+  const [homeTab, setHomeTab] = useState<"games" | "activity">(() => {
+    try { return localStorage.getItem("reiya_home_tab") === "activity" ? "activity" : "games"; } catch { return "games"; }
+  });
+  // Quick tips card (first-time users)
+  const [tipsDone, setTipsDone] = useState<boolean>(() => {
+    try { return localStorage.getItem("reiya_home_tips_done") === "true"; } catch { return true; }
+  });
+  const dismissTips = () => {
+    setTipsDone(true);
+    try { localStorage.setItem("reiya_home_tips_done", "true"); } catch { /* ignore */ }
+  };
+  const switchTab = (tab: "games" | "activity") => {
+    setHomeTab(tab);
+    try { localStorage.setItem("reiya_home_tab", tab); } catch { /* ignore */ }
+  };
 
   // Feature 4: Checking state for re-validate button
   const [reValidating, setReValidating] = useState(false);
@@ -406,7 +434,9 @@ export default function Home() {
       const restoredAcc = lastAccId && accs.find(a => a.user_id === lastAccId) ? lastAccId : accs[0]?.user_id ?? null;
       if (restoredAcc !== null) setSelAccount(restoredAcc);
       // Restore last selected game
-      const lastPlace = localStorage.getItem("reiya_last_place_id");
+      let lastPlace = localStorage.getItem("reiya_last_place_id");
+      const fixedPlace = lastPlace ? placeIdForCatalogUniverse(lastPlace) : null; // old Hub saved a universe ID
+      if (fixedPlace) { lastPlace = fixedPlace; localStorage.setItem("reiya_last_place_id", fixedPlace); }
       if (lastPlace) setLaunchPlaceId(lastPlace);
     }
     load();
@@ -481,12 +511,14 @@ export default function Home() {
     };
   }, []);
 
-  // Fetch static catalog thumbnails using place IDs
+  // Fetch catalog game icons. The backend looks them up by universe ID,
+  // so convert the result back to place IDs (which is how thumbs are keyed).
   useEffect(() => {
-    const placeIds = CATALOG.map(g => g.placeId);
-    invoke<Record<string, string>>("fetch_thumbnails", { placeIds })
-      .then(map => {
-        setThumbs(prev => ({ ...prev, ...map }));
+    invoke<Record<string, string>>("fetch_thumbnails", { placeIds: CATALOG.map(g => g.universeId) })
+      .then(byUniverse => {
+        const byPlace: Record<string, string> = {};
+        for (const g of CATALOG) if (byUniverse[g.universeId]) byPlace[g.placeId] = byUniverse[g.universeId];
+        setThumbs(prev => ({ ...byPlace, ...prev }));
       })
       .catch(() => {});
   }, []);
@@ -565,12 +597,26 @@ export default function Home() {
   useEffect(() => {
     if (accounts.length === 0 || healthCheckedRef.current) return;
     healthCheckedRef.current = true;
-    for (const acc of accounts) {
-      setHealthStatus(prev => ({ ...prev, [acc.user_id]: "checking" }));
-      invoke<string>("check_account_health", { userId: acc.user_id })
-        .then(status => setHealthStatus(prev => ({ ...prev, [acc.user_id]: status.toLowerCase() as "valid" | "invalid" })))
-        .catch(() => setHealthStatus(prev => ({ ...prev, [acc.user_id]: "unknown" })));
-    }
+    const queue = [...accounts];
+    setHealthStatus(prev => {
+      const next = { ...prev };
+      for (const acc of queue) next[acc.user_id] = "checking";
+      return next;
+    });
+    const MAX_PARALLEL = 3;
+    const worker = async () => {
+      for (let acc = queue.shift(); acc; acc = queue.shift()) {
+        const userId = acc.user_id;
+        try {
+          const status = await invoke<string>("check_account_health", { userId });
+          setHealthStatus(prev => ({ ...prev, [userId]: status.toLowerCase() as "valid" | "invalid" }));
+        } catch {
+          setHealthStatus(prev => ({ ...prev, [userId]: "unknown" }));
+        }
+      }
+    };
+    const workers = Math.min(MAX_PARALLEL, queue.length); // compute first: each worker shifts from the queue immediately
+    for (let i = 0; i < workers; i++) void worker();
   }, [accounts.length]);
 
   // Pre-fill accessCode when launchPlaceId changes
@@ -598,6 +644,11 @@ export default function Home() {
     sessions.map(session => session.user_id).filter((id): id is number => id !== null),
   ), [sessions]);
   useObservedLaunchSessions(activeUserIds, launchFeedback);
+  const activeGames = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const s of sessions) if (s.user_id !== null && s.game_name) map.set(s.user_id, s.game_name);
+    return map;
+  }, [sessions]);
 
   // Weekly stats from session history (last 7 days)
   const weekStats = useMemo(() => {
@@ -653,7 +704,7 @@ export default function Home() {
       .slice(0, 6)
       .map(g => {
         const rg = recentGames.find(x => x.placeId === g.placeId);
-        const thumbnailUrl = rg?.iconUrl || thumbs[g.placeId];
+        const thumbnailUrl = thumbs[g.placeId] || rg?.iconUrl; // fresh first; saved links can go stale
         return { ...g, thumbnailUrl };
       });
   }, [sessionHistory, recentGames, thumbs]);
@@ -685,8 +736,11 @@ export default function Home() {
       const matchGroup = accGroup === null || (acc.group?.trim() || "") === accGroup;
       return matchSearch && matchFilter && matchGroup;
     });
-    // Always flat — tabs communicate the group, dividers add no value
-    return [["", filtered]] as [string, Account[]][];
+    // Pinned accounts first (stable), matching the sidebar's "Pinned" section so arrow keys follow screen order
+    const ordered = accFilter === "all"
+      ? [...filtered.filter(a => a.is_favorite), ...filtered.filter(a => !a.is_favorite)]
+      : filtered;
+    return [["", ordered]] as [string, Account[]][];
   }, [accounts, accSearch, accFilter, accGroup]);
 
   // Feature 5: Keep selAccountRef up to date
@@ -803,19 +857,22 @@ export default function Home() {
   const handleSavePasswordSubmit = async () => {
     if (!savePasswordPrompt) return;
     if (savePasswordInput.trim()) {
-      await invoke("save_account_password", { userId: savePasswordPrompt.userId, password: savePasswordInput.trim() }).catch(() => {});
-      setAccounts(prev => prev.map(a => a.user_id === savePasswordPrompt.userId ? { ...a, has_password: true } : a));
-      showToast("Password saved.", "success");
+      try {
+        await invoke("save_account_password", { userId: savePasswordPrompt.userId, password: savePasswordInput.trim() });
+        setAccounts(prev => prev.map(a => a.user_id === savePasswordPrompt.userId ? { ...a, has_password: true } : a));
+        showToast("Password saved.", "success");
+      } catch (err) {
+        showToast("Failed to save password: " + err, "error");
+        return; // keep the prompt open so the user can retry
+      }
     }
     setSavePasswordPrompt(null);
   };
 
+  // Enter key in the prompt: same as clicking Save, but ignore an empty field
   const handleSavePasswordEnter = async () => {
     if (!savePasswordPrompt || !savePasswordInput.trim()) return;
-    await invoke("save_account_password", { userId: savePasswordPrompt.userId, password: savePasswordInput.trim() }).catch(() => {});
-    setAccounts(prev => prev.map(a => a.user_id === savePasswordPrompt.userId ? { ...a, password: savePasswordInput.trim() } : a));
-    setSavePasswordPrompt(null);
-    showToast("Password saved.", "success");
+    await handleSavePasswordSubmit();
   };
   const effectivePlaceId      = launchPlaceId.trim() || null;
   const effectiveGameName     = launchGame?.name ?? (launchPlaceId.trim() ? `Place ${launchPlaceId.trim()}` : null);
@@ -850,7 +907,11 @@ export default function Home() {
     try {
       const clip = await readText();
       if (clip && clip.includes(".ROBLOSECURITY")) {
-        if (confirm("A Roblox cookie was detected in your clipboard. Import it?")) {
+        if (await confirmDialog({
+          title: "Import the cookie from your clipboard?",
+          message: "A Roblox login cookie was found on your clipboard. Import it as a new account?",
+          confirmLabel: "Import",
+        })) {
           setAdding(true);
           setAddError("");
           try {
@@ -1010,7 +1071,8 @@ export default function Home() {
           if (pw) await invoke("save_account_password", { userId: acc.user_id, password: pw }).catch(() => {});
           setAccounts(prev => {
             const idx = prev.findIndex(a => a.user_id === acc.user_id);
-            const updated = { ...acc, password: pw };
+            // Never keep the plain password in UI state — only remember that one is saved
+            const updated = { ...acc, has_password: acc.has_password || !!pw };
             return idx >= 0 ? prev.map((a, i) => i === idx ? updated : a) : [...prev, updated];
           });
           succeededAccounts.push(acc.username);
@@ -1062,6 +1124,43 @@ export default function Home() {
     return () => document.removeEventListener("reiya-launch-shortcut", handler);
   });
 
+  // A game picked from name search: select it, show its artwork right away, and save it to recent games
+  const handlePickSearchedGame = async (g: GameSearchResult) => {
+    const placeId = String(g.place_id);
+    setLaunchPlaceId(placeId);
+    localStorage.setItem("reiya_last_place_id", placeId);
+    setGameSearch("");
+    setLaunchError("");
+    setAccessCode("");
+    if (g.icon_url) setThumbs(prev => ({ ...prev, [placeId]: g.icon_url }));
+    // Show the name immediately, before the backend has saved it
+    setRecentGames(prev => prev.some(r => r.placeId === placeId)
+      ? prev
+      : [{ placeId, name: g.name, creator: g.creator_name, iconUrl: g.icon_url }, ...prev]);
+    showToast(`Selected ${g.name}`, "success");
+    try {
+      await invoke("add_recent_game", { placeId });
+      const recents = await invoke<RecentGame[]>("get_recent_games");
+      if (recents.some(r => r.placeId === placeId)) setRecentGames(recents);
+    } catch { /* keep the optimistic entry */ }
+  };
+
+  // After a launch, give Roblox a few seconds to start, then reload sessions, events, history and recent games.
+  const refreshActivitySoon = () => {
+    setTimeout(async () => {
+      const [sess, evts, hist, recents] = await Promise.all([
+        invoke<Session[]>("get_live_sessions").catch(() => [] as Session[]),
+        invoke<EventEntry[]>("get_event_log").catch(() => [] as EventEntry[]),
+        invoke<SessionRecord[]>("get_session_history").catch(() => [] as SessionRecord[]),
+        invoke<RecentGame[]>("get_recent_games").catch(() => [] as RecentGame[]),
+      ]);
+      setSessions(sess);
+      setEvents(evts);
+      setSessionHistory(hist);
+      setRecentGames(recents);
+    }, 3000);
+  };
+
   const handleLaunch = async () => {
     if (selAccount === null || launchingAccounts.has(selAccount)) return;
     const account = accounts.find(a => a.user_id === selAccount);
@@ -1088,18 +1187,7 @@ export default function Home() {
       }
       // Feature 8: Push launch history
       pushLaunchHistory(selAccount, account.username, effectivePlaceId || "", effectiveGameName || "");
-      setTimeout(async () => {
-        const [sess, evts, hist, recents] = await Promise.all([
-          invoke<Session[]>("get_live_sessions").catch(() => []),
-          invoke<EventEntry[]>("get_event_log").catch(() => []),
-          invoke<SessionRecord[]>("get_session_history").catch(() => []),
-          invoke<RecentGame[]>("get_recent_games").catch(() => []),
-        ]);
-        setSessions(sess);
-        setEvents(evts);
-        setSessionHistory(hist);
-        setRecentGames(recents);
-      }, 3000);
+      refreshActivitySoon();
     } catch (e) {
       setLaunchError(String(e));
     }
@@ -1138,18 +1226,7 @@ export default function Home() {
       for (const account of targets) next.delete(account.user_id);
       return next;
     });
-    setTimeout(async () => {
-      const [sess, evts, hist, recents] = await Promise.all([
-        invoke<Session[]>("get_live_sessions").catch(() => []),
-        invoke<EventEntry[]>("get_event_log").catch(() => []),
-        invoke<SessionRecord[]>("get_session_history").catch(() => []),
-        invoke<RecentGame[]>("get_recent_games").catch(() => []),
-      ]);
-      setSessions(sess);
-      setEvents(evts);
-      setSessionHistory(hist);
-      setRecentGames(recents);
-    }, 3000);
+    refreshActivitySoon();
     setBulkLaunching(false);
   };
 
@@ -1174,18 +1251,7 @@ export default function Home() {
         useBootstrapper,
         appMode:        true,
       });
-      setTimeout(async () => {
-        const [sess, evts, hist, recents] = await Promise.all([
-          invoke<Session[]>("get_live_sessions").catch(() => []),
-          invoke<EventEntry[]>("get_event_log").catch(() => []),
-          invoke<SessionRecord[]>("get_session_history").catch(() => []),
-          invoke<RecentGame[]>("get_recent_games").catch(() => []),
-        ]);
-        setSessions(sess);
-        setEvents(evts);
-        setSessionHistory(hist);
-        setRecentGames(recents);
-      }, 3000);
+      refreshActivitySoon();
     } catch (e) {
       setLaunchError(String(e));
     }
@@ -1198,7 +1264,12 @@ export default function Home() {
   };
 
   const handleKillAll = async () => {
-    if (!confirm("Kill all Roblox sessions?")) return;
+    if (!(await confirmDialog({
+      title: `Close all ${sessions.length} running Roblox ${sessions.length === 1 ? "window" : "windows"}?`,
+      message: "Every account that's playing right now will be disconnected.",
+      confirmLabel: "Kill all",
+      danger: true,
+    }))) return;
     await invoke("kill_all_sessions").catch(() => {});
     setSessions([]);
   };
@@ -1274,13 +1345,14 @@ export default function Home() {
       cookieCheckError={cookieCheckError}
       onBulkCookieCheck={handleBulkCookieCheck}
       onUtilities={() => navigate("/utilities")}
+      onShowActivity={() => switchTab("activity")}
     />
 
-    {/* ── 3-COLUMN BODY ── */}
+    {/* ── BODY: accounts (left) + main tabs (right) ── */}
     <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
     {/* LEFT: Accounts panel */}
-    <div style={{ width: 216, borderRight: "1px solid var(--glass-line)", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--panel-bg)", flexShrink: 0 }}>
+    <div style={{ width: 250, borderRight: "1px solid var(--glass-line)", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--panel-bg)", flexShrink: 0 }}>
       <AccountSidebar
         accounts={accounts}
         loading={initialLoading}
@@ -1293,6 +1365,9 @@ export default function Home() {
         setAccFilter={setAccFilter}
         groupedAccounts={groupedAccounts}
         activeUserIds={activeUserIds}
+        activeGames={activeGames}
+        onClearChecked={() => setMultiSelected(new Set())}
+        onCheckAll={ids => setMultiSelected(new Set(ids))}
         launchFeedback={launchFeedback}
         onRetryLaunch={id => void retryLaunch(id)}
         selAccount={selAccount}
@@ -1334,11 +1409,233 @@ export default function Home() {
       />
     </div>
 
-    {/* CENTER: Launch console + scrollable content */}
+    {/* MAIN: tabs (Games / Activity & stats) */}
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
-      {/* Launch Console */}
-      <SelectedAccountHero
+      {/* Tab bar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "12px 22px 0", borderBottom: "1px solid var(--glass-line-2)", flexShrink: 0 }}>
+        {([
+          { id: "games" as const, label: t("home_tab_games") },
+          { id: "activity" as const, label: t("home_activity_stats") },
+        ]).map(tab => {
+          const active = homeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => switchTab(tab.id)}
+              style={{
+                padding: "8px 14px 10px", border: "none", background: "transparent", cursor: "pointer",
+                fontSize: 12.5, fontWeight: 800, color: active ? "var(--t1)" : "var(--t3)",
+                borderBottom: `2px solid ${active ? "var(--t1)" : "transparent"}`, marginBottom: -1,
+                transition: "color .15s, border-color .15s",
+              }}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+        <div style={{ flex: 1 }} />
+        {homeTab === "games" && (
+          <div style={{ marginBottom: 8 }}>
+            <GameSearchBox
+              value={gameSearch}
+              onChange={setGameSearch}
+              placeholder={t("home_place_search_placeholder")}
+              onPlaceId={id => {
+                setLaunchPlaceId(id);
+                localStorage.setItem("reiya_last_place_id", id);
+                setGameSearch("");
+                setLaunchError("");
+                showToast(`Game set to Place ID: ${id}`, "success");
+              }}
+              onPickGame={handlePickSearchedGame}
+              onInvalid={() => showToast("Type at least 2 letters to search, or paste a Place ID / game link", "info")}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="scroll" style={{ flex: 1, padding: "18px 22px 24px", display: "flex", flexDirection: "column", gap: 0 }}>
+
+      {/* Welcome card for brand-new users */}
+      {!initialLoading && accounts.length === 0 && (
+        <div style={{ marginBottom: 22, padding: "26px 28px", borderRadius: 18, background: "linear-gradient(135deg, var(--g04) 0%, var(--g01) 100%)", border: "1px solid var(--g06)", display: "flex", alignItems: "center", gap: 20, flexShrink: 0 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 18, fontWeight: 900, color: "var(--t1)", letterSpacing: "-0.3px" }}>{t("home_welcome_title")}</div>
+            <div style={{ fontSize: 12.5, color: "var(--t2)", marginTop: 8, lineHeight: 1.6 }}>{t("home_welcome_body")}</div>
+          </div>
+          <button
+            onClick={e => { e.stopPropagation(); setAddMenu(true); }}
+            className="btn glow-btn halloween-primary"
+            style={{ flexShrink: 0, padding: "11px 20px", borderRadius: 10, fontSize: 12.5, fontWeight: 900, background: "#FFFFFF", color: "#07080a", border: "none", cursor: "pointer" }}
+          >
+            + {t("home_welcome_cta")}
+          </button>
+        </div>
+      )}
+
+      {homeTab === "games" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
+          {/* Quick tips — shown once for new users, until dismissed */}
+          {accounts.length > 0 && !tipsDone && (
+            <div style={{ padding: "16px 18px", borderRadius: 16, background: "linear-gradient(135deg, rgba(167,139,250,0.12) 0%, var(--g01) 100%)", border: "1px solid rgba(167,139,250,0.25)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <span style={{ fontSize: 13, fontWeight: 900, color: "var(--t1)" }}>{t("tips_title")}</span>
+                <div style={{ flex: 1 }} />
+                <button
+                  onClick={dismissTips}
+                  className="btn btn-ghost"
+                  style={{ padding: "5px 12px", borderRadius: 8, fontSize: 11, fontWeight: 800 }}
+                >
+                  {t("tips_done")}
+                </button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+                {[
+                  { n: 1, title: t("tips_1_title"), body: t("tips_1_body") },
+                  { n: 2, title: t("tips_2_title"), body: t("tips_2_body") },
+                  { n: 3, title: t("tips_3_title"), body: t("tips_3_body") },
+                ].map(step => (
+                  <div key={step.n} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <span style={{ width: 22, height: 22, borderRadius: "50%", background: "#A78BFA", color: "#07080a", fontSize: 11, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{step.n}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "var(--t1)" }}>{step.title}</div>
+                      <div style={{ fontSize: 11, color: "var(--t2)", marginTop: 3, lineHeight: 1.5 }}>{step.body}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Jump back in: last launches, one click to repeat */}
+          {launchHistory.length > 0 && (
+            <div>
+              <div className="section-title" style={{ marginBottom: 10 }}>{t("home_launch_again")}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+                {launchHistory.map((h, i) => {
+                  const acc = accounts.find(a => a.user_id === h.userId);
+                  const savedIcon = h.placeId ? recentGames.find(g => g.placeId === h.placeId)?.iconUrl : undefined;
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        if (acc) {
+                          setSelAccount(h.userId);
+                          localStorage.setItem("reiya_last_account", String(h.userId));
+                        }
+                        if (h.placeId) {
+                          setLaunchPlaceId(h.placeId);
+                          localStorage.setItem("reiya_last_place_id", h.placeId);
+                        }
+                        setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 50);
+                      }}
+                      title={`Launch @${h.username} into ${h.gameName || h.placeId || "the Roblox app"}`}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer",
+                        background: "var(--g02)", border: "1px solid var(--g05)", textAlign: "left", minWidth: 0,
+                        transition: "background .15s, border-color .15s",
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = "var(--g04)"; e.currentTarget.style.borderColor = "var(--g10)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "var(--g02)"; e.currentTarget.style.borderColor = "var(--g05)"; }}
+                    >
+                      <div style={{ position: "relative", width: 42, height: 42, flexShrink: 0 }}>
+                        <div style={{ width: 42, height: 42, borderRadius: 9, overflow: "hidden", background: "var(--g04)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {h.placeId
+                            ? <GameIcon placeId={h.placeId} urls={[thumbs[h.placeId], savedIcon]} />
+                            : <GamepadIcon size={18} color="var(--t3)" />}
+                        </div>
+                        {acc?.avatar_url && (
+                          <img src={acc.avatar_url} alt="" style={{ position: "absolute", right: -5, bottom: -5, width: 20, height: 20, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--bg)" }} />
+                        )}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.gameName || h.placeId || "Roblox App"}</div>
+                        <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>@{h.username}</div>
+                      </div>
+                      <span style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--g08)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <PlayIcon size={10} color="var(--t1)" />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <PinnedGamesSection
+            pinnedGames={savedGames}
+            launchPlaceId={launchPlaceId}
+            thumbs={thumbs}
+            onReorder={moveSaved}
+            onTogglePin={togglePinGame}
+            onSelectGame={handleSelectRecentGame}
+            onGameContextMenu={handleGameContextMenu}
+            onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
+            onQuickLaunch={(placeId) => {
+              handleSelectRecentGame(placeId);
+              setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
+            }}
+          />
+
+          <RecentGamesSection
+            recentGames={recentGames}
+            launchPlaceId={launchPlaceId}
+            thumbs={thumbs}
+            pinnedGames={pinnedGames}
+            onTogglePin={togglePinGame}
+            onSelectGame={handleSelectRecentGame}
+            onGameContextMenu={handleGameContextMenu}
+            onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
+            onQuickLaunch={(placeId) => {
+              handleSelectRecentGame(placeId);
+              setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
+            }}
+            gameSearch={gameSearch}
+            setGameSearch={setGameSearch}
+            onSetPlaceIdFromSearch={(id) => {
+              setLaunchPlaceId(id);
+              localStorage.setItem("reiya_last_place_id", id);
+              setGameSearch("");
+              showToast(`Game set to Place ID: ${id}`, "success");
+            }}
+            hideSearch
+          />
+
+          {recentGames.length === 0 && savedGames.length === 0 && (
+            <div style={{ padding: "40px 20px", borderRadius: 16, border: "1px dashed var(--g08)", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+              <GamepadIcon size={28} color="var(--t3)" />
+              <div style={{ fontSize: 12, color: "var(--t2)", maxWidth: 360, lineHeight: 1.6 }}>{t("home_games_empty")}</div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <SessionBento
+            weekStats={weekStats}
+            graphData={graphData}
+            topGames={topGames}
+            status={{
+              multiInstance,
+              bootstrapper: {
+                enabled: useBootstrapper,
+                installed: bootstrapperStatus ? !!bootstrapperStatus.exe_path : null,
+                version: bootstrapperStatus?.installed_version ?? null,
+              },
+              logins: { ready: validCookies, total: accounts.length },
+            }}
+          />
+          <ActivityPanel recentActivity={recentActivity} events={events} inline />
+        </div>
+      )}
+
+      </div>{/* end main scroll */}
+    </div>{/* end main column */}
+    </div>{/* end 2-col body */}
+
+    {/* BOTTOM: docked launch bar */}
+    {accounts.length > 0 && (
+      <LaunchBar
         launchThumb={launchThumb}
         launchGame={launchGame}
         launchPlaceId={launchPlaceId}
@@ -1354,9 +1651,7 @@ export default function Home() {
         jobId={jobId}
         setJobId={setJobId}
         onAccessCodeChange={handleAccessCodeChange}
-        launchHistory={launchHistory}
         accounts={accounts}
-        setSelAccount={setSelAccount}
         selectedAccountIsActive={selectedAccountIsActive}
         reValidating={reValidating}
         onReValidate={(userId) => { setReValidating(true); handleCheckCookie(userId).finally(() => setReValidating(false)); }}
@@ -1368,60 +1663,7 @@ export default function Home() {
         onLaunchApp={handleLaunchApp}
         onLaunch={handleLaunch}
       />
-
-      {/* Scrollable: Recently Played + Session Chart */}
-      <div className="scroll" style={{ flex: 1, padding: 18, display: "flex", flexDirection: "column", gap: 0 }}>
-
-      {/* Side-by-Side: Pinned Games (Left) & Recently Played (Right) — 18 items per page */}
-      <div style={{ display: "grid", gridTemplateColumns: savedGames.length > 0 ? "1fr 1fr" : "1fr", gap: 16 }}>
-        <PinnedGamesSection
-          pinnedGames={savedGames}
-          launchPlaceId={launchPlaceId}
-          thumbs={thumbs}
-          onTogglePin={togglePinGame}
-          onSelectGame={handleSelectRecentGame}
-          onGameContextMenu={handleGameContextMenu}
-          onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
-          onQuickLaunch={(placeId) => {
-            handleSelectRecentGame(placeId);
-            setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
-          }}
-        />
-
-        <RecentGamesSection
-          recentGames={recentGames}
-          launchPlaceId={launchPlaceId}
-          thumbs={thumbs}
-          pinnedGames={pinnedGames}
-          onTogglePin={togglePinGame}
-          onSelectGame={handleSelectRecentGame}
-          onGameContextMenu={handleGameContextMenu}
-          onDeleteGame={(placeId, name) => setDeleteConfirmModal({ placeId, name })}
-          onQuickLaunch={(placeId) => {
-            handleSelectRecentGame(placeId);
-            setTimeout(() => document.dispatchEvent(new CustomEvent("reiya-launch-shortcut")), 80);
-          }}
-          gameSearch={gameSearch}
-          setGameSearch={setGameSearch}
-          onSetPlaceIdFromSearch={(id) => {
-            setLaunchPlaceId(id);
-            localStorage.setItem("reiya_last_place_id", id);
-            setGameSearch("");
-            showToast(`Game set to Place ID: ${id}`, "success");
-          }}
-        />
-      </div>
-
-      {/* Bento Grid: Session Activity & Top Games */}
-      <SessionBento weekStats={weekStats} graphData={graphData} topGames={topGames} />
-
-      </div>{/* end center scroll */}
-    </div>{/* end center column */}
-
-    {/* RIGHT: History + Events */}
-    <ActivityPanel recentActivity={recentActivity} events={events} />
-    {/* end right panel */}
-    </div>{/* end 3-col body */}
+    )}
 
       <PlayStatsModal
         open={showPlayStats}
@@ -1598,7 +1840,12 @@ export default function Home() {
             onClick={async () => {
               const acc = accountMenu.account;
               setAccountMenu(null);
-              if (confirm(`${t("remove_account_confirm")}${acc.username}?`)) {
+              if (await confirmDialog({
+                title: `${t("remove_account_confirm")}${acc.username}?`,
+                message: "The account's saved login and settings will be deleted from this app. Your Roblox account itself isn't affected.",
+                confirmLabel: t("remove_account_menu"),
+                danger: true,
+              })) {
                 try {
                   await invoke("remove_account", { userId: acc.user_id });
                   forgetAccountLaunch(acc.user_id);
@@ -1622,7 +1869,12 @@ export default function Home() {
         onClose={() => setConfigSidebarAccount(null)}
         onRefresh={refreshAccounts}
         onRemoveAccount={async (userId, username) => {
-          if (confirm(`${t("remove_account_confirm")}${username}?`)) {
+          if (await confirmDialog({
+            title: `${t("remove_account_confirm")}${username}?`,
+            message: "The account's saved login and settings will be deleted from this app. Your Roblox account itself isn't affected.",
+            confirmLabel: t("remove_account_menu"),
+            danger: true,
+          })) {
             try {
               await invoke("remove_account", { userId });
               forgetAccountLaunch(userId);
@@ -1668,7 +1920,7 @@ export default function Home() {
 
 /* â•â• Sub-components â•â• */
 
-/* ── GameCard: recent game card with hover quick-launch ── */
+/* ── GameCard: game tile (artwork + name) with hover quick-launch ── */
 export function GameCard({ g, isSelected, hasPrivateServer, thumb, onSelect, onContextMenu, onDelete, onQuickLaunch, isPinned, onTogglePin }: {
   g: RecentGame; isSelected: boolean; hasPrivateServer: boolean; thumb?: string;
   onSelect: () => void; onContextMenu: (e: React.MouseEvent) => void;
@@ -1676,66 +1928,94 @@ export function GameCard({ g, isSelected, hasPrivateServer, thumb, onSelect, onC
   isPinned?: boolean; onTogglePin?: () => void;
 }) {
   const [hov, setHov] = useState(false);
+  const badge: React.CSSProperties = {
+    position: "absolute", width: 22, height: 22, borderRadius: "50%",
+    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10, cursor: "pointer",
+    backdropFilter: "blur(6px)",
+  };
   return (
-    <Tooltip content={`${g.name} · Double-click to launch`} position="top" style={{ width: "100%", display: "block" }}>
+    <div
+      onClick={onSelect}
+      onContextMenu={onContextMenu}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      onDoubleClick={onQuickLaunch}
+      title={`${g.name}\nClick to choose · Double-click to launch · Right-click for private server`}
+      style={{ cursor: "pointer", minWidth: 0, userSelect: "none" }}
+    >
       <div
-        onClick={onSelect}
-        onContextMenu={onContextMenu}
-        onMouseEnter={() => setHov(true)}
-        onMouseLeave={() => setHov(false)}
-        onDoubleClick={onQuickLaunch}
-        style={{ position: "relative", height: 70, borderRadius: 9, overflow: "hidden", cursor: "pointer", border: `1.5px solid ${isSelected ? "#FFFFFF" : hov ? "rgba(255,255,255,0.14)" : "var(--g05)"}`, boxShadow: isSelected ? "0 4px 14px var(--g10)" : "none", transition: "all .15s", transform: isSelected ? "translateY(-2px)" : "none" }}
+        style={{
+          position: "relative", aspectRatio: "1 / 1", borderRadius: 14, overflow: "hidden",
+          border: `2px solid ${isSelected ? "#FFFFFF" : hov ? "var(--g12)" : "var(--g05)"}`,
+          boxShadow: isSelected ? "0 6px 20px var(--g10)" : hov ? "0 6px 18px rgba(0,0,0,0.35)" : "none",
+          transform: hov || isSelected ? "translateY(-2px)" : "none",
+          transition: "all .15s ease",
+          background: "var(--surface-3)",
+        }}
       >
-        {g.iconUrl || thumb ? (
-          <img src={g.iconUrl || thumb} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : (
-          <div style={{ width: "100%", height: "100%", background: "var(--surface-3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <GamepadIcon size={18} color="var(--g20)" />
+        {/* Fresh thumbnail first; the saved icon link can be stale */}
+        <GameIcon placeId={g.placeId} urls={[thumb, g.iconUrl]} placeholderSize={26} />
+
+        {/* Selected marker */}
+        {isSelected && (
+          <div style={{ position: "absolute", left: 8, bottom: 8, zIndex: 4, padding: "2px 8px", borderRadius: 99, background: "#FFFFFF", color: "#07080a", fontSize: 9.5, fontWeight: 900 }}>
+            ✓ Selected
           </div>
         )}
-        {/* Delete button — zIndex:10 so it stays above hover overlay */}
-        <Tooltip content="Delete game from history" position="top">
-          <div onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            style={{ position: "absolute", top: 4, left: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g10)", zIndex: 10, cursor: "pointer" }}>
-            <XIcon size={8} color="var(--red)" />
-          </div>
-        </Tooltip>
-        {hasPrivateServer && (
-          <Tooltip content="Private server configured" position="top">
-            <div style={{ position: "absolute", top: 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--g12)", zIndex: 10, cursor: "pointer" }}>
-              <LockIcon size={8} color="#FFFFFF" />
-            </div>
-          </Tooltip>
-        )}
-        {/* Pin button — zIndex:10 so it stays above hover overlay (zIndex:3) */}
-        {onTogglePin && (
-          <Tooltip content={isPinned ? "Unpin game" : "Pin game"} position="top">
-            <div onClick={e => { e.stopPropagation(); onTogglePin(); }}
-              style={{ position: "absolute", top: hasPrivateServer ? 24 : 4, right: 4, width: 16, height: 16, borderRadius: "50%", background: isPinned ? "rgba(251,191,36,0.9)" : "rgba(0,0,0,0.55)", display: hov || isPinned ? "flex" : "none", alignItems: "center", justifyContent: "center", border: `1px solid ${isPinned ? "rgba(251,191,36,0.6)" : "var(--g12)"}`, zIndex: 10, cursor: "pointer" }}>
-              <PinIcon size={8} color={isPinned ? "#000" : "#fff"} />
-            </div>
-          </Tooltip>
-        )}
-        {/* Quick-launch overlay on hover */}
+
+        {/* Remove from history — only on hover to keep cards clean */}
         {hov && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3, transition: "opacity .12s" }}>
-            <Tooltip content="Quick launch game" position="top">
+          <Tooltip content="Remove from history" position="top" style={{ position: "absolute", top: 6, left: 6, zIndex: 10 }}>
+            <div onClick={e => { e.stopPropagation(); onDelete(); }}
+              style={{ ...badge, position: "static", background: "rgba(0,0,0,0.7)", border: "1px solid var(--g10)" }}>
+              <XIcon size={10} color="var(--red)" />
+            </div>
+          </Tooltip>
+        )}
+
+        {/* Private server marker */}
+        {hasPrivateServer && (
+          <Tooltip content="Private server set (right-click to change)" position="top" style={{ position: "absolute", top: 6, right: 6, zIndex: 10 }}>
+            <div style={{ ...badge, position: "static", background: "rgba(0,0,0,0.8)", border: "1px solid var(--g12)" }}>
+              <LockIcon size={10} color="#FFFFFF" />
+            </div>
+          </Tooltip>
+        )}
+
+        {/* Pin toggle */}
+        {onTogglePin && (hov || isPinned) && (
+          <Tooltip content={isPinned ? "Unpin game" : "Pin game"} position="top" style={{ position: "absolute", top: hasPrivateServer ? 32 : 6, right: 6, zIndex: 10 }}>
+            <div onClick={e => { e.stopPropagation(); onTogglePin(); }}
+              style={{ ...badge, position: "static", background: isPinned ? "rgba(251,191,36,0.95)" : "rgba(0,0,0,0.6)", border: `1px solid ${isPinned ? "rgba(251,191,36,0.6)" : "var(--g12)"}` }}>
+              <PinIcon size={10} color={isPinned ? "#000" : "#fff"} />
+            </div>
+          </Tooltip>
+        )}
+
+        {/* Quick-launch button on hover */}
+        {hov && (
+          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3 }}>
+            <Tooltip content="Launch now" position="top">
               <div
                 onClick={e => { e.stopPropagation(); onQuickLaunch(); }}
-                style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(255,255,255,0.92)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "transform .12s ease", boxShadow: "0 2px 8px rgba(0,0,0,0.5)" }}
-                onMouseEnter={e => e.currentTarget.style.transform = "scale(1.15)"}
+                style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(255,255,255,0.95)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "transform .12s ease", boxShadow: "0 4px 12px rgba(0,0,0,0.5)" }}
+                onMouseEnter={e => e.currentTarget.style.transform = "scale(1.1)"}
                 onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
               >
-                <PlayIcon size={11} color="#07080a" />
+                <PlayIcon size={15} color="#07080a" />
               </div>
             </Tooltip>
           </div>
         )}
-        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,.9))", padding: "12px 5px 4px" }}>
-          <div style={{ fontSize: 8.5, fontWeight: 800, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</div>
-        </div>
       </div>
-    </Tooltip>
+
+      <div style={{ marginTop: 7, padding: "0 2px" }}>
+        <div style={{ fontSize: 11.5, fontWeight: 800, color: isSelected ? "var(--t1)" : "var(--t2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</div>
+        {g.creator && (
+          <div style={{ fontSize: 9.5, color: "var(--t3)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.creator}</div>
+        )}
+      </div>
+    </div>
   );
 }
 

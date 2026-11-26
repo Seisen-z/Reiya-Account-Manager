@@ -457,3 +457,11 @@ html, body, #root {
   border-color: color-mix(in srgb, var(--social) 40%, transparent);
   background: color-mix(in srgb, var(--social) 13%, transparent);
 }
+
+/* ── Home: keep the header and launch bar tidy in smaller windows ── */
+@media (max-width: 1300px) {
+  .hdr-hide-md { display: none !important; }
+}
+@media (max-width: 1080px) {
+  .lb-hide-narrow, .hdr-hide-narrow { display: none !important; }
+}

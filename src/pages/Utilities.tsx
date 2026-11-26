@@ -6,6 +6,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { motion, Transition } from "motion/react";
 import { useSavedGames } from "../context/SavedGamesContext";
 import { Toggle } from "./Home";
+import { GameIcon } from "../components/GameIcon";
 import {
   SettingsIcon, SearchIcon, LockIcon, GamepadIcon, StarIcon, XIcon,
   TrashIcon, LoaderIcon, RefreshIcon, ServerIcon, ClockIcon, ActivityIcon,
@@ -382,9 +383,7 @@ export default function Utilities() {
             <>
               {/* Banner */}
               <div style={{ position: "relative", height: 130, flexShrink: 0, background: "var(--g03)" }}>
-                {selected.iconUrl || thumbnails[selected.placeId] ? (
-                  <img src={selected.iconUrl || thumbnails[selected.placeId]} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "brightness(0.55)" }} />
-                ) : null}
+                <GameIcon placeId={selected.placeId} urls={[thumbnails[selected.placeId], selected.iconUrl]} placeholderSize={28} style={{ filter: "brightness(0.55)" }} />
                 <div style={{ position: "absolute", inset: 0, background: "linear-gradient(transparent 30%, var(--g01))" }} />
                 <div style={{ position: "absolute", left: 20, bottom: 14, right: 20, display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 }}>
                   <div style={{ minWidth: 0 }}>
@@ -580,7 +579,7 @@ function GridContainer({
                     key={it.placeId}
                     style={{ width: "100%", height: "100%", borderRadius: "50%", overflow: "hidden", background: "var(--g05)", display: "flex", alignItems: "center", justifyContent: "center" }}
                   >
-                    {it.iconUrl ? <img src={it.iconUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <GamepadIcon size={9} color="var(--t3)" />}
+                    <GameIcon placeId={it.placeId} urls={[it.iconUrl]} placeholderSize={9} />
                   </div>
                 ))}
                 {Array.from({ length: Math.max(0, 4 - preview.length) }).map((_, i) => (
@@ -639,7 +638,7 @@ function GridContainer({
                       onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
                     >
                       <div style={{ width: 34, height: 34, borderRadius: "50%", overflow: "hidden", background: "var(--g05)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        {it.iconUrl ? <img src={it.iconUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <GamepadIcon size={13} color="var(--t3)" />}
+                        <GameIcon placeId={it.placeId} urls={[it.iconUrl]} placeholderSize={13} />
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11.5, fontWeight: 700, color: isSelected ? "var(--t1)" : "var(--t2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.name}</div>

@@ -90,8 +90,37 @@ function ActivityRow({ record }: { record: SessionRecord }) {
 export const ActivityPanel: FC<{
   recentActivity: SessionRecord[];
   events: EventEntry[];
-}> = ({ recentActivity, events }) => {
+  /** Render as two side-by-side cards inside the page instead of a fixed right-hand column. */
+  inline?: boolean;
+}> = ({ recentActivity, events, inline }) => {
   const { t } = useLanguage();
+  if (inline) {
+    const card: React.CSSProperties = {
+      background: "var(--g01)", border: "1px solid var(--g05)", borderRadius: 14,
+      padding: "14px 16px", display: "flex", flexDirection: "column", minWidth: 0,
+    };
+    const heading: React.CSSProperties = { fontSize: 9.5, fontWeight: 900, color: "var(--t3)", letterSpacing: "0.08em", marginBottom: 8 };
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={card}>
+          <span style={heading}>{t("recent_history")}</span>
+          {recentActivity.length === 0
+            ? <span style={{ fontSize: 10.5, color: "var(--t3)" }}>—</span>
+            : <div className="scroll" style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 260, overflowY: "auto" }}>
+                {recentActivity.map((r, i) => <ActivityRow key={i} record={r} />)}
+              </div>}
+        </div>
+        <div style={card}>
+          <span style={heading}>{t("event_log")} <span style={{ opacity: 0.5 }}>— {events.length}</span></span>
+          {events.length === 0
+            ? <span style={{ fontSize: 10.5, color: "var(--t3)" }}>—</span>
+            : <div className="scroll" style={{ display: "flex", flexDirection: "column", gap: 1, maxHeight: 260, overflowY: "auto" }}>
+                {events.slice(0, 80).map((ev, i) => <EventRow key={i} event={ev} />)}
+              </div>}
+        </div>
+      </div>
+    );
+  }
   return (
     <div style={{ width: 252, borderLeft: "1px solid var(--glass-line)", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--panel-bg)", flexShrink: 0 }}>
 

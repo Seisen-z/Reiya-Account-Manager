@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useBootstrapper } from "../context/BootstrapperContext";
 import { useLanguage } from "../context/LanguageContext";
+import { useConfirm } from "../components/ConfirmDialog";
 import type { RobloxInstall } from "../context/BootstrapperContext";
 import {
   SettingsIcon, FlagIcon, GamepadIcon, StarIcon, LinkIcon,
@@ -54,8 +55,11 @@ const LAUNCHER_OPTIONS = [
 ] as const;
 
 export default function Bootstrapper() {
+  const { t } = useLanguage();
+  const confirmDialog = useConfirm();
   const [tab, setTab] = useState<"bootstrapper" | "fastflags">("bootstrapper");
   const [flagsCount, setFlagsCount] = useState(0);
+  const [flagsDirty, setFlagsDirty] = useState(false);
 
   const fetchFlagsCount = () => {
     invoke<Record<string, any>>("get_fastflags")
@@ -64,18 +68,61 @@ export default function Bootstrapper() {
 
   useEffect(() => { fetchFlagsCount(); }, [tab]);
 
+  const switchTab = async (next: "bootstrapper" | "fastflags") => {
+    if (next === tab) return;
+    if (tab === "fastflags" && flagsDirty && !(await confirmDialog({
+      title: t("bsp_discard_title"),
+      message: t("bsp_discard_body"),
+      confirmLabel: t("bsp_discard"),
+      danger: true,
+    }))) return;
+    setFlagsDirty(false);
+    setTab(next);
+  };
+
+  const tabs: { id: "bootstrapper" | "fastflags"; label: string; icon: React.ReactNode; badge?: string }[] = [
+    { id: "bootstrapper", label: t("bsp_tab_client"), icon: <DownloadIcon size={13} /> },
+    { id: "fastflags", label: "FastFlags", icon: <FlagIcon size={13} />, badge: flagsCount > 0 ? String(flagsCount) : undefined },
+  ];
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg)", overflow: "hidden" }}>
-      {tab === "bootstrapper"
-        ? <BootstrapperTab flagsCount={flagsCount} onSwitchTab={() => setTab("fastflags")} />
-        : <FastFlagsTab flagsCount={flagsCount} onFlagsChanged={fetchFlagsCount} onSwitchTab={() => setTab("bootstrapper")} />
-      }
+      {/* Tabs */}
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 4, padding: "10px 24px 0", borderBottom: "1px solid var(--g06)", flexShrink: 0, background: "var(--panel-bg)" }}>
+        {tabs.map(tb => {
+          const active = tab === tb.id;
+          return (
+            <button
+              key={tb.id}
+              onClick={() => void switchTab(tb.id)}
+              aria-pressed={active}
+              style={{
+                display: "flex", alignItems: "center", gap: 7, padding: "9px 14px 11px", border: "none", background: "transparent",
+                fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit",
+                color: active ? "var(--t1)" : "var(--t3)",
+                borderBottom: `2px solid ${active ? (tb.id === "fastflags" ? "#A78BFA" : "var(--t1)") : "transparent"}`, marginBottom: -1,
+              }}
+            >
+              {tb.icon}{tb.label}
+              {tb.badge && <span style={{ fontSize: 10, fontWeight: 900, padding: "1px 7px", borderRadius: 99, background: "rgba(167,139,250,0.16)", color: "#A78BFA" }}>{tb.badge}</span>}
+              {tb.id === "fastflags" && flagsDirty && <span title={t("bsp_unsaved")} style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--amber)" }} />}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {tab === "bootstrapper"
+          ? <BootstrapperTab flagsCount={flagsCount} onSwitchTab={() => void switchTab("fastflags")} />
+          : <FastFlagsTab flagsCount={flagsCount} onFlagsChanged={fetchFlagsCount} onDirtyChange={setFlagsDirty} />
+        }
+      </div>
     </div>
   );
 }
 
 function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSwitchTab: () => void }) {
   const { t } = useLanguage();
+  const confirmDialog = useConfirm();
   const {
     status, progress, installing, checking, error, successMsg,
     detectedInstalls, detecting, preferredLauncher, autoUpdate, deployVersions,
@@ -116,13 +163,16 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
     } catch (e) { setRegError(String(e)); } finally { setRegistering(false); }
   };
 
-  const handleVersionLabel = async (version: string, currentLabel: string) => {
-    const label = prompt("Version label (leave blank to remove):", currentLabel);
-    if (label === null) return;
+  // Inline label editor (replaces the old browser prompt)
+  const [labelEdit, setLabelEdit] = useState<{ version: string; value: string } | null>(null);
+  const saveVersionLabel = async () => {
+    if (!labelEdit) return;
+    const { version, value } = labelEdit;
     setManagingVersion(version); setManagerMessage("");
     try {
-      await invoke("set_installed_roblox_version_label", { versionHash: version, label });
-      setManagerMessage("Version label saved.");
+      await invoke("set_installed_roblox_version_label", { versionHash: version, label: value.trim() });
+      setManagerMessage(value.trim() ? "Version label saved." : "Version label removed.");
+      setLabelEdit(null);
       await loadInstalledVersions();
     } catch (e) { setManagerMessage(String(e)); } finally { setManagingVersion(""); }
   };
@@ -133,7 +183,12 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
   };
 
   const handleDeleteVersion = async (version: string) => {
-    if (!confirm(`Delete local Roblox build ${version}?`)) return;
+    if (!(await confirmDialog({
+      title: `Delete Roblox build ${version}?`,
+      message: "The downloaded files for this version will be removed from your computer.",
+      confirmLabel: "Delete",
+      danger: true,
+    }))) return;
     setManagingVersion(version); setManagerMessage("");
     try {
       await invoke("delete_installed_roblox_version", { versionHash: version });
@@ -163,395 +218,362 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
   const statusColor = !isInstalled ? "#F87171" : needsUpdate ? "#FBBF24" : "#34D399";
   const statusLabel = !isInstalled ? t("not_installed") : needsUpdate ? t("update_available") : t("up_to_date");
 
+  const statusSentence = !isInstalled ? t("bsp_status_missing") : needsUpdate ? t("bsp_status_update") : t("bsp_status_ok");
+  const smallBtn = (tone: "neutral" | "green" | "red" = "neutral"): React.CSSProperties => ({
+    padding: "5px 10px", borderRadius: 7, fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+    border: `1px solid ${tone === "green" ? "rgba(52,211,153,0.3)" : tone === "red" ? "rgba(248,113,113,0.3)" : "var(--g07)"}`,
+    background: tone === "green" ? "rgba(52,211,153,0.1)" : tone === "red" ? "rgba(248,113,113,0.08)" : "var(--g03)",
+    color: tone === "green" ? "var(--green)" : tone === "red" ? "var(--red)" : "var(--t2)",
+  });
+  const customMissing = installMode === "custom" && !customVersionHash.trim();
+
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div className="scroll" style={{ height: "100%", overflowY: "auto" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "22px 28px 32px", display: "flex", flexDirection: "column", gap: 18 }}>
 
-      {/* Hero status section */}
-      <div style={{
-        padding: "24px 28px",
-        background: `linear-gradient(135deg, ${statusColor}08 0%, var(--panel-bg) 60%)`,
-        borderBottom: "1px solid var(--g06)",
-        flexShrink: 0,
-      }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 20 }}>
-
-          {/* Left: main status */}
-          <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-            <div style={{
-              width: 56, height: 56, borderRadius: 14,
-              background: statusColor + "14",
-              border: `1px solid ${statusColor}30`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: `0 0 24px ${statusColor}15`,
-              flexShrink: 0,
-            }}>
-              <ShieldCheckIcon size={26} color={statusColor} />
+        {/* ── Status ── */}
+        <div style={{
+          padding: 22, borderRadius: 18,
+          background: `linear-gradient(135deg, ${statusColor}14 0%, var(--g01) 55%)`,
+          border: `1px solid ${statusColor}35`,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+            <div style={{ width: 60, height: 60, borderRadius: 16, background: statusColor + "18", border: `1px solid ${statusColor}40`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 0 28px ${statusColor}20` }}>
+              <ShieldCheckIcon size={28} color={statusColor} />
             </div>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                <span style={{ fontSize: 20, fontWeight: 900, color: "var(--t1)", letterSpacing: "-0.4px" }}>
-                  Reiya Bootstrapper
-                </span>
-                <span style={{
-                  fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 99,
-                  background: statusColor + "18", color: statusColor,
-                  border: `1px solid ${statusColor}35`,
-                  display: "flex", alignItems: "center", gap: 5,
-                }}>
-                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: statusColor, boxShadow: `0 0 6px ${statusColor}`, display: "inline-block" }} />
+            <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 21, fontWeight: 900, color: "var(--t1)", letterSpacing: "-0.4px" }}>Reiya Bootstrapper</span>
+                <span style={{ fontSize: 10.5, fontWeight: 800, padding: "3px 10px", borderRadius: 99, background: statusColor + "1C", color: statusColor, border: `1px solid ${statusColor}40`, display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: statusColor }} />
                   {statusLabel}
                 </span>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, color: "var(--t3)" }}>
-                  {t("current_version")}: <span style={{ color: "var(--t2)", fontFamily: "monospace", fontWeight: 700 }}>
-                    {status?.installed_version?.substring(0, 16) ?? "—"}
-                  </span>
-                </span>
-                <span style={{ fontSize: 11, color: "var(--t3)" }}>
-                  {t("launcher")}: <span style={{ color: "var(--amber)", fontWeight: 700 }}>{preferredLauncher}</span>
-                </span>
-                <span style={{ fontSize: 11, color: "var(--t3)" }}>
-                  FastFlags: <span style={{ color: flagsCount > 0 ? "#A78BFA" : "var(--t3)", fontWeight: 700 }}>{flagsCount} {t("active").toLowerCase()}</span>
-                </span>
-                <span
-                  onClick={() => updateAutoUpdate(!autoUpdate)}
-                  title={autoUpdate ? "Reiya checks for and installs Roblox updates automatically. Click to disable." : "Roblox updates are never checked or installed automatically. Click to enable."}
-                  style={{ fontSize: 11, color: "var(--t3)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
-                >
-                  Auto-update:
-                  <span style={{ display: "flex", alignItems: "center", gap: 5, color: autoUpdate ? "var(--green)" : "var(--t3)", fontWeight: 700 }}>
-                    <div style={{ width: 24, height: 13, borderRadius: 99, background: autoUpdate ? "rgba(52,211,153,0.25)" : "var(--g06)", border: `1px solid ${autoUpdate ? "var(--green)" : "var(--g10)"}`, position: "relative", transition: "all .15s" }}>
-                      <div style={{ position: "absolute", top: 1, left: autoUpdate ? 12 : 1, width: 9, height: 9, borderRadius: "50%", background: autoUpdate ? "var(--green)" : "#8B8FA8", transition: "all .15s" }} />
-                    </div>
-                    {autoUpdate ? "ON" : "OFF"}
-                  </span>
-                </span>
-              </div>
+              <div style={{ fontSize: 12.5, color: "var(--t2)", marginTop: 5 }}>{statusSentence}</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              <button onClick={() => checkUpdate()} disabled={checking || installing} className="glow-btn" style={ghostBtnStyle(checking || installing)}>
+                <RefreshIcon size={12} />{checking ? t("checking") : t("bsp_check_updates")}
+              </button>
+              <button onClick={() => startInstall(undefined, undefined, !isInstalled)} disabled={installing || checking} className="glow-btn"
+                title={isInstalled && !needsUpdate ? t("bsp_reinstall_tip") : undefined}
+                style={{
+                  ...ghostBtnStyle(installing || checking),
+                  padding: "9px 18px", fontSize: 12.5, fontWeight: 900,
+                  ...(needsUpdate || !isInstalled ? { background: "var(--accent)", color: "var(--accent-text, #0a0a0a)", border: "none", boxShadow: "0 4px 16px var(--g15)" } : {}),
+                }}>
+                <DownloadIcon size={13} />
+                {installing ? `${progress?.percent ?? 0}%`
+                  : !isInstalled ? t("download_install")
+                  : needsUpdate ? t("bsp_update_now")
+                  : t("bsp_reinstall")}
+              </button>
             </div>
           </div>
 
-          {/* Right: action buttons + fastflags shortcut */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            <button onClick={() => checkUpdate()} disabled={checking || installing} className="glow-btn" style={ghostBtnStyle(checking || installing)}>
-              <RefreshIcon size={12} />{checking ? t("checking") : t("check")}
-            </button>
-            <button onClick={() => startInstall(undefined, undefined, !isInstalled)} disabled={installing || checking} className="glow-btn"
-              style={{
-                ...ghostBtnStyle(installing || checking),
-                ...(needsUpdate ? { background: "var(--accent)", color: "var(--accent-text)", border: "none", boxShadow: "0 4px 14px var(--g15)" } : {}),
-              }}>
-              <DownloadIcon size={12} />{installing ? `${progress?.percent ?? 0}%` : isInstalled ? "Download update" : t("download_install")}
-            </button>
-            {isInstalled && (
-              <button onClick={handleRegisterProtocol} disabled={registering || installing} className="glow-btn" style={{ ...ghostBtnStyle(registering || installing), color: "#818CF8", border: "1px solid rgba(129,140,248,0.25)", background: "rgba(129,140,248,0.05)" }}>
-                <LinkIcon size={12} />{registering ? t("checking") : t("register_protocol")}
-              </button>
-            )}
-            <div style={{ width: 1, height: 24, background: "var(--g08)" }} />
-            <button onClick={onSwitchTab} className="glow-btn" style={{ ...ghostBtnStyle(false), color: "#A78BFA", border: "1px solid rgba(167,139,250,0.2)", background: "rgba(167,139,250,0.05)" }}>
-              <FlagIcon size={12} />FastFlags
-            </button>
+          {/* Facts */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
+            <Fact label={t("current_version")} value={status?.installed_version ? status.installed_version.replace(/^version-/, "").substring(0, 16) : "—"} mono />
+            <Fact label={t("launcher")} value={LAUNCHER_OPTIONS.find(o => o.id === preferredLauncher)?.name ?? preferredLauncher} color="var(--amber)" />
+            <Fact label="FastFlags" value={`${flagsCount} ${t("active").toLowerCase()}`} color={flagsCount > 0 ? "#A78BFA" : undefined} onClick={onSwitchTab} title={t("bsp_open_fastflags")} />
+            <Fact
+              label={t("bsp_auto_update")}
+              value={autoUpdate ? "On" : "Off"}
+              color={autoUpdate ? "var(--green)" : undefined}
+              onClick={() => updateAutoUpdate(!autoUpdate)}
+              title={autoUpdate ? "Reiya checks for and installs Roblox updates automatically. Click to turn off." : "Roblox updates are never installed automatically. Click to turn on."}
+              toggle={autoUpdate}
+            />
           </div>
+
+          {/* Progress */}
+          {(installing || (progress && !progress.done)) && progress && (
+            <div style={{ marginTop: 16, padding: "14px 16px", background: "var(--g02)", borderRadius: 12, border: "1px solid var(--g06)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 800, color: "var(--t1)" }}>{progress.stage}</div>
+                  <div style={{ fontSize: 10.5, color: "var(--t2)", marginTop: 2 }}>{progress.package} · {progress.package_index}/{progress.total_packages}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 17, fontWeight: 900, color: "var(--amber)" }}>{progress.percent}%</div>
+                  {progress.speed_kbps > 0 && <div style={{ fontSize: 10.5, color: "var(--t2)" }}>{formatSpeed(progress.speed_kbps)}</div>}
+                </div>
+              </div>
+              <div style={{ height: 6, background: "var(--g04)", borderRadius: 99, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${progress.percent}%`, background: "linear-gradient(90deg, #FBBF24, #F59E0B)", borderRadius: 99, transition: "width .3s ease" }} />
+              </div>
+            </div>
+          )}
+
+          {(error || regError) && (
+            <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.18)", borderRadius: 10, color: "var(--red)", fontSize: 12 }}>{error || regError}</div>
+          )}
+          {(successMsg || regSuccess) && (
+            <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.18)", borderRadius: 10, color: "var(--green)", fontSize: 12, fontWeight: 700 }}>{successMsg || regSuccess}</div>
+          )}
         </div>
 
-        {/* Progress bar */}
-        {(installing || (progress && !progress.done)) && progress && (
-          <div style={{ marginTop: 18, padding: "14px 18px", background: "var(--g02)", borderRadius: 12, border: "1px solid var(--g06)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 800, color: "var(--t1)" }}>{progress.stage}</div>
-                <div style={{ fontSize: 10, color: "var(--t2)", marginTop: 2 }}>{progress.package} · {progress.package_index}/{progress.total_packages}</div>
+        {/* ── Main grid ── */}
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.65fr) minmax(260px, 1fr)", gap: 18, alignItems: "start" }}>
+
+          {/* Left column */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
+
+            {/* Launcher */}
+            <Card icon={<ZapIcon size={14} color="var(--amber)" />} title={t("bsp_card_launcher")} desc={t("bsp_card_launcher_desc")}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8 }}>
+                {LAUNCHER_OPTIONS.map(opt => {
+                  const isSelected = preferredLauncher === opt.id;
+                  const available = opt.alwaysAvailable || !!detectedInstalls?.installs.find(i => i.kind === opt.id)?.found;
+                  return <LauncherCard key={opt.id} id={opt.id} name={opt.name} subtitle={opt.subtitle} desc={opt.desc} accentColor={opt.accentColor} isSelected={isSelected} available={available}
+                    onSelect={() => { if (available || isSelected) updateLauncherPreference(opt.id); }} />;
+                })}
               </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 16, fontWeight: 900, color: "var(--amber)" }}>{progress.percent}%</div>
-                {progress.speed_kbps > 0 && <div style={{ fontSize: 10, color: "var(--t2)" }}>{formatSpeed(progress.speed_kbps)}</div>}
-              </div>
-            </div>
-            <div style={{ height: 5, background: "var(--g04)", borderRadius: 99, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${progress.percent}%`, background: "linear-gradient(90deg, #FBBF24, #F59E0B)", borderRadius: 99, transition: "width .3s ease" }} />
-            </div>
-          </div>
-        )}
 
-        {/* Messages */}
-        {(error || regError) && (
-          <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.18)", borderRadius: 10, color: "var(--red)", fontSize: 12 }}>{error || regError}</div>
-        )}
-        {(successMsg || regSuccess) && (
-          <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.18)", borderRadius: 10, color: "var(--green)", fontSize: 12, fontWeight: 700 }}>{successMsg || regSuccess}</div>
-        )}
-      </div>
-
-      {/* Main content — 3 columns */}
-      <div className="scroll" style={{ flex: 1, padding: "20px 28px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, alignContent: "start" }}>
-
-        {/* Launcher preference — spans 2 cols */}
-        <div style={{ gridColumn: "span 2" }}>
-          <SectionHeader icon={<ZapIcon size={12} color="var(--amber)" />} title="LAUNCHER PREFERENCE" accent="var(--amber)" />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
-            {LAUNCHER_OPTIONS.map(opt => {
-              const isSelected = preferredLauncher === opt.id;
-              const available = opt.alwaysAvailable || !!detectedInstalls?.installs.find(i => i.kind === opt.id)?.found;
-              return <LauncherCard key={opt.id} id={opt.id} name={opt.name} subtitle={opt.subtitle} desc={opt.desc} accentColor={opt.accentColor} isSelected={isSelected} available={available} onSelect={() => updateLauncherPreference(opt.id)} />;
-            })}
-          </div>
-
-          <div style={{ marginTop: 12, padding: "12px 14px", borderRadius: 11, background: diagnostics?.executable_exists ? "rgba(52,211,153,0.05)" : "rgba(248,113,113,0.06)", border: `1px solid ${diagnostics?.executable_exists ? "rgba(52,211,153,0.18)" : "rgba(248,113,113,0.22)"}` }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: diagnostics?.executable_exists ? "var(--green)" : "var(--red)" }} />
-                  <span style={{ fontSize: 10.5, fontWeight: 900, color: "var(--t1)", letterSpacing: "0.06em" }}>LAUNCH HEALTH</span>
-                  <span style={{ fontSize: 9, color: "var(--t3)" }}>{diagnosticsLoading ? "Checking…" : `Resolved: ${diagnostics?.resolved_launcher || preferredLauncher}`}</span>
+              {/* Launch health */}
+              <div style={{ marginTop: 12, padding: "12px 14px", borderRadius: 12, background: diagnostics?.executable_exists ? "rgba(52,211,153,0.05)" : "rgba(248,113,113,0.06)", border: `1px solid ${diagnostics?.executable_exists ? "rgba(52,211,153,0.2)" : "rgba(248,113,113,0.22)"}` }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: diagnostics?.executable_exists ? "var(--green)" : "var(--red)" }} />
+                      <span style={{ fontSize: 12, fontWeight: 800, color: "var(--t1)" }}>{diagnostics?.executable_exists ? t("bsp_health_ok") : t("bsp_health_bad")}</span>
+                      <span style={{ fontSize: 10.5, color: "var(--t3)" }}>{diagnosticsLoading ? t("checking") : `· ${t("bsp_uses")} ${diagnostics?.resolved_launcher || preferredLauncher}`}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--t2)", lineHeight: 1.5 }}>{diagnostics?.recommendation || "Checking launcher configuration…"}</div>
+                    {diagnostics?.executable_path && <div title={diagnostics.executable_path} style={{ marginTop: 4, fontSize: 10, color: "var(--t3)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{diagnostics.executable_path}</div>}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button onClick={refreshDiagnostics} disabled={diagnosticsLoading} style={smallBtn()}>{t("bsp_recheck")}</button>
+                    {diagnostics?.official_available && preferredLauncher !== "official" && (
+                      <button onClick={async () => { await updateLauncherPreference("official"); await refreshDiagnostics(); }} style={{ ...smallBtn(), border: "1px solid rgba(96,165,250,0.3)", background: "rgba(96,165,250,0.1)", color: "#60A5FA", fontWeight: 800 }}>Use Official</button>
+                    )}
+                  </div>
                 </div>
-                <div style={{ fontSize: 10, color: "var(--t2)", lineHeight: 1.45 }}>{diagnostics?.recommendation || "Checking launcher configuration…"}</div>
-                {diagnostics?.executable_path && <div title={diagnostics.executable_path} style={{ marginTop: 4, fontSize: 9, color: "var(--t3)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{diagnostics.executable_path}</div>}
-              </div>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={refreshDiagnostics} disabled={diagnosticsLoading} style={{ padding: "5px 9px", borderRadius: 7, border: "1px solid var(--g07)", background: "var(--g03)", color: "var(--t2)", fontSize: 9.5, cursor: "pointer" }}>Refresh</button>
-                {diagnostics?.official_available && preferredLauncher !== "official" && <button onClick={async () => { await updateLauncherPreference("official"); await refreshDiagnostics(); }} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid rgba(96,165,250,0.3)", background: "rgba(96,165,250,0.1)", color: "#60A5FA", fontSize: 9.5, fontWeight: 800, cursor: "pointer" }}>Use Official</button>}
-              </div>
-            </div>
-          </div>
-
-          {/* Roblox Version Control */}
-          <div style={{ marginTop: 16 }}>
-            <SectionHeader icon={<PackageIcon size={12} color="#60A5FA" />} title="ROBLOX VERSION CONTROL" accent="#60A5FA" />
-            
-            <div style={{ padding: "16px", background: "var(--g01)", border: "1px solid var(--g05)", borderRadius: 12, marginTop: 10 }}>
-              {/* Choice selector: Install Latest vs Custom Version */}
-              <div style={{ display: "flex", gap: 6, marginBottom: 14, background: "var(--g03)", padding: 3, borderRadius: 8 }}>
-                <button
-                  onClick={() => {
-                    setInstallMode("latest");
-                    setCustomVersionHash("");
-                  }}
-                  style={{
-                    flex: 1, padding: "7px 12px", borderRadius: 6, border: "none",
-                    fontSize: 11, fontWeight: 800, cursor: "pointer", transition: "all .15s",
-                    background: installMode === "latest" ? "var(--g08)" : "transparent",
-                    color: installMode === "latest" ? "var(--t1)" : "var(--t3)",
-                    boxShadow: installMode === "latest" ? "0 2px 8px rgba(0,0,0,0.3)" : "none",
-                  }}
-                >
-                  Install Latest Version (Default)
-                </button>
-                <button
-                  onClick={() => setInstallMode("custom")}
-                  style={{
-                    flex: 1, padding: "7px 12px", borderRadius: 6, border: "none",
-                    fontSize: 11, fontWeight: 800, cursor: "pointer", transition: "all .15s",
-                    background: installMode === "custom" ? "var(--accent)" : "transparent",
-                    color: installMode === "custom" ? "#0a0a0a" : "var(--t3)",
-                    boxShadow: installMode === "custom" ? "0 2px 8px rgba(0,0,0,0.3)" : "none",
-                  }}
-                >
-                  Install Custom / Pinned Version
-                </button>
               </div>
 
-              {/* Form fields: Channel and Version Hash (matching user screenshot) */}
+              {/* Protocol */}
+              {isInstalled && (
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 12, background: "var(--g02)", border: "1px solid var(--g05)" }}>
+                  <LinkIcon size={14} color="#818CF8" />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "var(--t1)" }}>{t("bsp_protocol_title")}</div>
+                    <div style={{ fontSize: 10.5, color: "var(--t3)", marginTop: 2 }}>{t("bsp_protocol_desc")}</div>
+                  </div>
+                  <button onClick={handleRegisterProtocol} disabled={registering || installing} style={{ ...smallBtn(), padding: "7px 12px", border: "1px solid rgba(129,140,248,0.3)", background: "rgba(129,140,248,0.08)", color: "#818CF8", fontWeight: 800, flexShrink: 0 }}>
+                    {registering ? t("checking") : t("register_protocol")}
+                  </button>
+                </div>
+              )}
+            </Card>
+
+            {/* Roblox version */}
+            <Card icon={<PackageIcon size={14} color="#60A5FA" />} title={t("bsp_card_version")} desc={t("bsp_card_version_desc")}>
+              <div style={{ display: "flex", gap: 4, marginBottom: 14, background: "var(--g03)", padding: 3, borderRadius: 10 }}>
+                {([["latest", "Latest version (recommended)"], ["custom", "A specific version"]] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    onClick={() => { setInstallMode(mode); if (mode === "latest") setCustomVersionHash(""); }}
+                    style={{
+                      flex: 1, padding: "8px 12px", borderRadius: 8, border: "none", fontFamily: "inherit",
+                      fontSize: 11.5, fontWeight: 800, cursor: "pointer", transition: "all .15s",
+                      background: installMode === mode ? "var(--g10)" : "transparent",
+                      color: installMode === mode ? "var(--t1)" : "var(--t3)",
+                      boxShadow: installMode === mode ? "0 2px 8px rgba(0,0,0,0.3)" : "none",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                
-                {/* Channel field */}
                 <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", alignItems: "center", gap: 12 }}>
                   <label style={{ fontSize: 11.5, fontWeight: 700, color: "var(--t2)" }}>Channel</label>
-                  <input
-                    type="text"
-                    value={channel}
-                    onChange={e => setChannel(e.target.value)}
-                    placeholder="LIVE"
-                    className="field glass-input"
-                    style={{ padding: "8px 12px", fontSize: 11.5, outline: "none", fontFamily: "monospace" }}
-                  />
+                  <input type="text" value={channel} onChange={e => setChannel(e.target.value)} placeholder="LIVE" className="field glass-input"
+                    style={{ padding: "8px 12px", fontSize: 11.5, outline: "none", fontFamily: "monospace" }} />
                 </div>
 
-                {/* Version Hash field */}
                 <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", alignItems: "center", gap: 12 }}>
                   <div style={{ display: "flex", flexDirection: "column" }}>
-                    <label style={{ fontSize: 11.5, fontWeight: 700, color: "var(--t2)" }}>Version Hash</label>
-                    <span style={{ fontSize: 9, color: "var(--t3)" }}>
-                      {installMode === "latest" ? "Optional" : "Required"}
-                    </span>
+                    <label style={{ fontSize: 11.5, fontWeight: 700, color: "var(--t2)" }}>Version hash</label>
+                    <span style={{ fontSize: 9.5, color: "var(--t3)" }}>{installMode === "latest" ? "Optional" : "Required"}</span>
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 8, minWidth: 0 }}>
                     <input
                       type="text"
                       value={customVersionHash}
                       onChange={e => {
                         setCustomVersionHash(e.target.value);
-                        if (e.target.value.trim() && installMode !== "custom") {
-                          setInstallMode("custom");
-                        }
+                        if (e.target.value.trim() && installMode !== "custom") setInstallMode("custom");
                       }}
-                      placeholder={installMode === "latest" ? "Optional (Leave empty for latest build)" : "e.g. version-ce0bcd0fbd484804"}
+                      placeholder={installMode === "latest" ? "Leave empty for the latest build" : "e.g. version-ce0bcd0fbd484804"}
                       className="field glass-input"
-                      style={{ flex: 1, padding: "8px 12px", fontSize: 11.5, outline: "none", fontFamily: "monospace" }}
+                      style={{ flex: 1, minWidth: 0, padding: "8px 12px", fontSize: 11.5, outline: "none", fontFamily: "monospace" }}
                     />
-                    {/* Select helper dropdown */}
                     <select
                       value=""
-                      onChange={e => {
-                        if (e.target.value) {
-                          setCustomVersionHash(e.target.value);
-                          setInstallMode("custom");
-                        }
-                      }}
+                      onChange={e => { if (e.target.value) { setCustomVersionHash(e.target.value); setInstallMode("custom"); } }}
                       className="field glass-input"
                       style={{ width: 140, padding: "8px 8px", fontSize: 10.5, outline: "none" }}
-                      title="Select from deploy history or local builds"
+                      title="Pick from deploy history or versions already on this PC"
                     >
-                      <option value="">Quick Select…</option>
+                      <option value="">Quick pick…</option>
                       {status?.installed_version && (
                         <option value={status.installed_version}>Installed: {status.installed_version.substring(0, 15)}…</option>
                       )}
-                      <optgroup label="Recent Deploy History">
+                      <optgroup label="Recent Roblox releases">
                         {deployVersions.map(v => (
                           <option key={`${v.version}-${v.date}`} value={v.version} disabled={v.version === "version-hidden"}>
                             {v.version.substring(0, 15)}… {v.date ? `(${v.date.split(" ")[0]})` : ""}
                           </option>
                         ))}
                       </optgroup>
-                      <optgroup label="Downloaded Locally">
-                        {installedVersions.map(v => (
-                          <option key={v.version} value={v.version}>
-                            {v.version.substring(0, 15)}…
-                          </option>
-                        ))}
+                      <optgroup label="Downloaded on this PC">
+                        {installedVersions.map(v => <option key={v.version} value={v.version}>{v.version.substring(0, 15)}…</option>)}
                       </optgroup>
                     </select>
                   </div>
                 </div>
 
-                {/* Download action: new builds stay local until explicitly selected. */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 4, paddingTop: 10, borderTop: "1px solid var(--g04)" }}>
-                  <div style={{ fontSize: 9.5, color: "var(--t3)", lineHeight: 1.4, flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 2, paddingTop: 12, borderTop: "1px solid var(--g05)" }}>
+                  <div style={{ fontSize: 11, color: "var(--t3)", lineHeight: 1.45, flex: 1 }}>
                     {installMode === "latest"
-                      ? "Will download the newest Roblox client for channel " + (channel || "LIVE") + ". Your current version stays selected."
+                      ? "Downloads the newest Roblox client for channel " + (channel || "LIVE") + ". Your current version stays selected."
                       : customVersionHash
-                        ? `Will download Roblox version ${customVersionHash} for channel ${channel || "LIVE"} and keep your current version selected.`
-                        : "Enter or select a version hash to download it locally."}
+                        ? `Downloads Roblox ${customVersionHash} for channel ${channel || "LIVE"} and keeps your current version selected.`
+                        : "Type or pick a version hash to download it."}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    {/* If custom hash is already downloaded locally */}
                     {customVersionHash && installedVersions.some(v => v.version === customVersionHash) && (
-                      <button
-                        onClick={() => useInstalledVersion(customVersionHash)}
-                        style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(52,211,153,0.3)", background: "rgba(52,211,153,0.08)", color: "var(--green)", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
-                      >
-                        Switch Instantly
-                      </button>
+                      <button onClick={() => useInstalledVersion(customVersionHash)} style={{ ...smallBtn("green"), padding: "7px 12px" }}>Switch instantly</button>
                     )}
                     <button
                       onClick={() => startInstall(installMode === "custom" ? customVersionHash : undefined, channel, !isInstalled)}
-                      disabled={installing || checking || (installMode === "custom" && !customVersionHash.trim())}
+                      disabled={installing || checking || customMissing}
                       className="glow-btn"
                       style={{
-                        padding: "7px 16px", borderRadius: 8, border: "none",
-                        background: "var(--accent)", color: "#0a0a0a",
-                        fontSize: 11.5, fontWeight: 800, cursor: (installing || checking || (installMode === "custom" && !customVersionHash.trim())) ? "not-allowed" : "pointer",
-                        opacity: (installing || checking || (installMode === "custom" && !customVersionHash.trim())) ? 0.5 : 1,
+                        padding: "8px 16px", borderRadius: 9, border: "none", fontFamily: "inherit",
+                        background: "var(--accent)", color: "#0a0a0a", fontSize: 12, fontWeight: 800,
+                        cursor: installing || checking || customMissing ? "not-allowed" : "pointer",
+                        opacity: installing || checking || customMissing ? 0.5 : 1,
                         display: "flex", alignItems: "center", gap: 6,
                       }}
                     >
                       <DownloadIcon size={12} />
-                      {installing ? `Downloading ${progress?.percent ?? 0}%` : "Download locally"}
+                      {installing ? `Downloading ${progress?.percent ?? 0}%` : "Download"}
                     </button>
                   </div>
                 </div>
-
               </div>
-            </div>
 
-            {preferredLauncher !== "reiya" && (
-              <div style={{ fontSize: 9.5, color: "var(--amber)", marginTop: 8, lineHeight: 1.4 }}>
-                Version pinning and channel settings only take effect when "Reiya (Built-in)" is your launcher preference — with "{preferredLauncher}" selected, Reiya launches that app directly.
-              </div>
+              {preferredLauncher !== "reiya" && (
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 11, color: "var(--amber)", marginTop: 12, lineHeight: 1.45, padding: "9px 12px", borderRadius: 10, background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.2)" }}>
+                  <span>⚠</span>
+                  <span>Version and channel settings only apply when <b>Reiya (Built-in)</b> is your launcher. With "{LAUNCHER_OPTIONS.find(o => o.id === preferredLauncher)?.name ?? preferredLauncher}" selected, Reiya opens that app instead.</span>
+                </div>
+              )}
+            </Card>
+
+            {/* Downloaded versions */}
+            {installedVersions.length > 0 && (
+              <Card
+                icon={<ClockIcon size={14} color="#34D399" />}
+                title={t("bsp_card_downloaded")}
+                desc={t("bsp_card_downloaded_desc") + (loadingInstalledVersions ? " Refreshing…" : "")}
+              >
+                {managerMessage && <div style={{ marginBottom: 10, padding: "8px 11px", borderRadius: 8, background: "var(--g03)", color: "var(--t2)", fontSize: 11 }}>{managerMessage}</div>}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {installedVersions.map(v => (
+                    <div key={v.version} style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                      padding: "10px 12px", borderRadius: 11,
+                      background: v.is_current ? "rgba(52,211,153,0.06)" : "var(--g02)",
+                      border: `1px solid ${v.is_current ? "rgba(52,211,153,0.3)" : "var(--g05)"}`,
+                    }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        {labelEdit?.version === v.version ? (
+                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <input
+                              autoFocus
+                              value={labelEdit.value}
+                              onChange={e => setLabelEdit({ version: v.version, value: e.target.value })}
+                              onKeyDown={e => { if (e.key === "Enter") void saveVersionLabel(); if (e.key === "Escape") setLabelEdit(null); }}
+                              placeholder="Label, e.g. Stable build (leave empty to remove)"
+                              className="field glass-input"
+                              style={{ flex: 1, minWidth: 0, padding: "5px 9px", fontSize: 11, outline: "none" }}
+                            />
+                            <button onClick={() => void saveVersionLabel()} disabled={managingVersion === v.version} style={{ padding: "5px 10px", borderRadius: 7, border: "none", background: "var(--accent)", color: "#0a0a0a", fontSize: 10.5, fontWeight: 800, cursor: "pointer" }}>Save</button>
+                            <button onClick={() => setLabelEdit(null)} style={smallBtn()}>Cancel</button>
+                          </div>
+                        ) : (
+                          <>
+                            <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                              {v.label && <span style={{ fontSize: 11.5, fontWeight: 800, color: "var(--t1)", flexShrink: 0 }}>{v.label}</span>}
+                              <span style={{ fontSize: 11, fontWeight: 700, color: v.label ? "var(--t3)" : "var(--t1)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.version}</span>
+                            </div>
+                            <div style={{ fontSize: 10, color: "var(--t3)", marginTop: 2 }}>
+                              {formatBytes(v.size_bytes)}{v.installed_at ? ` · Downloaded ${new Date(v.installed_at).toLocaleString()}` : ""}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      {labelEdit?.version !== v.version && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                          {v.is_current ? (
+                            <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 800, color: "var(--green)", padding: "0 4px" }}><CheckIcon size={11} /> In use</span>
+                          ) : (
+                            <button disabled={managingVersion === v.version} onClick={() => useInstalledVersion(v.version)} style={{ ...smallBtn("green"), fontWeight: 800 }}>Use</button>
+                          )}
+                          <button disabled={managingVersion === v.version} onClick={() => handleRepairVersion(v.version)} title="Check the files and fix anything missing" style={smallBtn()}>Repair</button>
+                          <button onClick={() => handleOpenVersion(v.version)} title="Open this version's folder" style={smallBtn()}>Folder</button>
+                          <button disabled={managingVersion === v.version} onClick={() => setLabelEdit({ version: v.version, value: v.label || "" })} title="Give this version a name" style={smallBtn()}>Label</button>
+                          {!v.is_current && <button disabled={managingVersion === v.version} onClick={() => handleDeleteVersion(v.version)} style={smallBtn("red")}>Delete</button>}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Card>
             )}
           </div>
 
-          {/* Installed locally — builds already downloaded from past updates, switch instantly */}
-          {installedVersions.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <SectionHeader icon={<ClockIcon size={12} color="#34D399" />} title="INSTALLED LOCALLY" accent="#34D399" />
-              <div style={{ fontSize: 9.5, color: "var(--t3)", marginTop: 6, marginBottom: 10, lineHeight: 1.4 }}>
-                Builds Reiya has already downloaded on this PC from past updates. Switching is instant — no download.
-                {loadingInstalledVersions && " Refreshing…"}
-              </div>
-              {managerMessage && <div style={{ marginBottom: 8, padding: "7px 10px", borderRadius: 7, background: "var(--g03)", color: "var(--t2)", fontSize: 10 }}>{managerMessage}</div>}
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {installedVersions.map(v => (
-                  <div key={v.version} style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
-                    padding: "8px 12px", borderRadius: 9,
-                    background: v.is_current ? "rgba(52,211,153,0.06)" : "var(--g01)",
-                    border: `1px solid ${v.is_current ? "rgba(52,211,153,0.3)" : "var(--g05)"}`,
-                  }}>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--t1)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {v.label ? `${v.label} — ` : ""}{v.version}
-                      </div>
-                      <div style={{ fontSize: 9, color: "var(--t3)", marginTop: 1 }}>
-                        {formatBytes(v.size_bytes)}{v.installed_at ? ` • Downloaded ${new Date(v.installed_at).toLocaleString()}` : ""}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      {v.is_current ? (
-                        <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9.5, fontWeight: 800, color: "var(--green)" }}><CheckIcon size={11} /> Current</span>
-                      ) : (
-                        <button disabled={managingVersion === v.version} onClick={() => useInstalledVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(52,211,153,0.25)", background: "rgba(52,211,153,0.08)", color: "var(--green)", fontSize: 9.5, fontWeight: 700, cursor: "pointer" }}>Use</button>
-                      )}
-                      <button disabled={managingVersion === v.version} onClick={() => handleRepairVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--g07)", background: "var(--g03)", color: "var(--t2)", fontSize: 9.5, cursor: "pointer" }}>Repair</button>
-                      <button onClick={() => handleOpenVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--g07)", background: "transparent", color: "var(--t3)", fontSize: 9.5, cursor: "pointer" }}>Folder</button>
-                      <button disabled={managingVersion === v.version} onClick={() => handleVersionLabel(v.version, v.label)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--g07)", background: "transparent", color: "var(--t3)", fontSize: 9.5, cursor: "pointer" }}>Label</button>
-                      {!v.is_current && <button disabled={managingVersion === v.version} onClick={() => handleDeleteVersion(v.version)} style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(248,113,113,0.25)", background: "rgba(248,113,113,0.06)", color: "var(--red)", fontSize: 9.5, cursor: "pointer" }}>Delete</button>}
+          {/* Right column */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
+            <Card
+              icon={<SearchIcon size={14} color="var(--t2)" />}
+              title={t("bsp_card_found")}
+              desc={t("bsp_card_found_desc")}
+              action={
+                <button onClick={scanInstalls} disabled={detecting} style={{ ...smallBtn(), display: "flex", alignItems: "center", gap: 5, cursor: detecting ? "not-allowed" : "pointer" }}>
+                  <RefreshIcon size={10} />{detecting ? "Scanning…" : "Scan again"}
+                </button>
+              }
+            >
+              {!detectedInstalls
+                ? <div style={{ color: "var(--t3)", fontSize: 11.5, padding: "6px 0" }}>Scanning…</div>
+                : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {detectedInstalls.installs.map(i => <InstallCard key={i.kind} install={i} />)}
+                  </div>}
+            </Card>
+
+            <Card icon={<ActivityIcon size={14} color="var(--t3)" />} title={t("bsp_card_how")}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {[
+                  { n: 1, a: "Check",    d: "Reiya checks if Roblox has a newer version than the one you have." },
+                  { n: 2, a: "Download", d: "Only the files that changed are downloaded, so updates are quick." },
+                  { n: 3, a: "Install",  d: "The new files are unpacked into the right folders automatically." },
+                  { n: 4, a: "Connect",  d: "Reiya can register as your Roblox launcher, so Play buttons in your browser open through it." },
+                ].map(({ n, a, d }) => (
+                  <div key={n} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: n < 4 ? "1px solid var(--g04)" : "none" }}>
+                    <span style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--g05)", color: "var(--t2)", fontSize: 10, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{n}</span>
+                    <div>
+                      <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--t1)" }}>{a}</div>
+                      <div style={{ fontSize: 10.5, color: "var(--t3)", lineHeight: 1.45, marginTop: 1 }}>{d}</div>
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* Right column */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-          {/* Detected installs */}
-          <div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-              <SectionHeader icon={<SearchIcon size={12} color="var(--t2)" />} title="INSTALLATIONS" accent="var(--t2)" inline />
-              <button onClick={scanInstalls} disabled={detecting} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 6, border: "1px solid var(--g06)", background: "transparent", color: "var(--t3)", fontSize: 10, fontWeight: 700, cursor: detecting ? "not-allowed" : "pointer" }}
-                onMouseEnter={e => { if (!detecting) e.currentTarget.style.color = "var(--t2)"; }}
-                onMouseLeave={e => { if (!detecting) e.currentTarget.style.color = "var(--t3)"; }}>
-                <RefreshIcon size={10} />{detecting ? "Scanning…" : "Scan"}
-              </button>
-            </div>
-            {!detectedInstalls
-              ? <div style={{ color: "var(--t3)", fontSize: 11.5, padding: "8px 0" }}>Scanning…</div>
-              : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {detectedInstalls.installs.map(i => <InstallCard key={i.kind} install={i} />)}
-                </div>
-            }
-          </div>
-
-          {/* How it works */}
-          <div>
-            <SectionHeader icon={<ActivityIcon size={12} color="var(--t3)" />} title="HOW IT WORKS" accent="var(--t3)" />
-            <div style={{ marginTop: 10 }}>
-              {[
-                { n: "01", a: "Check",   d: "Reiya checks if Roblox has a newer version available and compares it to what you have installed." },
-                { n: "02", a: "Download", d: "Only the files that changed are downloaded — so updates are fast and don't waste data." },
-                { n: "03", a: "Install",  d: "The new files are unpacked and placed in the right folders on your PC automatically." },
-                { n: "04", a: "Connect",  d: "Reiya registers itself as your Roblox launcher so clicking Play in any browser opens through it." },
-              ].map(({ n, a, d }) => (
-                <div key={n} style={{ display: "flex", gap: 10, padding: "7px 0", borderBottom: "1px solid var(--g03)" }}>
-                  <span style={{ fontSize: 9, fontWeight: 900, color: "var(--g12)", fontFamily: "monospace", minWidth: 16 }}>{n}</span>
-                  <span style={{ fontSize: 10, fontWeight: 800, color: "var(--amber)", minWidth: 46, flexShrink: 0 }}>{a}</span>
-                  <span style={{ fontSize: 10, color: "var(--t3)", lineHeight: 1.4 }}>{d}</span>
-                </div>
-              ))}
-            </div>
+            </Card>
           </div>
         </div>
       </div>
@@ -559,14 +581,46 @@ function BootstrapperTab({ flagsCount, onSwitchTab }: { flagsCount: number; onSw
   );
 }
 
-function SectionHeader({ icon, title, accent, inline }: { icon: React.ReactNode; title: string; accent: string; inline?: boolean }) {
-  const el = (
-    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-      {icon}
-      <span style={{ fontSize: 10, fontWeight: 900, color: accent, letterSpacing: "0.1em" }}>{title}</span>
-    </div>
+/** Titled section card used on the Bootstrapper page. */
+function Card({ icon, title, desc, action, children }: { icon: React.ReactNode; title: string; desc?: string; action?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section style={{ padding: 18, borderRadius: 16, background: "var(--g01)", border: "1px solid var(--g05)" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 14 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 9, background: "var(--g04)", border: "1px solid var(--g06)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{icon}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 900, color: "var(--t1)", margin: 0 }}>{title}</h2>
+          {desc && <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 2, lineHeight: 1.45 }}>{desc}</div>}
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
   );
-  return inline ? el : <div>{el}</div>;
+}
+
+/** Small labelled fact in the status card; clickable when onClick is given. */
+function Fact({ label, value, color, mono, onClick, title, toggle }: {
+  label: string; value: string; color?: string; mono?: boolean; onClick?: () => void; title?: string; toggle?: boolean;
+}) {
+  const Tag = onClick ? "button" : "div";
+  return (
+    <Tag
+      onClick={onClick}
+      title={title}
+      style={{
+        display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: 10, fontFamily: "inherit",
+        background: "var(--g03)", border: "1px solid var(--g06)", cursor: onClick ? "pointer" : "default", textAlign: "left",
+      }}
+    >
+      <span style={{ fontSize: 10.5, color: "var(--t3)", fontWeight: 700 }}>{label}</span>
+      {toggle !== undefined && (
+        <span style={{ width: 26, height: 14, borderRadius: 99, background: toggle ? "rgba(52,211,153,0.25)" : "var(--g06)", border: `1px solid ${toggle ? "var(--green)" : "var(--g10)"}`, position: "relative", flexShrink: 0 }}>
+          <span style={{ position: "absolute", top: 1, left: toggle ? 13 : 1, width: 10, height: 10, borderRadius: "50%", background: toggle ? "var(--green)" : "#8B8FA8", transition: "left .15s" }} />
+        </span>
+      )}
+      <span style={{ fontSize: 11.5, fontWeight: 800, color: color ?? "var(--t1)", fontFamily: mono ? "monospace" : "inherit" }}>{value}</span>
+    </Tag>
+  );
 }
 
 function LauncherCard({ id, name, subtitle, desc, accentColor, isSelected, available, onSelect }: {
@@ -574,16 +628,21 @@ function LauncherCard({ id, name, subtitle, desc, accentColor, isSelected, avail
   accentColor: string; isSelected: boolean; available: boolean; onSelect: () => void;
 }) {
   const [hov, setHov] = useState(false);
+  const selectable = available || isSelected;
   return (
     <div
-      onClick={onSelect}
+      onClick={selectable ? onSelect : undefined}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
+      role="radio"
+      aria-checked={isSelected}
+      aria-disabled={!selectable}
+      title={available ? desc : `${name} isn't installed on this PC, so it can't be used.`}
       style={{
-        padding: "12px 14px", borderRadius: 12, cursor: "pointer",
-        background: isSelected ? accentColor + "07" : hov ? "var(--g02)" : "var(--g01)",
-        border: `1px solid ${isSelected ? accentColor + "50" : hov ? "var(--g07)" : "var(--g04)"}`,
-        opacity: available ? 1 : 0.35,
+        padding: "12px 14px", borderRadius: 12, cursor: selectable ? "pointer" : "not-allowed",
+        background: isSelected ? accentColor + "07" : hov && selectable ? "var(--g02)" : "var(--g01)",
+        border: `1px solid ${isSelected ? accentColor + "50" : hov && selectable ? "var(--g07)" : "var(--g04)"}`,
+        opacity: available ? 1 : 0.45,
         transition: "all .15s ease",
         display: "flex", alignItems: "center", gap: 12, position: "relative", overflow: "hidden",
       }}
@@ -610,7 +669,7 @@ function LauncherCard({ id, name, subtitle, desc, accentColor, isSelected, avail
           {isSelected && <div style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--bg)" }} />}
         </div>
         <span style={{ fontSize: 7.5, fontWeight: 800, padding: "1.5px 5px", borderRadius: 4, color: available ? "var(--green)" : "var(--t3)", background: available ? "rgba(52,211,153,0.08)" : "var(--g03)" }}>
-          {available ? "READY" : "N/A"}
+          {available ? "READY" : "NOT INSTALLED"}
         </span>
       </div>
     </div>
@@ -638,8 +697,14 @@ function InstallCard({ install }: { install: RobloxInstall }) {
   );
 }
 
-function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount: number; onFlagsChanged: () => void; onSwitchTab: () => void }) {
+function FastFlagsTab({ flagsCount, onFlagsChanged, onDirtyChange }: { flagsCount: number; onFlagsChanged: () => void; onDirtyChange: (dirty: boolean) => void }) {
+  const confirmDialog = useConfirm();
   const [flags, setFlags] = useState<Record<string, any>>({});
+  // What's saved on disk, to detect unsaved edits
+  const [savedSnapshot, setSavedSnapshot] = useState("{}");
+  const dirty = JSON.stringify(flags) !== savedSnapshot;
+  useEffect(() => { onDirtyChange(dirty); }, [dirty]);
+  useEffect(() => () => onDirtyChange(false), []);
   const [presets, setPresets] = useState<FastFlagPreset[]>([]);
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
@@ -650,13 +715,13 @@ function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount:
   const [activeCategory, setActiveCategory] = useState("All");
 
   useEffect(() => {
-    invoke<Record<string, any>>("get_fastflags").then(setFlags).catch(() => {});
+    invoke<Record<string, any>>("get_fastflags").then(f => { setFlags(f); setSavedSnapshot(JSON.stringify(f)); }).catch(() => {});
     invoke<FastFlagPreset[]>("get_fastflag_presets").then(setPresets).catch(() => {});
   }, []);
 
   const handleSave = async () => {
     setSaving(true); setError(""); setSaveSuccess(false);
-    try { await invoke("save_fastflags", { flags }); setSaveSuccess(true); onFlagsChanged(); setTimeout(() => setSaveSuccess(false), 3000); }
+    try { await invoke("save_fastflags", { flags }); setSavedSnapshot(JSON.stringify(flags)); setSaveSuccess(true); onFlagsChanged(); setTimeout(() => setSaveSuccess(false), 3000); }
     catch (e) { setError(String(e)); } finally { setSaving(false); }
   };
 
@@ -730,13 +795,11 @@ function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount:
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={importFlags} style={ghostBtnStyle(false)}><DownloadIcon size={11} />Import</button>
-            <button onClick={exportFlags} style={ghostBtnStyle(false)}><PackageIcon size={11} />Export</button>
-            <button onClick={() => { if (confirm("Clear all FastFlags?")) setFlags({}); }} style={{ ...ghostBtnStyle(false), color: "var(--red)", border: "1px solid rgba(248,113,113,0.2)", background: "rgba(248,113,113,0.04)" }}>
+            <button onClick={importFlags} title="Add flags from a ClientAppSettings.json file" style={ghostBtnStyle(false)}><PackageIcon size={11} />Import</button>
+            <button onClick={exportFlags} title="Save these flags as ClientAppSettings.json" style={ghostBtnStyle(false)}><DownloadIcon size={11} />Export</button>
+            <button onClick={async () => { if (await confirmDialog({ title: "Clear all FastFlags?", message: "Every FastFlag in the list will be removed. Nothing is saved until you press Save.", confirmLabel: "Clear all", danger: true })) setFlags({}); }} style={{ ...ghostBtnStyle(false), color: "var(--red)", border: "1px solid rgba(248,113,113,0.2)", background: "rgba(248,113,113,0.04)" }}>
               <XIcon size={11} />Clear All
             </button>
-            <div style={{ width: 1, height: 24, background: "var(--g08)", alignSelf: "center" }} />
-            <button onClick={onSwitchTab} style={ghostBtnStyle(false)}><DownloadIcon size={11} />Bootstrapper</button>
           </div>
         </div>
       </div>
@@ -774,12 +837,7 @@ function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount:
                 <div style={{ fontSize: 10, color: "var(--t3)", lineHeight: 1.4, marginBottom: 8 }}>{preset.description}</div>
                 <div style={{ fontSize: 9, color: "var(--t3)", fontWeight: 700, marginBottom: 7 }}>{Object.keys(preset.flags).length} flags</div>
                 {applied ? (
-                  <button onClick={() => removePreset(preset)}
-                    style={{ width: "100%", padding: "5px 0", borderRadius: 7, border: "1px solid rgba(34,197,94,0.25)", background: "rgba(34,197,94,0.08)", color: "var(--green)", fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .12s", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(248,113,113,0.1)"; e.currentTarget.style.borderColor = "rgba(248,113,113,0.3)"; e.currentTarget.style.color = "var(--red)"; e.currentTarget.textContent = "✕  Remove"; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = "rgba(34,197,94,0.08)"; e.currentTarget.style.borderColor = "rgba(34,197,94,0.25)"; e.currentTarget.style.color = "var(--green)"; e.currentTarget.textContent = "✓  Applied"; }}>
-                    ✓&nbsp; Applied
-                  </button>
+                  <AppliedPresetButton onRemove={() => removePreset(preset)} />
                 ) : (
                   <button onClick={() => applyPreset(preset)} className="glow-btn"
                     style={{ width: "100%", padding: "5px 0", borderRadius: 7, border: "1px solid rgba(167,139,250,0.2)", background: "rgba(167,139,250,0.05)", color: "#A78BFA", fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .12s", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}
@@ -829,11 +887,21 @@ function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount:
 
           {/* Save footer */}
           <div style={{ padding: "11px 16px", borderTop: "1px solid var(--g05)", background: "rgba(8,9,12,0.4)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               {saveSuccess && <span style={{ color: "var(--green)", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><CheckIcon size={12} color="var(--green)" /> FastFlags saved and applied.</span>}
+              {!saveSuccess && dirty && (
+                <span style={{ color: "var(--amber)", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--amber)" }} /> Unsaved changes — press Save to apply them
+                </span>
+              )}
+              {dirty && (
+                <button onClick={() => setFlags(JSON.parse(savedSnapshot))} style={{ border: "none", background: "transparent", color: "var(--t3)", fontSize: 11, fontWeight: 700, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 3 }}>
+                  Undo changes
+                </button>
+              )}
               {error && <span style={{ color: "var(--red)", fontSize: 12 }}>{error}</span>}
             </div>
-            <button onClick={handleSave} disabled={saving} className="glow-btn" style={{ padding: "8px 20px", borderRadius: 9, border: "none", background: saving ? "var(--g08)" : "var(--accent)", color: saving ? "var(--t3)" : "#0a0a0a", fontSize: 12, fontWeight: 800, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1, boxShadow: "0 4px 14px rgba(232,232,232,.15)", display: "flex", alignItems: "center", gap: 6 }}
+            <button onClick={handleSave} disabled={saving || !dirty} className="glow-btn" style={{ padding: "8px 20px", borderRadius: 9, border: "none", background: saving || !dirty ? "var(--g08)" : "var(--accent)", color: saving || !dirty ? "var(--t3)" : "#0a0a0a", fontSize: 12, fontWeight: 800, cursor: saving || !dirty ? "not-allowed" : "pointer", opacity: saving || !dirty ? 0.6 : 1, boxShadow: dirty ? "0 4px 14px rgba(232,232,232,.15)" : "none", display: "flex", alignItems: "center", gap: 6 }}
               onMouseEnter={e => { if (!saving) e.currentTarget.style.filter = "brightness(1.1)"; }}
               onMouseLeave={e => { if (!saving) e.currentTarget.style.filter = "none"; }}>
               <CheckIcon size={12} color={saving ? "var(--t3)" : "#0a0a0a"} />
@@ -843,6 +911,28 @@ function FastFlagsTab({ flagsCount, onFlagsChanged, onSwitchTab }: { flagsCount:
         </div>
       </div>
     </div>
+  );
+}
+
+/** "✓ Applied" button that turns into "✕ Remove" on hover. */
+function AppliedPresetButton({ onRemove }: { onRemove: () => void }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <button
+      onClick={onRemove}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      title="Remove this preset's flags"
+      style={{
+        width: "100%", padding: "5px 0", borderRadius: 7, fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all .12s",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+        border: `1px solid ${hov ? "rgba(248,113,113,0.3)" : "rgba(34,197,94,0.25)"}`,
+        background: hov ? "rgba(248,113,113,0.1)" : "rgba(34,197,94,0.08)",
+        color: hov ? "var(--red)" : "var(--green)",
+      }}
+    >
+      {hov ? <><XIcon size={10} color="var(--red)" /> Remove</> : <><CheckIcon size={10} color="var(--green)" /> Applied</>}
+    </button>
   );
 }
 

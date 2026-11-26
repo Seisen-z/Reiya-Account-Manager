@@ -17,10 +17,12 @@ export const RecentGamesSection: FC<{
   setGameSearch: (v: string) => void;
   onSetPlaceIdFromSearch: (id: string) => void;
   first?: boolean;
+  /** Hide the built-in Place ID box (when the page shows its own). */
+  hideSearch?: boolean;
 }> = ({
   recentGames, launchPlaceId, thumbs, pinnedGames, onTogglePin, onSelectGame,
   onGameContextMenu, onDeleteGame, onQuickLaunch, gameSearch, setGameSearch,
-  onSetPlaceIdFromSearch,
+  onSetPlaceIdFromSearch, hideSearch,
 }) => {
   const { t } = useLanguage();
   const gamesPerPage = 18;
@@ -44,7 +46,7 @@ export const RecentGamesSection: FC<{
         style={{ marginBottom: 10 }}
         trailing={
           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <input
+            {!hideSearch && <input
               value={gameSearch}
               onChange={e => setGameSearch(e.target.value)}
               onKeyDown={e => {
@@ -59,7 +61,7 @@ export const RecentGamesSection: FC<{
               placeholder="Place ID or URL…"
               className="field glass-input"
               style={{ width: 110, height: 22, fontSize: 9.5, padding: "0 7px" }}
-            />
+            />}
             {pageCount > 1 && (
               <>
                 <span style={{ color: "var(--muted)", fontSize: 9.5 }}>{page + 1}/{pageCount}</span>
@@ -74,7 +76,7 @@ export const RecentGamesSection: FC<{
           </div>
         }
       />
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 12 }}>
         {visibleGames.map(g => {
           const isSelected = launchPlaceId === g.placeId;
           const hasPrivateServer = !!g.privateServer;

@@ -168,6 +168,7 @@ function AppInner() {
     <BrowserRouter>
       <BootstrapperProvider>
         <SavedGamesProvider>
+        <ConfirmProvider>
           {needsVaultUnlock && <VaultUnlock onUnlocked={() => setVaultUnlocked(true)} />}
           {!needsVaultUnlock && locked && <AppLock onUnlocked={() => setLocked(false)} />}
           {!needsVaultUnlock && updateInfo && <UpdatePrompt info={updateInfo} />}
@@ -183,12 +184,14 @@ function AppInner() {
             <Onboarding onDone={() => setOnboardingDone(true)} />
           )}
           {!needsVaultUnlock && <AppContent />}
+        </ConfirmProvider>
         </SavedGamesProvider>
       </BootstrapperProvider>
     </BrowserRouter>
   );
 }
 
+import { ConfirmProvider } from "./components/ConfirmDialog";
 import { LanguageProvider } from "./context/LanguageContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { ToastProvider } from "./components/Toast";

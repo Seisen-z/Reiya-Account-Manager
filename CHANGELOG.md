@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.2.2 - 2026-11-26
+
+### Added
+- Redesigned Home page: pick an account on the left, a game in the middle, and press Launch in the bar at the bottom. Advanced options (Job ID, private server code) live under Options.
+- Search for any Roblox game by name from the Home page, or paste a Place ID or game link into the same box.
+- Drag and drop your pinned games on Home to put them in your own order.
+- "Launch again" cards on Home relaunch your last few account and game combinations in one click.
+- A quick tips card and a welcome screen help new users get started.
+- You can now support Reiya on Ko-fi from the sidebar or the Changelog page. Thank you!
+- Hub: added Anime Astral Simulator, Anime Dice, Blox Fruits, Murder Mystery 2, Pet Simulator 99, Project Slayers 2, Tap Simulator Reborn and Throw Food For Animals. Fish It is supported again (16 supported games).
+
+### Improved
+- Accounts show their status in plain words, like "Ready · played 2h ago", "Playing" or "Login expired".
+- Expired accounts now show a "Log in again" button right on the card, and a "Needs login" filter shows them all at once.
+- Clearer multi-select on the Accounts page: a visible checkbox on each card, plus Select all and Clear.
+- Pinned is now called Pinned everywhere (it was Favorites on some pages), and the Hub pin adds games to your Home page.
+- Hub: one-click Play on Home, pinned games are saved, and each game shows whether it's supported, not listed or discontinued.
+- Redesigned Bootstrapper with clear sections, a plain-language status, and a FastFlags tab that warns you before losing unsaved changes.
+- Confirmation dialogs now match the app's style and explain what will happen.
+- The header shows your login health at a glance. Click it to re-check every account.
+- New text is translated into all supported languages.
+
+### Fixed
+- Hub: choosing or pinning a game now uses its correct Roblox place, so Play on Home opens the right game. Games pinned with the old wrong ID are fixed automatically.
+- Game icons that stopped loading are fetched again automatically, and accounts show the icon of the game they last played.
+- The System Status card shows real information instead of always saying everything is fine.
+- You can no longer select a launcher that isn't installed.
+- Saving a password with the Enter key now works the same as clicking Save, and failures are reported.
+- Drag and drop works inside the app on Windows, including custom account order.
+- Login checks at startup run a few at a time, so large account lists are less likely to be rate-limited by Roblox.
+
 ## v1.2.0 - 2026-10-31
 
 ### Added

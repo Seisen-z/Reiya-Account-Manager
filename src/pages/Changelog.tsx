@@ -1,6 +1,7 @@
 import { useLanguage } from "../context/LanguageContext";
 import { useUpdate } from "../context/UpdateContext";
 import { CHANGELOG, ChangeKind } from "../data/changelog";
+import { KofiButton } from "../components/KofiButton";
 
 const KIND_STYLE: Record<ChangeKind, { label: string; color: string; bg: string }> = {
   new:      { label: "NEW",      color: "var(--green)", bg: "var(--green-dim)" },
@@ -39,6 +40,7 @@ export default function Changelog() {
       {/* Timeline */}
       <div className="scroll" style={{ flex: 1, overflowY: "auto", padding: "20px 24px 40px" }}>
         <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
+          <KofiButton variant="banner" />
           {CHANGELOG.map(release => {
             const isCurrent = currentVersion && release.version === currentVersion;
             return (

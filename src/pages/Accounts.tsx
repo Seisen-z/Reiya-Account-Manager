@@ -9,8 +9,8 @@ import { listen } from "@tauri-apps/api/event";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   SettingsIcon,
-  StarIcon, TrashIcon, XIcon, CheckIcon,
-  ZapIcon,
+  TrashIcon, XIcon, CheckIcon,
+  PinIcon, LoaderIcon, KeyIcon, GamepadIcon, ShieldCheckIcon, PlayIcon, RefreshIcon, PlusIcon,
 } from "../components/Icons";
 import { QuickLaunchModal } from "../components/QuickLaunchModal";
 import { AccSingleCookieModal } from "../components/AccSingleCookieModal";
@@ -28,6 +28,8 @@ import { AccountsToolbar } from "../components/AccountsToolbar";
 import { BulkActionBar } from "../components/BulkActionBar";
 import Tooltip from "../components/ui/Tooltip";
 import { CATALOG } from "../data/catalog";
+import { useConfirm } from "../components/ConfirmDialog";
+import { GameIcon } from "../components/GameIcon";
 
 export interface ComboResult { username: string; ok: boolean; reason: string; }
 
@@ -79,7 +81,7 @@ interface Session {
   start_time: string | null;
 }
 
-type FilterTab = "all" | "favorites" | "valid";
+type FilterTab = "all" | "favorites" | "valid" | "needs_login";
 type SortBy = "last_launched" | "name_asc" | "name_desc" | "status" | "added" | "custom";
 
 const accountsCache = {
@@ -90,6 +92,7 @@ const accountsCache = {
 /* ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── */
 export default function Accounts() {
   const { t } = useLanguage();
+  const confirmDialog = useConfirm();
   const toast = useToast();
   const [accounts, setAccounts] = useState<Account[]>(() => {
     if (accountsCache.loaded && accountsCache.accounts.length > 0) {
@@ -124,6 +127,8 @@ export default function Accounts() {
   };
   const [copiedId,    setCopiedId]    = useState<number | null>(null);
   const [copiedUid,   setCopiedUid]   = useState<number | null>(null);
+  // Accounts whose login is being checked right now (shows a spinner on the card)
+  const [checkingIds, setCheckingIds] = useState<ReadonlySet<number>>(new Set());
   const [sessions,    setSessions]    = useState<Session[]>([]);
 
   // Quick place ID launch
@@ -254,17 +259,26 @@ export default function Accounts() {
       // Auto re-validate Unknown cookies silently on startup
       const unknowns = data.filter(a => a.cookie_status === "Unknown" || !a.cookie_status);
       if (unknowns.length > 0) {
-        unknowns.forEach(async (acc) => {
-          try {
-            const updated = await invoke<Account>("validate_cookie", { userId: acc.user_id });
-            setAccounts(prev => {
-              const next = prev.map(a => a.user_id === acc.user_id ? updated : a);
-              accountsCache.accounts = next;
-              try { localStorage.setItem("reiya_accounts_cache", JSON.stringify(next)); } catch {}
-              return next;
-            });
-          } catch { /* silent */ }
-        });
+        // Check at most 3 at a time so Roblox doesn't rate-limit a big list
+        const queue = [...unknowns];
+        setCheckingIds(prev => { const next = new Set(prev); queue.forEach(a => next.add(a.user_id)); return next; });
+        const worker = async () => {
+          for (let acc = queue.shift(); acc; acc = queue.shift()) {
+            const userId = acc.user_id;
+            try {
+              const updated = await invoke<Account>("validate_cookie", { userId });
+              setAccounts(prev => {
+                const next = prev.map(a => a.user_id === userId ? updated : a);
+                accountsCache.accounts = next;
+                try { localStorage.setItem("reiya_accounts_cache", JSON.stringify(next)); } catch {}
+                return next;
+              });
+            } catch { /* silent */ }
+            setCheckingIds(prev => { const next = new Set(prev); next.delete(userId); return next; });
+          }
+        };
+        const workers = Math.min(3, queue.length);
+        for (let i = 0; i < workers; i++) void worker();
       }
     } catch (e) { console.error("Failed to load accounts:", e); }
     finally { setLoading(false); }
@@ -308,6 +322,42 @@ export default function Accounts() {
       if (unlistenAccounts) unlistenAccounts();
     };
   }, [loadAccounts]);
+
+  // Work out which game (place ID) each account last played, so cards can show its icon.
+  // Accounts only store the game's *name*; the session history and recent games know the IDs.
+  const [lastPlaceByUser, setLastPlaceByUser] = useState<ReadonlyMap<number, string>>(new Map());
+  const [placeByName, setPlaceByName] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    const normalize = (s: string) => s.trim().toLowerCase();
+    const load = () => {
+      Promise.all([
+        invoke<Array<{ user_id: number; place_id: string; game_name: string; start_time: string }>>("get_session_history").catch(() => []),
+        invoke<Array<{ placeId: string; name: string }>>("get_recent_games").catch(() => []),
+      ]).then(([history, recents]) => {
+        const byUser = new Map<number, { placeId: string; time: number }>();
+        const byName = new Map<string, string>();
+        for (const r of history) {
+          if (!r.place_id || !/^\d+$/.test(r.place_id)) continue;
+          const time = new Date(r.start_time).getTime() || 0;
+          const prev = byUser.get(r.user_id);
+          if (!prev || time > prev.time) byUser.set(r.user_id, { placeId: r.place_id, time });
+          if (r.game_name) byName.set(normalize(r.game_name), r.place_id);
+        }
+        for (const g of recents) if (g.name && /^\d+$/.test(g.placeId)) byName.set(normalize(g.name), g.placeId);
+        setLastPlaceByUser(new Map([...byUser].map(([uid, v]) => [uid, v.placeId])));
+        setPlaceByName(byName);
+      });
+    };
+    load();
+    let unlisten: (() => void) | null = null;
+    listen("session-status-changed", load).then(fn => { unlisten = fn; });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+  const lastPlaceIdOf = (a: Account): string | undefined => {
+    if (a.default_place_id && /^\d+$/.test(a.default_place_id)) return a.default_place_id;
+    return lastPlaceByUser.get(a.user_id)
+      ?? (a.last_played_game ? placeByName.get(a.last_played_game.trim().toLowerCase()) : undefined);
+  };
 
   // Live session count for the "Active" stat pill — fetch on mount, poll, and refresh on status change
   useEffect(() => {
@@ -374,7 +424,8 @@ export default function Accounts() {
     .filter(a => {
       const q = search.toLowerCase();
       const matchSearch = !q || a.username.toLowerCase().includes(q) || a.display_name.toLowerCase().includes(q) || a.tags?.some(t => t.toLowerCase().includes(q));
-      const matchFilter = filter === "all" || (filter === "favorites" && a.is_favorite) || (filter === "valid" && a.cookie_status === "Valid");
+      const matchFilter = filter === "all" || (filter === "favorites" && a.is_favorite) || (filter === "valid" && a.cookie_status === "Valid")
+        || (filter === "needs_login" && a.cookie_status !== "Valid");
       const matchGroup = activeGroup === null || a.group === activeGroup;
       const matchGame = !gameFilter || favGamesOf(a).includes(gameFilter);
       return matchSearch && matchFilter && matchGroup && matchGame;
@@ -419,7 +470,12 @@ export default function Accounts() {
   };
 
   const handleRemove = async (userId: number, username: string) => {
-    if (!confirm(`${t("remove_account_confirm")}${username}?`)) return;
+    if (!(await confirmDialog({
+      title: `${t("remove_account_confirm")}${username}?`,
+      message: "The account's saved login and settings will be deleted from this app. Your Roblox account itself isn't affected.",
+      confirmLabel: t("remove_account_menu"),
+      danger: true,
+    }))) return;
     try {
       await invoke("remove_account", { userId });
       forgetAccountLaunch(userId);
@@ -502,11 +558,20 @@ export default function Accounts() {
     setSortBy("custom");
   };
 
-  const handleValidate = async (userId: number) => {
+  const handleValidate = async (userId: number, quiet = false) => {
+    setCheckingIds(prev => new Set(prev).add(userId));
     try {
       const updated = await invoke<Account>("validate_cookie", { userId });
       setAccounts(prev => prev.map(a => a.user_id === userId ? updated : a));
-    } catch (e) { console.error(e); }
+      if (!quiet) {
+        if (updated.cookie_status === "Valid") toast.success(`@${updated.username}: ${t("acc_status_ready")}`);
+        else toast.warning(`@${updated.username}: ${t("accp_status_expired")}`);
+      }
+    } catch (e) {
+      if (!quiet) toast.error(`${t("acc_recheck")}: ${String(e)}`);
+    } finally {
+      setCheckingIds(prev => { const next = new Set(prev); next.delete(userId); return next; });
+    }
   };
 
   const handleRelogin = async (username: string) => {
@@ -536,7 +601,11 @@ export default function Accounts() {
     try {
       const clip = await readText();
       if (clip && clip.includes(".ROBLOSECURITY")) {
-        if (confirm("A Roblox cookie was detected in your clipboard. Import it?")) {
+        if (await confirmDialog({
+          title: "Import the cookie from your clipboard?",
+          message: "A Roblox login cookie was found on your clipboard. Import it as a new account?",
+          confirmLabel: "Import",
+        })) {
           setAdding(true); setAddError("");
           try {
             const acc = await invoke<Account>("add_account", { cookie: clip });
@@ -719,7 +788,10 @@ export default function Accounts() {
   const clearSelection = () => setSelected(new Set());
 
   const handleBulkLaunch = async () => {
-    const targets = accounts.filter(a => selected.has(a.user_id) && a.cookie_status === "Valid" && !launchingAccounts.has(a.user_id));
+    const chosen = accounts.filter(a => selected.has(a.user_id));
+    const skipped = chosen.filter(a => a.cookie_status !== "Valid").length;
+    const targets = chosen.filter(a => a.cookie_status === "Valid" && !launchingAccounts.has(a.user_id));
+    if (skipped > 0) toast.warning(`${skipped} selected ${skipped === 1 ? "account needs" : "accounts need"} to log in again and ${skipped === 1 ? "was" : "were"} skipped.`);
     if (bulkLaunching || targets.length === 0) return;
     setBulkLaunching(true);
     setBulkStatus(`Launching ${targets.length} accounts...`);
@@ -736,32 +808,33 @@ export default function Accounts() {
   const handleBulkValidate = async () => {
     const targets = accounts.filter(a => selected.has(a.user_id));
     if (targets.length === 0) return;
-    setBulkStatus(`Validating ${targets.length} cookies...`);
-    let updated = [...accounts];
+    setBulkStatus(`Checking ${targets.length} logins...`);
+    let ok = 0;
     for (const acc of targets) {
+      setCheckingIds(prev => new Set(prev).add(acc.user_id));
       try {
         const result = await invoke<Account>("validate_cookie", { userId: acc.user_id });
-        updated = updated.map(a => a.user_id === acc.user_id ? result : a);
+        setAccounts(prev => prev.map(a => a.user_id === acc.user_id ? result : a));
+        if (result.cookie_status === "Valid") ok++;
       } catch { }
+      setCheckingIds(prev => { const next = new Set(prev); next.delete(acc.user_id); return next; });
     }
-    setAccounts(updated);
-    setBulkStatus(`Validated ${targets.length} cookies`);
-    setTimeout(() => setBulkStatus(""), 3000);
+    setBulkStatus(`${ok} of ${targets.length} logins working`);
+    setTimeout(() => setBulkStatus(""), 4000);
   };
 
-  const [deleteConfirmPending, setDeleteConfirmPending] = useState(false);
   const deletingAccounts = useRef(false);
   const handleBulkDelete = async () => {
     if (deletingAccounts.current) return;
     const targets = accounts.filter(a => selected.has(a.user_id));
     if (targets.length === 0) return;
-    if (!deleteConfirmPending) {
-      setDeleteConfirmPending(true);
-      toast.warning(`Click Delete again to confirm removing ${targets.length} account(s).`);
-      setTimeout(() => setDeleteConfirmPending(false), 4000);
-      return;
-    }
-    setDeleteConfirmPending(false);
+    const names = targets.slice(0, 5).map(a => "@" + a.username).join(", ") + (targets.length > 5 ? ` +${targets.length - 5}` : "");
+    if (!(await confirmDialog({
+      title: `Remove ${targets.length} ${targets.length === 1 ? "account" : "accounts"}?`,
+      message: <>{names}<br /><br />Their saved logins and settings will be deleted from this app. The Roblox accounts themselves aren't affected.</>,
+      confirmLabel: t("remove_account_menu"),
+      danger: true,
+    }))) return;
     deletingAccounts.current = true;
     const removed = new Set<number>();
     let firstError = "";
@@ -866,6 +939,9 @@ export default function Accounts() {
           favCount={favCount}
           online={online}
           selectedCount={selected.size}
+          needsLoginCount={accounts.length - validCount}
+          needsLoginActive={filter === "needs_login"}
+          onShowNeedsLogin={() => setFilter(filter === "needs_login" ? "all" : "needs_login")}
           addMenu={addMenu}
           setAddMenu={setAddMenu}
           addMenuRef={addMenuRef}
@@ -894,11 +970,12 @@ export default function Accounts() {
           setSortBy={setSortBy}
           viewMode={viewMode}
           setViewMode={setViewMode}
+          counts={{ pinned: favCount, ready: validCount, needsLogin: accounts.length - validCount }}
         />
 
         {favGameList.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 2 }}>
-            <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--t3)", letterSpacing: "0.06em", flexShrink: 0 }}>FAVORITE GAMES</span>
+            <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--t3)", letterSpacing: "0.06em", flexShrink: 0, textTransform: "uppercase" }}>{t("accp_fav_games")}</span>
             {favGameList.map(([id, count]) => (
               <FavGameChip
                 key={id}
@@ -910,7 +987,7 @@ export default function Accounts() {
             ))}
             {gameFilter && (
               <button onClick={() => setGameFilter(null)} style={{ background: "none", border: "none", color: "var(--t3)", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>
-                Clear
+                {t("acc_clear")}
               </button>
             )}
           </div>
@@ -919,6 +996,7 @@ export default function Accounts() {
 
       <BulkActionBar
         selectedCount={selected.size}
+        visibleCount={visible.length}
         bulkLaunching={bulkLaunching}
         bulkStatus={bulkStatus}
         onLaunchAll={handleBulkLaunch}
@@ -946,13 +1024,35 @@ export default function Accounts() {
           </div>
         ) : visible.length === 0 ? (
           <div style={{
-            textAlign: "center", padding: "60px 20px",
-            color: "var(--t3)", fontSize: 12.5,
-            border: "1px dashed var(--g06)", borderRadius: 16, gridColumn: "1 / -1",
+            textAlign: "center", padding: "56px 20px",
+            color: "var(--t3)", fontSize: 12.5, lineHeight: 1.6,
+            border: "1px dashed var(--g08)", borderRadius: 18, gridColumn: "1 / -1",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
           }}>
-            {accounts.length === 0
-              ? t("no_accounts_yet")
-              : search ? `${t("no_accounts_match")} "${search}"` : t("no_accounts_in_view")}
+            {accounts.length === 0 ? (
+              <>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "var(--t1)" }}>{t("accp_empty_title")}</div>
+                <div style={{ maxWidth: 380 }}>{t("accp_empty_body")}</div>
+                <button
+                  onClick={e => { e.stopPropagation(); setAddMenu(true); }}
+                  className="btn glow-btn halloween-primary"
+                  style={{ marginTop: 4, padding: "10px 18px", borderRadius: 10, fontSize: 12.5, fontWeight: 900, background: "#FFFFFF", color: "#07080a", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  <PlusIcon size={12} color="#07080a" /> {t("home_welcome_cta")}
+                </button>
+              </>
+            ) : (
+              <>
+                <div>{search ? `${t("no_accounts_match")} "${search}"` : t("no_accounts_in_view")}</div>
+                <button
+                  onClick={() => { setSearch(""); setFilter("all"); setActiveGroup(null); setGameFilter(null); }}
+                  className="btn btn-ghost"
+                  style={{ padding: "7px 14px", borderRadius: 9, fontSize: 11.5, fontWeight: 800 }}
+                >
+                  {t("accp_reset_filters")}
+                </button>
+              </>
+            )}
           </div>
         ) : (
           visible.map(account => (
@@ -969,6 +1069,9 @@ export default function Accounts() {
               isEditingNotes={editingNotesId === account.user_id}
               editingNotesText={editingNotesId === account.user_id ? editingNotesText : ""}
               isDraggable={sortBy === "custom"}
+              isChecking={checkingIds.has(account.user_id)}
+              lastPlaceId={lastPlaceIdOf(account)}
+              anySelected={selected.size > 0}
               onToggleSelect={() => toggleSelect(account.user_id)}
               onToggleFav={() => handleToggleFav(account.user_id)}
               onRemove={() => handleRemove(account.user_id, account.username)}
@@ -1330,13 +1433,9 @@ export function AccountDetailModal({
 
 /* ── Game Thumbnail Badge for Favorite Games ── */
 function FavGameChip({ placeId, count, active, onClick }: { placeId: string; count: number; active: boolean; onClick: () => void }) {
-  const [thumb, setThumb] = useState("");
   const [name, setName] = useState(() => CATALOG.find(g => g.placeId === placeId)?.name || "");
   useEffect(() => {
     let on = true;
-    invoke<Record<string, string>>("fetch_place_thumbnails", { placeIds: [placeId] })
-      .then(m => { if (on && m?.[placeId]) setThumb(m[placeId]); })
-      .catch(() => {});
     if (!name) {
       invoke<{ name: string }>("fetch_place_details", { placeId: Number(placeId) })
         .then(d => { if (on && d?.name) setName(d.name); })
@@ -1356,9 +1455,9 @@ function FavGameChip({ placeId, count, active, onClick }: { placeId: string; cou
         color: active ? "var(--t1)" : "var(--t2)",
       }}
     >
-      {thumb
-        ? <img src={thumb} alt="" style={{ width: 24, height: 24, borderRadius: 6, objectFit: "cover" }} />
-        : <span style={{ width: 24, height: 24, borderRadius: 6, background: "var(--g06)" }} />}
+      <span style={{ width: 24, height: 24, borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
+        <GameIcon placeId={placeId} placeholderSize={12} />
+      </span>
       <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name || placeId}</span>
       <span style={{ color: "var(--t3)" }}>{count}</span>
     </button>
@@ -1366,57 +1465,20 @@ function FavGameChip({ placeId, count, active, onClick }: { placeId: string; cou
 }
 
 export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: string; size?: number; onLaunch?: (placeId: string) => void }) {
-  const [thumbUrl, setThumbUrl] = useState<string>("");
   const [gameName, setGameName] = useState<string>(() => CATALOG.find(g => g.placeId === placeId)?.name || "");
 
   useEffect(() => {
     let active = true;
-    if (!placeId) return;
-
-    // 1. First try Tauri backend command fetch_place_thumbnails
-    invoke<Record<string, string>>("fetch_place_thumbnails", { placeIds: [placeId] })
-      .then(map => {
-        if (active && map && map[placeId]) {
-          setThumbUrl(map[placeId]);
-          return;
-        }
-        // 2. Fetch directly from Roblox Places API endpoint
-        fetch(`https://thumbnails.roblox.com/v1/places/gameicons?placeIds=${placeId}&size=150x150&format=Png&isCircular=false`)
-          .then(res => res.json())
-          .then(json => {
-            const img = json?.data?.[0]?.imageUrl;
-            if (active && img) setThumbUrl(img);
-          })
-          .catch(() => {});
-      })
-      .catch(() => {
-        fetch(`https://thumbnails.roblox.com/v1/places/gameicons?placeIds=${placeId}&size=150x150&format=Png&isCircular=false`)
-          .then(res => res.json())
-          .then(json => {
-            const img = json?.data?.[0]?.imageUrl;
-            if (active && img) setThumbUrl(img);
-          })
-          .catch(() => {});
-      });
-
-    return () => { active = false; };
-  }, [placeId]);
-
-  useEffect(() => {
-    let active = true;
     if (!placeId || gameName) return;
-
     invoke<{ name: string }>("fetch_place_details", { placeId: Number(placeId) })
-      .then(details => {
-        if (active && details?.name) setGameName(details.name);
-      })
+      .then(details => { if (active && details?.name) setGameName(details.name); })
       .catch(() => {});
-
     return () => { active = false; };
   }, [placeId, gameName]);
 
+  const label = gameName || `Place ${placeId}`;
   return (
-    <Tooltip content={`${gameName || `Place ${placeId}`} · Click to launch`} position="left">
+    <Tooltip content={onLaunch ? `${label} · Click to launch` : label} position="left">
       <div
         onClick={e => {
           if (onLaunch) { e.stopPropagation(); onLaunch(placeId); }
@@ -1424,39 +1486,49 @@ export function GameThumbnailBadge({ placeId, size = 26, onLaunch }: { placeId: 
         style={{
           width: size, height: size, borderRadius: 7, overflow: "hidden",
           border: "1.5px solid var(--g07)", background: "var(--g04)",
-          cursor: "pointer", flexShrink: 0, transition: "all .15s ease",
+          cursor: onLaunch ? "pointer" : "default", flexShrink: 0, transition: "all .15s ease",
           boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
-          display: "flex", alignItems: "center", justifyContent: "center",
         }}
-        onMouseEnter={e => { e.currentTarget.style.transform = "scale(1.15)"; e.currentTarget.style.borderColor = "#A78BFA"; }}
+        onMouseEnter={e => { if (onLaunch) { e.currentTarget.style.transform = "scale(1.15)"; e.currentTarget.style.borderColor = "#A78BFA"; } }}
         onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.borderColor = "var(--g07)"; }}
       >
-        {thumbUrl ? (
-          <img
-            src={thumbUrl}
-            alt={gameName || `Place ${placeId}`}
-            onError={e => {
-              const target = e.currentTarget;
-              if (!target.dataset.triedFallback) {
-                target.dataset.triedFallback = "true";
-                target.src = `https://www.roblox.com/asset-thumbnail/image?assetId=${placeId}&width=150&height=150&format=png`;
-              }
-            }}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-          />
-        ) : (
-          <span style={{ fontSize: size * 0.4 }}>🎮</span>
-        )}
+        <GameIcon placeId={placeId} alt={label} placeholderSize={Math.round(size * 0.5)} />
       </div>
     </Tooltip>
   );
 }
 
-/* ── Account Card (Team 4 Inspired Layout) ── */
+/* ── Account status in plain words ── */
+function relativeTime(iso: string | null | undefined, t: (k: string) => string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (sec < 60) return t("time_ago_seconds").replace("{s}", String(sec));
+  if (sec < 3600) return t("time_ago_minutes").replace("{m}", String(Math.floor(sec / 60)));
+  if (sec < 86400) return t("time_ago_hours").replace("{h}", String(Math.floor(sec / 3600)));
+  return t("time_ago_days").replace("{d}", String(Math.floor(sec / 86400)));
+}
+
+type CardState = "running" | "checking" | "ready" | "expired" | "unknown";
+
+function cardState(account: Account, isRunning: boolean, isChecking: boolean): CardState {
+  if (isRunning) return "running";
+  if (isChecking) return "checking";
+  if (account.cookie_status === "Valid") return "ready";
+  if (account.cookie_status === "Expired") return "expired";
+  return "unknown";
+}
+
+const STATE_COLOR: Record<CardState, string> = {
+  running: "var(--green)", checking: "#FBBF24", ready: "var(--green)", expired: "var(--red)", unknown: "var(--t3)",
+};
+
+/* ── Account Card ── */
 function AccountCard({
   account, viewMode, isLaunching, launchState, isRunning, onRetryLaunch, isSelected, isCopied,
-  isDraggable,
-  onToggleSelect, onToggleFav, onRemove, onLaunch, onLaunchGame, onOpenUtilities,
+  isDraggable, isChecking, anySelected, lastPlaceId,
+  onToggleSelect, onToggleFav, onRemove, onLaunch, onLaunchGame, onOpenUtilities, onValidate, onRelogin,
   onCopyUsername,
   onDragStart, onDragOver, onDrop, onOpenDetails,
 }: {
@@ -1464,6 +1536,12 @@ function AccountCard({
   launchState?: LaunchFeedback; isRunning: boolean; onRetryLaunch: () => void;
   isCopied: boolean; isCopiedUid: boolean;
   isEditingNotes?: boolean; editingNotesText?: string; isDraggable: boolean;
+  /** Login check in progress for this account. */
+  isChecking?: boolean;
+  /** Any account selected → always show checkboxes. */
+  anySelected?: boolean;
+  /** Place ID of the game this account last played (for its icon). */
+  lastPlaceId?: string;
   onToggleSelect: () => void;
   onToggleFav: () => void; onRemove: () => void;
   onLaunch: () => void; onValidate?: () => void; onRelogin?: () => void; onOpenUtilities: () => void;
@@ -1478,24 +1556,181 @@ function AccountCard({
   onDrop: (e: DragEvent<HTMLDivElement>) => void;
   onOpenDetails: () => void;
 }) {
+  const { t } = useLanguage();
   const [hovered, setHovered] = useState(false);
   const isList = viewMode === "list";
-  const isValid = account.cookie_status === "Valid";
-  const isUnknown = account.cookie_status === "Unknown";
-  const statusColor = isValid ? "var(--green)" : isUnknown ? "var(--amber)" : "var(--red)";
-  const statusLabel = isValid ? "Valid" : isUnknown ? "Unknown" : "Expired";
+  const state = cardState(account, isRunning, !!isChecking);
+  const color = STATE_COLOR[state];
+  const lastPlayed = relativeTime(account.last_launched_at, t);
+  const statusText =
+    state === "running" ? t("acc_status_playing")
+    : state === "checking" ? t("acc_status_checking")
+    : state === "ready" ? t("acc_status_ready") + (lastPlayed ? ` · ${t("acc_played")} ${lastPlayed}` : "")
+    : state === "expired" ? t("accp_status_expired")
+    : t("acc_status_unknown");
 
   const savedGameName = account.default_game_name || (account.default_place_id ? `Place ${account.default_place_id}` : account.last_played_game);
+  const favGameIds = (localStorage.getItem("reiya_fav_games_" + account.user_id) || "").split(",").map(s => s.trim()).filter(Boolean);
+  const isValid = account.cookie_status === "Valid";
+  const canLaunch = isValid && !isLaunching;
+  const showCheckbox = hovered || isSelected || !!anySelected;
+  const dimmed = state === "expired";
 
-  const favGamesStr = localStorage.getItem("reiya_fav_games_" + account.user_id) || "";
-  const favGameIds = favGamesStr.split(",").map(s => s.trim()).filter(Boolean);
+  const iconBtn: React.CSSProperties = {
+    width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center",
+    background: "none", border: "none", cursor: "pointer", padding: 0, borderRadius: 8, flexShrink: 0,
+  };
+
+  const checkbox = (
+    <div
+      onClick={e => { e.stopPropagation(); onToggleSelect(); }}
+      role="checkbox"
+      aria-checked={isSelected}
+      title={isSelected ? t("acc_untick") : t("accp_select_tip")}
+      style={{
+        width: 18, height: 18, borderRadius: 6, flexShrink: 0, cursor: "pointer",
+        border: `2px solid ${isSelected ? "#A78BFA" : "var(--g15)"}`,
+        background: isSelected ? "#A78BFA" : "var(--bg)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        opacity: showCheckbox ? 1 : 0, transition: "opacity .12s",
+      }}
+    >
+      {isSelected && <CheckIcon size={11} color="#fff" strokeWidth={3} />}
+    </div>
+  );
+
+  const avatar = (size: number) => (
+    <div onClick={onOpenDetails} title={t("accp_details_tip")} style={{ position: "relative", width: size, height: size, flexShrink: 0, cursor: "pointer", opacity: dimmed ? 0.6 : 1 }}>
+      <div style={{ width: size, height: size, borderRadius: "50%", overflow: "hidden", background: "var(--g06)" }}>
+        <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={size} />
+      </div>
+      <span style={{
+        position: "absolute", bottom: 0, right: 0, width: 12, height: 12, borderRadius: "50%",
+        background: color, border: "2.5px solid var(--bg, #0B0D11)",
+        animation: state === "running" ? "pulse-glow 2s ease-in-out infinite" : "none",
+      }} />
+    </div>
+  );
+
+  const nameBlock = (
+    <div style={{ minWidth: 0, flex: 1 }}>
+      <div onClick={onOpenDetails} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", minWidth: 0 }}>
+        <span style={{ fontSize: 13.5, fontWeight: 800, color: dimmed ? "var(--t2)" : "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {account.display_name || account.username}
+        </span>
+        {account.is_favorite && <PinIcon size={11} color="#FBBF24" fill="#FBBF24" />}
+      </div>
+      <div
+        onClick={onCopyUsername}
+        title={isCopied ? t("copied") : `${t("accp_copy_username")} · ID ${account.user_id}`}
+        style={{ fontSize: 11, color: isCopied ? "var(--green)" : "var(--t3)", cursor: "copy", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}
+      >
+        {isCopied ? `✓ ${t("copied")}` : `@${account.username}`}
+      </div>
+    </div>
+  );
+
+  const statusLine = launchState?.phase
+    ? <AccountLaunchStatus state={launchState} running={isRunning} onRetry={onRetryLaunch} />
+    : (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color, minWidth: 0 }}>
+        {state === "checking" && <LoaderIcon size={11} style={{ animation: "spin 1s linear infinite" }} />}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{statusText}</span>
+      </div>
+    );
+
+  /** Main action: Launch when ready; otherwise the fix for the problem. */
+  const actionButton = (width?: number | string) => {
+    const base: React.CSSProperties = {
+      height: 32, width, padding: width ? 0 : "0 14px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+      borderRadius: 9, fontSize: 12, fontWeight: 800, fontFamily: "inherit", whiteSpace: "nowrap",
+    };
+    if (state === "checking") {
+      return <button disabled className="acct-launch" style={{ ...base, border: "1px solid var(--g06)", background: "var(--g03)", color: "var(--t3)", cursor: "default" }}>
+        <LoaderIcon size={12} style={{ animation: "spin 1s linear infinite" }} /> {t("checking")}
+      </button>;
+    }
+    if (state === "expired") {
+      return <button onClick={onRelogin} className="acct-launch" title={t("accp_relogin_tip")} style={{ ...base, border: "1px solid rgba(248,113,113,0.35)", background: "var(--red-dim)", color: "var(--red)", cursor: "pointer" }}>
+        <KeyIcon size={12} /> {t("accp_relogin")}
+      </button>;
+    }
+    if (state === "unknown") {
+      return <button onClick={onValidate} className="acct-launch" title={t("acc_recheck")} style={{ ...base, border: "1px solid var(--g10)", background: "var(--g04)", color: "var(--t1)", cursor: "pointer" }}>
+        <ShieldCheckIcon size={12} /> {t("accp_check_login")}
+      </button>;
+    }
+    return <button onClick={onLaunch} disabled={!canLaunch} className="acct-launch" style={{
+      ...base, border: "none",
+      background: canLaunch ? "var(--accent)" : "var(--g04)", color: canLaunch ? "#000" : "var(--t3)",
+      cursor: canLaunch ? "pointer" : "not-allowed",
+    }}>
+      {isLaunching ? <LoaderIcon size={12} style={{ animation: "spin 1s linear infinite" }} /> : <PlayIcon size={11} color={canLaunch ? "#000" : "var(--t3)"} />}
+      {isLaunching ? t("launching_suffix") : t("launch")}
+    </button>;
+  };
+
+  const hoverTools = (
+    <div style={{ display: "flex", flexShrink: 0, alignItems: "center" }}>
+      <button onClick={onToggleFav} title={account.is_favorite ? t("acc_unpin") : t("acc_pin")} aria-label={account.is_favorite ? t("acc_unpin") : t("acc_pin")}
+        style={{ ...iconBtn, opacity: hovered || account.is_favorite ? 1 : 0, transition: "opacity .12s" }}>
+        <PinIcon size={13} fill={account.is_favorite ? "#FBBF24" : "none"} color={account.is_favorite ? "#FBBF24" : "var(--t3)"} />
+      </button>
+      {state !== "checking" && onValidate && (
+        <button onClick={onValidate} title={t("acc_recheck")} aria-label={t("acc_recheck")}
+          style={{ ...iconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s", color: "var(--t3)" }}>
+          <RefreshIcon size={13} />
+        </button>
+      )}
+      <button onClick={onRemove} title={t("remove_account_menu")} aria-label={t("remove_account_menu")}
+        style={{ ...iconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s" }}>
+        <TrashIcon size={13} color="var(--red)" />
+      </button>
+      <button className="acct-tool" onClick={onOpenUtilities} title={t("accp_tools_tip")} aria-label={t("accp_tools_tip")} style={{ ...iconBtn, color: "var(--t3)" }}>
+        <SettingsIcon size={13} />
+      </button>
+    </div>
+  );
+
+  const gameInfo = (
+    <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t3)" }}>
+      {account.group && (
+        <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 99, background: "var(--g05)", color: "var(--t2)" }}>{account.group}</span>
+      )}
+      {savedGameName && (
+        <span style={{ width: 28, height: 28, borderRadius: 7, overflow: "hidden", flexShrink: 0, border: "1px solid var(--g06)" }}>
+          {lastPlaceId
+            ? <GameIcon placeId={lastPlaceId} placeholderSize={13} />
+            : <span style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--g05)" }}><GamepadIcon size={10} color="var(--t3)" /></span>}
+        </span>
+      )}
+      <span
+        onClick={onOpenDetails}
+        title={savedGameName ? `${t("accp_last_game")}: ${savedGameName}` : undefined}
+        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer", opacity: savedGameName ? 1 : 0.6 }}
+      >
+        {savedGameName || t("accp_no_game_yet")}
+      </span>
+    </div>
+  );
+
+  const favThumbs = favGameIds.length > 0 && (
+    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+      {favGameIds.slice(0, 3).map(pid => (
+        <GameThumbnailBadge key={pid} placeId={pid} size={24} onLaunch={canLaunch ? onLaunchGame : undefined} />
+      ))}
+    </div>
+  );
+
+  const shell: React.CSSProperties = {
+    position: "relative",
+    background: isSelected ? "rgba(167,139,250,0.08)" : hovered ? "var(--g03)" : "var(--g02)",
+    border: `1px solid ${isSelected ? "rgba(167,139,250,0.45)" : state === "expired" ? "rgba(248,113,113,0.18)" : hovered ? "var(--g10)" : "var(--g05)"}`,
+    transition: "border-color .15s, background .15s",
+    cursor: isDraggable ? "grab" : "default",
+  };
 
   if (!isList) {
-    const iconBtn = {
-      width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
-      background: "none", border: "none", cursor: "pointer", padding: 0, borderRadius: 7, flexShrink: 0,
-    } as const;
-    const canLaunch = isValid && !isLaunching;
     return (
       <div
         className="acct-card"
@@ -1505,248 +1740,60 @@ function AccountCard({
         onDrop={onDrop}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        style={{
-          position: "relative", display: "flex", flexDirection: "column", gap: 12,
-          padding: "14px 14px 12px",
-          background: isSelected ? "rgba(167,139,250,0.08)" : "var(--g02)",
-          border: `1px solid ${isSelected ? "rgba(167,139,250,0.35)" : hovered ? "var(--g08)" : "var(--g04)"}`,
-          borderRadius: 14, transition: "border-color .15s, background .15s",
-          cursor: isDraggable ? "grab" : "default",
-        }}
+        style={{ ...shell, display: "flex", flexDirection: "column", gap: 12, padding: 14, borderRadius: 16 }}
       >
+        {/* Top: checkbox + tools */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: -4 }}>
+          {checkbox}
+          <div style={{ flex: 1 }} />
+          {hoverTools}
+        </div>
+
+        {/* Identity */}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
-            onClick={onOpenDetails}
-            title="View account details"
-            style={{ position: "relative", width: 44, height: 44, flexShrink: 0, cursor: "pointer", opacity: isValid ? 1 : 0.55 }}
-          >
-            <div style={{ width: 44, height: 44, borderRadius: "50%", overflow: "hidden", background: "var(--g06)" }}>
-              <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={44} />
-            </div>
-            <span
-              title={`Cookie: ${statusLabel}`}
-              style={{
-                position: "absolute", bottom: -1, right: -1, width: 11, height: 11, borderRadius: "50%",
-                background: statusColor, border: "2.5px solid var(--bg, #0B0D11)",
-              }}
-            />
-            <div
-              onClick={e => { e.stopPropagation(); onToggleSelect(); }}
-              title={isSelected ? "Deselect" : "Select"}
-              style={{
-                position: "absolute", inset: 0, borderRadius: "50%", cursor: "pointer",
-                background: isSelected ? "rgba(167,139,250,0.85)" : "rgba(0,0,0,0.55)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                opacity: hovered || isSelected ? 1 : 0, transition: "opacity .12s",
-              }}
-            >
-              <div style={{
-                width: 16, height: 16, borderRadius: 5, border: "2px solid #fff",
-                background: isSelected ? "#fff" : "transparent", display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
-                {isSelected && <CheckIcon size={11} color="#7C5CE0" />}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div
-              onClick={onOpenDetails}
-              style={{ fontSize: 13.5, fontWeight: 800, color: isValid ? "var(--t1)" : "var(--t2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
-            >
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{account.display_name || account.username}</span>
-              {account.is_favorite && <StarIcon size={11} fill="var(--amber)" color="var(--amber)" />}
-            </div>
-            <div
-              onClick={onCopyUsername}
-              title={isCopied ? "Copied" : `Copy @${account.username} · ID ${account.user_id}`}
-              style={{ fontSize: 11, color: isCopied ? "var(--green)" : "var(--t3)", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}
-            >
-              {isCopied ? "Copied" : `@${account.username}`}
-            </div>
-          </div>
-
-          {isValid ? (
-            <button
-              className="acct-launch"
-              onClick={onLaunch}
-              disabled={!canLaunch}
-              style={{
-                height: 30, padding: "0 14px", flexShrink: 0, display: "flex", alignItems: "center", gap: 6,
-                borderRadius: 8, border: "none",
-                background: canLaunch ? "var(--accent)" : "var(--g04)",
-                color: canLaunch ? "#000" : "var(--t3)",
-                fontSize: 11.5, fontWeight: 800, cursor: canLaunch ? "pointer" : "not-allowed",
-              }}
-            >
-              <ZapIcon size={11} color={canLaunch ? "#000" : "var(--t3)"} />
-              {isLaunching ? "Launching" : "Launch"}
-            </button>
-          ) : (
-            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", color: statusColor, flexShrink: 0 }}>
-              {statusLabel.toUpperCase()}
-            </span>
-          )}
+          {avatar(48)}
+          {nameBlock}
         </div>
 
-        <AccountLaunchStatus state={launchState} running={isRunning} onRetry={onRetryLaunch} />
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 26, borderTop: "1px solid var(--g04)", paddingTop: 10 }}>
-          <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t3)" }}>
-            {account.group && (
-              <span style={{ flexShrink: 0, color: "var(--t2)", fontWeight: 700 }}>{account.group}{savedGameName ? " ·" : ""}</span>
-            )}
-            <span
-              onClick={onOpenDetails}
-              title={savedGameName ? `Last game: ${savedGameName}` : undefined}
-              style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer", opacity: savedGameName ? 1 : 0.5 }}
-            >
-              {savedGameName || "No game yet"}
-            </span>
-          </div>
-          {favGameIds.length > 0 && (
-            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-              {favGameIds.slice(0, 3).map(pid => (
-                <GameThumbnailBadge
-                  key={pid}
-                  placeId={pid}
-                  size={22}
-                  onLaunch={isValid && !isLaunching ? onLaunchGame : undefined}
-                />
-              ))}
-            </div>
-          )}
-          <div style={{ display: "flex", flexShrink: 0 }}>
-            <button
-              onClick={onToggleFav}
-              title={account.is_favorite ? "Remove from favorites" : "Add to favorites"}
-              style={{ ...iconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s" }}
-            >
-              <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
-            </button>
-            <button
-              onClick={onRemove}
-              title="Remove account"
-              style={{ ...iconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s" }}
-            >
-              <TrashIcon size={13} color="var(--red)" />
-            </button>
-            <button className="acct-tool" onClick={onOpenUtilities} title="Account tools" style={{ ...iconBtn, color: "var(--t3)" }}>
-              <SettingsIcon size={13} />
-            </button>
-          </div>
+        {/* Status */}
+        {statusLine}
+
+        {/* Game info */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 26 }}>
+          {gameInfo}
+          {favThumbs}
         </div>
+
+        {/* Main action */}
+        {actionButton("100%")}
       </div>
     );
   }
 
-  if (isList) {
-    const listIconBtn = {
-      width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center",
-      background: "none", border: "none", cursor: "pointer", padding: 0, borderRadius: 7, flexShrink: 0,
-    } as const;
-    return (
-      <div
-        className="acct-card"
-        draggable={isDraggable}
-        onDragStart={onDragStart}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        style={{
-          display: "flex", alignItems: "center", gap: 14, padding: "8px 12px",
-          background: isSelected ? "rgba(167,139,250,0.08)" : hovered ? "var(--g03)" : "var(--g02)",
-          border: `1px solid ${isSelected ? "rgba(167,139,250,0.35)" : "var(--g04)"}`,
-          borderRadius: 11, transition: "background .12s", cursor: isDraggable ? "grab" : "default",
-          opacity: isValid ? 1 : 0.82,
-        }}
-      >
-        <div
-          onClick={onToggleSelect}
-          title={isSelected ? "Deselect" : "Select"}
-          style={{
-            width: 16, height: 16, borderRadius: 5, flexShrink: 0, cursor: "pointer",
-            border: `2px solid ${isSelected ? "#A78BFA" : "var(--g12)"}`,
-            background: isSelected ? "#A78BFA" : "transparent",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            opacity: hovered || isSelected ? 1 : 0.35, transition: "opacity .12s",
-          }}
-        >
-          {isSelected && <CheckIcon size={10} color="#fff" />}
-        </div>
-
-        <div onClick={onOpenDetails} title="View account details" style={{ position: "relative", width: 38, height: 38, flexShrink: 0, cursor: "pointer" }}>
-          <div style={{ width: 38, height: 38, borderRadius: "50%", overflow: "hidden", background: "var(--g06)" }}>
-            <LazyAvatar name={account.username} avatarUrl={account.avatar_url} size={38} />
-          </div>
-          <span
-            title={`Cookie: ${statusLabel}`}
-            style={{ position: "absolute", bottom: -1, right: -1, width: 10, height: 10, borderRadius: "50%", background: statusColor, border: "2px solid var(--bg, #0B0D11)" }}
-          />
-        </div>
-
-        <div style={{ width: 220, minWidth: 0, flexShrink: 0 }}>
-          <div onClick={onOpenDetails} style={{ fontSize: 13, fontWeight: 800, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}>
-            {account.display_name || account.username}
-          </div>
-          <div
-            onClick={onCopyUsername}
-            title={isCopied ? "Copied" : `Copy @${account.username} · ID ${account.user_id}`}
-            style={{ fontSize: 10.5, color: isCopied ? "var(--green)" : "var(--t3)", cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}
-          >
-            {isCopied ? "Copied" : `@${account.username}`}
-          </div>
-        </div>
-
-        <AccountLaunchStatus state={launchState} running={isRunning} onRetry={onRetryLaunch} />
-        <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--t3)" }}>
-          {!isValid && (
-            <span style={{ color: statusColor, fontWeight: 800, fontSize: 10, letterSpacing: "0.04em", flexShrink: 0 }}>{statusLabel.toUpperCase()}</span>
-          )}
-          {account.group && <span style={{ flexShrink: 0, color: "var(--t2)", fontWeight: 700 }}>{account.group}</span>}
-          {savedGameName && (
-            <span onClick={onOpenDetails} title={`Last game: ${savedGameName}`} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}>
-              {(!isValid || account.group ? "· " : "") + savedGameName}
-            </span>
-          )}
-        </div>
-
-        <button onClick={onToggleFav} title={account.is_favorite ? "Remove from favorites" : "Add to favorites"} style={{ ...listIconBtn, opacity: hovered || account.is_favorite ? 1 : 0, transition: "opacity .12s" }}>
-          <StarIcon size={13} fill={account.is_favorite ? "var(--amber)" : "none"} color={account.is_favorite ? "var(--amber)" : "var(--t3)"} />
-        </button>
-        <button onClick={onRemove} title="Remove account" style={{ ...listIconBtn, opacity: hovered ? 1 : 0, transition: "opacity .12s" }}>
-          <TrashIcon size={13} color="var(--red)" />
-        </button>
-
-        <button
-          className="acct-launch"
-          onClick={onLaunch}
-          disabled={isLaunching || !isValid}
-          style={{
-            width: 112, height: 30, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-            borderRadius: 8, border: "none",
-            background: isLaunching || !isValid ? "var(--g04)" : "var(--accent)",
-            color: isLaunching || !isValid ? "var(--t3)" : "#000",
-            fontSize: 11, fontWeight: 800, cursor: isLaunching || !isValid ? "not-allowed" : "pointer",
-          }}
-        >
-          <ZapIcon size={11} color={isValid && !isLaunching ? "#000" : "var(--t3)"} />
-          {isLaunching ? "Launching…" : isValid ? "Launch" : "Expired"}
-        </button>
-        <button
-          className="acct-tool"
-          onClick={onOpenUtilities}
-          title="Account tools"
-          style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid var(--g06)", background: "transparent", color: "var(--t3)", cursor: "pointer", flexShrink: 0 }}
-        >
-          <SettingsIcon size={13} />
-        </button>
-      </div>
-    );
-  }
+  return (
+    <div
+      className="acct-card"
+      draggable={isDraggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ ...shell, display: "flex", alignItems: "center", gap: 14, padding: "9px 12px", borderRadius: 12 }}
+    >
+      {checkbox}
+      {avatar(40)}
+      <div style={{ width: 200, minWidth: 0, flexShrink: 0, display: "flex" }}>{nameBlock}</div>
+      <div style={{ width: 210, minWidth: 0, flexShrink: 0 }}>{statusLine}</div>
+      {gameInfo}
+      {favThumbs}
+      {hoverTools}
+      {actionButton(130)}
+    </div>
+  );
 }
 
-/* â"€â"€ Modal wrapper â"€â"€ */
+/* ── Modal wrapper ── */
 export function AccountModal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   return (
     <div
