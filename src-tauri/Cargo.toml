@@ -1,6 +1,6 @@
 [package]
 name = "reiya-account-manager"
-version = "1.2.0"
+version = "1.2.2"
 description = "Reiya Account Manager"
 authors = ["Reiya"]
 edition = "2021"
