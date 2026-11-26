@@ -8,7 +8,7 @@ enable_anonymous_sign_ins = true
 verify_jwt = false
 
 [functions.submit-rating]
-verify_jwt = false
+verify_jwt = true
 
 [functions.live-count]
 verify_jwt = false
